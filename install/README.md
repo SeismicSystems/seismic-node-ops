@@ -292,14 +292,7 @@ Do not leave the signing endpoint running after obtaining the file.
 
 ### 6. Send the signature file to Seismic operations
 
-Send the following through the secure transfer channel agreed with Seismic
-operations:
-
-- `deposit-signature.json`
-- The validator/node name.
-- The target network.
-- Confirmation that you used withdrawal address
-  `0xd412c5ecd343e264381ff15afc0ad78a67b79f35`.
+Send the `deposit-signature.json` to Seismic operations through a secure transfer channel.
 
 Do **not** send validator private-key files, a wallet private key, seed phrases,
 or JWT secrets. Do not publish the signature file in a public issue or source
