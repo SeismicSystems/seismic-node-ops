@@ -314,7 +314,7 @@ sudo supervisorctl start custodian
 sudo supervisorctl start reth
 sudo supervisorctl start summit
 
-# Optional: Run this last only when summit-checkpointer was configured.
+# Optional: Run this only when summit-checkpointer was enabled.
 sudo supervisorctl start checkpointer
 
 sudo supervisorctl status
