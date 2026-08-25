@@ -29,7 +29,7 @@ Review the complete interactive configuration summary before accepting it.
 
 ## Requirements
 
-- Ubuntu or Debian with `apt-get`.
+- Ubuntu with `apt-get`. Other Linux distributions are not supported.
 - Root access through `sudo`.
 - An existing non-root Linux user that will run the validator services.
 - The Summit internal-testnet genesis TOML supplied in this repository at
@@ -334,8 +334,12 @@ started manually again after a server or Supervisor restart.
 
 When enabled, OpenResty terminates HTTPS, obtains certificates through
 `lua-resty-auto-ssl`, applies per-client rate limiting, and proxies local Reth
-and Summit endpoints. Reth and Summit bind their proxied RPC listeners to
-loopback when the public endpoint is enabled.
+and Summit endpoints.
+
+Reth HTTP and WebSocket RPC, Summit RPC, and their metrics listeners remain
+bound to loopback whether or not OpenResty is enabled. When OpenResty is
+disabled, these endpoints are available only from the node itself or through an
+operator-managed tunnel; they are not exposed directly on public interfaces.
 
 The configured routes are:
 

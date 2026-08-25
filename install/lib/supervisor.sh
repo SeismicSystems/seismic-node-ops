@@ -89,13 +89,8 @@ render_validator_supervisor_config() {
     local conf
     local bootnode_argument=""
     local purpose_key_arguments="--seismic.purpose-keys-source built-in"
-    local rpc_bind="0.0.0.0"
-    local summit_bind="0.0.0.0"
-
-    if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
-        rpc_bind="127.0.0.1"
-        summit_bind="127.0.0.1"
-    fi
+    local rpc_bind="127.0.0.1"
+    local summit_bind="127.0.0.1"
     [[ -z "$BOOTNODE_ENODE" ]] \
         || bootnode_argument="--bootnodes $BOOTNODE_ENODE"
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
