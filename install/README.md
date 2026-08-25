@@ -38,9 +38,22 @@ Review the complete interactive configuration summary before accepting it.
   enabled optional components.
 - Network access to package and source repositories when installing packages or
   building from source.
-- If configuring OpenResty, DNS for the selected domain must point to the node,
-  and inbound TCP ports 80 and 443 must be reachable for HTTPS and certificate
-  provisioning.
+- If configuring OpenResty, DNS for the selected domain must point to the node.
+
+### Network and firewall requirements
+
+The installer does not configure cloud firewall, security-group, or host
+firewall rules. Configure the required inbound access before starting the
+validator.
+
+| Port | Protocol | Purpose | Required exposure |
+| --- | --- | --- | --- |
+| `30303` | TCP and UDP | seismic-reth P2P and discovery | Public |
+| `18551` | TCP and UDP | Summit consensus P2P | Public |
+| `80` | TCP | HTTP redirect and ACME challenge | Public when OpenResty is enabled |
+| `443` | TCP | OpenResty HTTPS endpoint | Public when OpenResty is enabled |
+| `7876` | TCP | Custodian council communication | Externally reachable when Custodian is enabled; restrict sources to intended council participants |
+
 
 The installation log is written to:
 
