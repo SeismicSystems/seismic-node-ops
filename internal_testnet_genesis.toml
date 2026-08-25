@@ -1,0 +1,39 @@
+eth_genesis_hash = "0x3ac4d8f5b8db40e9113aae227e7f7fe2e0fe4724825a277e80e01059261ee8ed"
+leader_timeout_ms = 2000
+notarization_timeout_ms = 4000
+nullify_timeout_ms = 4000
+activity_timeout_views = 256
+skip_timeout_views = 32
+max_message_size_bytes = 10485760
+namespace = "_SUMMIT"
+validator_minimum_stake = 32000000000
+blocks_per_epoch = 5000
+allowed_timestamp_future_ms = 10000
+max_deposits_per_epoch = 3
+max_withdrawals_per_epoch = 16
+observers_per_validator = 5
+minimum_validator_count = 3
+
+[[validators]]
+node_public_key = "1101bf2d0916162dd61ffd434f7560265b56ba81af6a251e7a9cdc863153a456"
+consensus_public_key = "a52eaecb4b6e60720e9ef897ca1fc371bc67b2cb6b5895cbbc6a4db01ad7abe73ee9007186a36d1dc42998f45d95fa26"
+ip_address = "136.119.180.186:18551"
+withdrawal_credentials = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+
+[[validators]]
+node_public_key = "d322000bd309d67e031d4c56098f5422c20e3296c79afa3c3df6052467a5eac4"
+consensus_public_key = "83b8570d89fe0615da4cc56e10d63888269f85593e1bedddbf7f3a8f483284af43066a182c865ac0f3aed5abd0cd96e1"
+ip_address = "104.198.81.77:18551"
+withdrawal_credentials = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+
+[[validators]]
+node_public_key = "6b473379db6c814670b68cfc6a0c0aec3342469d3363edbe0ed211fab881a295"
+consensus_public_key = "b6cb9c34f52f3529da42ec5b8c22e85fa7a33010d0ba077fae83fc6a3cff555ce224ad485dad09ef66a50c3bd366afcc"
+ip_address = "34.34.132.127:18551"
+withdrawal_credentials = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+
+[[validators]]
+node_public_key = "1e3c4051660f13ea8aee4276f98b240a5fa6cf65fdb71878752544130396e527"
+consensus_public_key = "ab1632279f8a2c9827b50718a290ec4febf06b71b6dbc0e672a189cae7afc0ccfa9af968a72758bf7a3e1ea7f5e969f5"
+ip_address = "34.129.54.128:18551"
+withdrawal_credentials = "0x90F79bf6EB2c4f870365E785982E1f101E93b906"
