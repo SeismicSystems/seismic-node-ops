@@ -44,7 +44,7 @@ main() {
     install_system_packages
     install_openresty
     setup_runtime_directories
-    install_validator_binaries
+    install_node_binaries
     install_checkpointer
     install_custodian
     setup_validator_keys

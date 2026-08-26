@@ -11,6 +11,9 @@ Supervisor programs, and optional OpenResty endpoint. It deliberately does not
 start the validator services. Follow the first-start procedure in this document
 after installation.
 
+For an observer node, use `install/install-observer.sh` and follow the separate
+**[Observer Installer and First-Start Guide](OBSERVER.md)**.
+
 ## Safety model
 
 The installer is designed to avoid replacing persistent validator state:
@@ -103,13 +106,17 @@ known shared default root key and does not prompt for a custom key. This makes
 epoch-0 purpose keys public.
 
 The Custodian council listener defaults to `0.0.0.0:7876`. TCP port `7876`
-must be reachable from outside the node for key rotation.
-Configure the cloud firewall, security group, and host firewall as
-needed, and restrict allowed source addresses to the intended council
-participants rather than exposing the port more broadly than necessary.
+must be reachable from outside the node for key rotation. The generated
+validator Custodian program also receives the Summit key directory so it can
+authenticate and serve configured observer Custodians.
+Configure the cloud firewall, security group, and host firewall as needed, and
+restrict allowed source addresses to intended council participants and observer
+hosts rather than exposing the port more broadly than necessary. Observer root
+keys and plaintext epoch-key material transit the parent-Custodian connection;
+use a private network or TLS tunnel.
 
-For Summit, seismic-reth, and summit-checkpointer, supported installation modes
-are:
+For Summit, seismic-reth, summit-checkpointer, and Centralized Custodian,
+supported installation modes are:
 
 1. Install a supplied prebuilt executable.
 2. Build from source during installation.
@@ -120,6 +127,7 @@ The current source-build defaults are:
 ```text
 Summit:       m/metrics
 seismic-reth: feat/purpose-key-rotation-reth
+Custodian:    d/centralized-custodian
 ```
 
 Deferred binaries must be installed at the configured target paths before the

@@ -71,7 +71,8 @@ validate_supervisor_runtime_inputs() {
 validate_supervisor_templates() {
     local template_root="$TEMPLATES_DIR/supervisor"
     local required=(
-        "$template_root/validator.conf"
+        "$template_root/reth.conf"
+        "$template_root/summit-validator.conf"
         "$template_root/deposit-rpc.conf"
         "$template_root/checkpointer.conf"
         "$template_root/custodian.conf"
@@ -84,13 +85,13 @@ validate_supervisor_templates() {
     done
 }
 
-render_validator_supervisor_config() {
-    local template="$TEMPLATES_DIR/supervisor/validator.conf"
+render_reth_supervisor_config() {
+    local template="$TEMPLATES_DIR/supervisor/reth.conf"
     local conf
     local bootnode_argument=""
     local purpose_key_arguments="--seismic.purpose-keys-source built-in"
     local rpc_bind="127.0.0.1"
-    local summit_bind="127.0.0.1"
+
     [[ -z "$BOOTNODE_ENODE" ]] \
         || bootnode_argument="--bootnodes $BOOTNODE_ENODE"
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
@@ -105,6 +106,17 @@ render_validator_supervisor_config() {
     conf=${conf//RETH_DATA_DIR_PLACEHOLDER/$RETH_DATA_DIR}
     conf=${conf//PURPOSE_KEYS_ARGUMENTS_PLACEHOLDER/$purpose_key_arguments}
     conf=${conf//BOOTNODE_ARGUMENT_PLACEHOLDER/$bootnode_argument}
+    conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
+    conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
+    printf '%s\n' "$conf"
+}
+
+render_summit_validator_supervisor_config() {
+    local template="$TEMPLATES_DIR/supervisor/summit-validator.conf"
+    local conf
+    local summit_bind="127.0.0.1"
+
+    conf=$(<"$template")
     conf=${conf//SUMMIT_BINARY_PLACEHOLDER/$SUMMIT_TARGET_BIN}
     conf=${conf//GENESIS_PATH_PLACEHOLDER/$GENESIS_PATH}
     conf=${conf//SUMMIT_KEYS_DIR_PLACEHOLDER/$SUMMIT_KEYS_DIR}
@@ -114,6 +126,11 @@ render_validator_supervisor_config() {
     conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
     conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
     printf '%s\n' "$conf"
+}
+
+render_validator_supervisor_config() {
+    render_reth_supervisor_config
+    render_summit_validator_supervisor_config
 }
 
 render_deposit_rpc_supervisor_config() {
@@ -153,6 +170,7 @@ render_custodian_supervisor_config() {
     conf=${conf//COUNCIL_LISTEN_PLACEHOLDER/$COUNCIL_LISTEN}
     conf=${conf//COUNCIL_ADDRESS_PLACEHOLDER/$COUNCIL_ADDRESS}
     conf=${conf//CUSTODIAN_CHAIN_ID_PLACEHOLDER/$CUSTODIAN_CHAIN_ID}
+    conf=${conf//SUMMIT_KEYS_DIR_PLACEHOLDER/$SUMMIT_KEYS_DIR}
     conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
     conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
     printf '%s\n' "$conf"
@@ -176,7 +194,7 @@ find_conflicting_supervisor_config() {
 
     while IFS= read -r -d '' path; do
         [[ "$path" == "$SUPERVISOR_CONFIG_PATH" ]] && continue
-        if grep -Eq '^\[program:(reth|summit|summit-deposit-rpc|checkpointer|custodian)\]' "$path"; then
+        if grep -Eq '^\[program:(reth|summit|summit-observer|summit-observer-checkpoint|summit-deposit-rpc|checkpointer|custodian)\]' "$path"; then
             printf '%s\n' "$path"
             return 0
         fi
@@ -227,7 +245,8 @@ deploy_supervisor_configuration() {
 
     staging=$(mktemp -d)
     render_deposit_rpc_supervisor_config >"$staging/seismic-validator.conf"
-    render_validator_supervisor_config >>"$staging/seismic-validator.conf"
+    render_reth_supervisor_config >>"$staging/seismic-validator.conf"
+    render_summit_validator_supervisor_config >>"$staging/seismic-validator.conf"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         render_checkpointer_supervisor_config \
             >>"$staging/seismic-validator.conf"

@@ -42,14 +42,14 @@ configure_service_user() {
     [[ "$default_user" != "root" ]] || default_user="ubuntu"
 
     while true; do
-        prompt SERVICE_USER "User to run validator services as" "$default_user"
+        prompt SERVICE_USER "User to run node services as" "$default_user"
 
         if [[ ! "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*\$?$ ]]; then
             error "Invalid service username: $SERVICE_USER"
             continue
         fi
         if [[ "$SERVICE_USER" == "root" ]]; then
-            error "Validator services must not run as root."
+            error "Node services must not run as root."
             continue
         fi
         if ! id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -310,8 +310,8 @@ print_component_installation() {
     esac
 }
 
-configure_validator_software() {
-    section "Validator software configuration"
+configure_node_software() {
+    section "Node software configuration"
 
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
@@ -327,11 +327,15 @@ configure_validator_software() {
     configure_component_installation \
         RETH_INSTALL_METHOD RETH_BINARY "seismic-reth" RETH_TARGET_BIN
 
-    _out "Validator software:"
+    _out "Node software:"
     print_component_installation \
         "Summit" "$SUMMIT_INSTALL_METHOD" "$SUMMIT_BINARY" "$SUMMIT_TARGET_BIN"
     print_component_installation \
         "Seismic Reth" "$RETH_INSTALL_METHOD" "$RETH_BINARY" "$RETH_TARGET_BIN"
+}
+
+configure_validator_software() {
+    configure_node_software
 }
 
 configure_public_endpoint() {
@@ -588,10 +592,13 @@ configure_custodian() {
     INSTALL_CUSTODIAN=false
     CUSTODIAN_DATA_DIR=""
     CUSTODIAN_TARGET_BIN="/usr/local/bin/seismic-centralized-custodian-service"
+    CUSTODIAN_INSTALL_METHOD=""
+    CUSTODIAN_BINARY=""
     CUSTODIAN_SOCKET=""
     COUNCIL_LISTEN=""
     COUNCIL_ADDRESS=""
     CUSTODIAN_CHAIN_ID=""
+    PARENT_CUSTODIAN=""
     CUSTODIAN_REQUIRED_SUMMIT_REF="m/metrics"
     CUSTODIAN_REQUIRED_RETH_REF="feat/purpose-key-rotation-reth"
     CUSTODIAN_SOURCE_REF="d/centralized-custodian"
@@ -635,8 +642,25 @@ configure_custodian() {
     done
     success "Custodian Unix socket selected: $CUSTODIAN_SOCKET"
 
-    _out "Custodian will use the publicly known shared default root key."
-    warn "The shared default makes epoch-0 purpose keys public."
+    if [[ "${NODE_ROLE:-validator}" == "observer" ]]; then
+        _out "Enter the Custodian council endpoint running on the parent validator."
+        _out "The observer uses it to fetch or verify the root key and synchronize epoch-key deliveries."
+        while true; do
+            prompt PARENT_CUSTODIAN \
+                "Parent validator Custodian council endpoint (host:port; default port 7876)" \
+                ""
+            if validate_host_port "$PARENT_CUSTODIAN"; then
+                break
+            fi
+            error "Parent validator Custodian council endpoint must be host:port with a valid port."
+        done
+        _out "The observer Custodian will fetch and verify its root key through $PARENT_CUSTODIAN."
+        warn "The parent Custodian connection transports root-key and epoch-key material."
+        warn "Use a private network or protect the connection with a TLS tunnel."
+    else
+        _out "Custodian will use the publicly known shared default root key."
+        warn "The shared default makes epoch-0 purpose keys public."
+    fi
 
     while true; do
         prompt COUNCIL_LISTEN "Custodian council listen address" "0.0.0.0:7876"
@@ -666,17 +690,32 @@ configure_custodian() {
         error "Custodian chain ID must be a positive integer."
     done
 
+    configure_component_installation \
+        CUSTODIAN_INSTALL_METHOD \
+        CUSTODIAN_BINARY \
+        "Centralized Custodian" \
+        CUSTODIAN_TARGET_BIN
+
     warn "Custodian requires Summit compatible with $CUSTODIAN_REQUIRED_SUMMIT_REF."
     warn "Custodian requires seismic-reth compatible with $CUSTODIAN_REQUIRED_RETH_REF."
 
     _out "Centralized Custodian: $INSTALL_CUSTODIAN"
     _out "  Data:       $CUSTODIAN_DATA_DIR"
     _out "  Socket:     $CUSTODIAN_SOCKET"
-    _out "  Root key:   publicly known shared default"
+    if [[ "${NODE_ROLE:-validator}" == "observer" ]]; then
+        _out "  Root key:   fetched and verified through parent Custodian"
+        _out "  Parent:     $PARENT_CUSTODIAN"
+    else
+        _out "  Root key:   publicly known shared default"
+    fi
     _out "  Council:    $COUNCIL_LISTEN ($COUNCIL_ADDRESS)"
     _out "  Chain ID:   $CUSTODIAN_CHAIN_ID"
-    _out "  Binary:     build from source -> $CUSTODIAN_TARGET_BIN"
-    _out "  Source ref: $CUSTODIAN_SOURCE_REF"
+    print_component_installation \
+        "Custodian" "$CUSTODIAN_INSTALL_METHOD" \
+        "$CUSTODIAN_BINARY" "$CUSTODIAN_TARGET_BIN"
+    if [[ "$CUSTODIAN_INSTALL_METHOD" == "source" ]]; then
+        _out "  Source ref: $CUSTODIAN_SOURCE_REF"
+    fi
 }
 
 configure_directories() {
@@ -779,14 +818,23 @@ print_configuration_summary() {
         _out "  Enabled: true"
         _out "  Data:    $CUSTODIAN_DATA_DIR"
         _out "  Socket:  $CUSTODIAN_SOCKET"
-        _out "  Root key: publicly known shared default"
+        if [[ "${NODE_ROLE:-validator}" == "observer" ]]; then
+            _out "  Root key: fetched and verified through parent Custodian"
+            _out "  Parent Custodian: $PARENT_CUSTODIAN"
+        else
+            _out "  Root key: publicly known shared default"
+        fi
         _out "  Council listen:  $COUNCIL_LISTEN"
         _out "  Council address: $COUNCIL_ADDRESS"
         _out "  Chain ID:        $CUSTODIAN_CHAIN_ID"
-        _out "  Binary:          build from source -> $CUSTODIAN_TARGET_BIN"
+        print_component_installation \
+            "Custodian" "$CUSTODIAN_INSTALL_METHOD" \
+            "$CUSTODIAN_BINARY" "$CUSTODIAN_TARGET_BIN"
         _out "  Required Summit compatibility: $CUSTODIAN_REQUIRED_SUMMIT_REF"
         _out "  Required Reth compatibility:   $CUSTODIAN_REQUIRED_RETH_REF"
-        _out "  Custodian source ref:          $CUSTODIAN_SOURCE_REF"
+        if [[ "$CUSTODIAN_INSTALL_METHOD" == "source" ]]; then
+            _out "  Custodian source ref:          $CUSTODIAN_SOURCE_REF"
+        fi
     else
         _out "  Enabled: false"
     fi
@@ -841,6 +889,7 @@ review_configuration() {
 }
 
 configure() {
+    NODE_ROLE="validator"
     section "Configuration"
     configure_service_user
     configure_directories

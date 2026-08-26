@@ -283,9 +283,13 @@ install_reth_binary() {
     esac
 }
 
-install_validator_binaries() {
-    section "Installing validator binaries"
+install_node_binaries() {
+    section "Installing node binaries"
     install_summit_binary
     install_reth_binary
     success "Summit and seismic-reth installation methods completed."
+}
+
+install_validator_binaries() {
+    install_node_binaries
 }
