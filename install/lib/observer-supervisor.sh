@@ -88,8 +88,8 @@ prepare_observer_supervisor_logs() {
         || die "Supervisor log directory must not be a symbolic link: $SUPERVISOR_LOG_DIR"
     install -d -o root -g root -m 0755 "$SUPERVISOR_LOG_DIR"
     for name in "${names[@]}"; do
-        [[ ! -L "$SUPERVISOR_LOG_DIR/$name.log" \
-            && ! -L "$SUPERVISOR_LOG_DIR/$name.err" ]] \
+        [[ ! -L "$SUPERVISOR_LOG_DIR/$name.log" &&
+            ! -L "$SUPERVISOR_LOG_DIR/$name.err" ]] \
             || die "Supervisor log files must not be symbolic links for service: $name"
         touch "$SUPERVISOR_LOG_DIR/$name.log" "$SUPERVISOR_LOG_DIR/$name.err"
         chown root:root "$SUPERVISOR_LOG_DIR/$name.log" "$SUPERVISOR_LOG_DIR/$name.err"

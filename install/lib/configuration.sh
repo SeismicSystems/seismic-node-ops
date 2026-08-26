@@ -124,9 +124,9 @@ directory_conflicts_with_existing() {
         configured_path=${!configured_variable}
         [[ -n "$configured_path" ]] || continue
 
-        if [[ "$selected" == "$configured_path" \
-            || "$selected" == "$configured_path/"* \
-            || "$configured_path" == "$selected/"* ]]; then
+        if [[ "$selected" == "$configured_path" ||
+            "$selected" == "$configured_path/"* ||
+            "$configured_path" == "$selected/"* ]]; then
             error "$description and ${configured_descriptions[i]} must not be identical or nested."
             return 0
         fi

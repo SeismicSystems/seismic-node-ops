@@ -49,14 +49,13 @@ The installer does not configure cloud firewall, security-group, or host
 firewall rules. Configure the required inbound access before starting the
 validator.
 
-| Port | Protocol | Purpose | Required exposure |
-| --- | --- | --- | --- |
-| `30303` | TCP and UDP | seismic-reth P2P and discovery | Public |
-| `18551` | TCP and UDP | Summit consensus P2P | Public |
-| `80` | TCP | HTTP redirect and ACME challenge | Public when OpenResty is enabled |
-| `443` | TCP | OpenResty HTTPS endpoint | Public when OpenResty is enabled |
-| `7876` | TCP | Custodian council communication | Externally reachable when Custodian is enabled; restrict sources to intended council participants |
-
+| Port    | Protocol    | Purpose                          | Required exposure                                                                                 |
+| ------- | ----------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `30303` | TCP and UDP | seismic-reth P2P and discovery   | Public                                                                                            |
+| `18551` | TCP and UDP | Summit consensus P2P             | Public                                                                                            |
+| `80`    | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled                                                                  |
+| `443`   | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled                                                                  |
+| `7876`  | TCP         | Custodian council communication  | Externally reachable when Custodian is enabled; restrict sources to intended council participants |
 
 The installation log is written to:
 
@@ -105,15 +104,14 @@ When Centralized Custodian is enabled, the installer always uses its publicly
 known shared default root key and does not prompt for a custom key. This makes
 epoch-0 purpose keys public.
 
-The Custodian council listener defaults to `0.0.0.0:7876`. TCP port `7876`
-must be reachable from outside the node for key rotation. The generated
-validator Custodian program also receives the Summit key directory so it can
-authenticate and serve configured observer Custodians.
-Configure the cloud firewall, security group, and host firewall as needed, and
-restrict allowed source addresses to intended council participants and observer
-hosts rather than exposing the port more broadly than necessary. Observer root
-keys and plaintext epoch-key material transit the parent-Custodian connection;
-use a private network or TLS tunnel.
+The Custodian council listener defaults to `0.0.0.0:7876`. TCP port `7876` must
+be reachable from outside the node for key rotation. The generated validator
+Custodian program also receives the Summit key directory so it can authenticate
+and serve configured observer Custodians. Configure the cloud firewall, security
+group, and host firewall as needed, and restrict allowed source addresses to
+intended council participants and observer hosts rather than exposing the port
+more broadly than necessary. Observer root keys and plaintext epoch-key material
+transit the parent-Custodian connection; use a private network or TLS tunnel.
 
 For Summit, seismic-reth, summit-checkpointer, and Centralized Custodian,
 supported installation modes are:
@@ -137,13 +135,13 @@ corresponding services are started.
 
 The default persistent paths are:
 
-| State | Default path |
-| --- | --- |
-| Reth data | `/persistence/reth` |
-| Summit data | `/persistence/summit` |
-| Validator keys | `/persistence/keys` |
+| State                             | Default path               |
+| --------------------------------- | -------------------------- |
+| Reth data                         | `/persistence/reth`        |
+| Summit data                       | `/persistence/summit`      |
+| Validator keys                    | `/persistence/keys`        |
 | Checkpointer output, when enabled | `/persistence/checkpoints` |
-| Custodian data, when enabled | `/persistence/custodian` |
+| Custodian data, when enabled      | `/persistence/custodian`   |
 
 Important files derived from those paths include:
 
@@ -165,8 +163,8 @@ seismic-reth stores its MDBX execution database under:
 ```
 
 Treat this as persistent execution-layer state. Do not delete it during an
-installer rerun, and do not manually copy or modify the live database while
-Reth is running.
+installer rerun, and do not manually copy or modify the live database while Reth
+is running.
 
 When summit-checkpointer is enabled, it uses `mdbx_copy` to produce a consistent
 Reth database copy. `mdbx_copy` must be built from the same vendored libmdbx
@@ -272,8 +270,7 @@ exits to the encoded address.
 
 ### 4. Save the signed deposit response as JSON
 
-Run the following on the validator server while `summit-deposit-rpc` is
-running:
+Run the following on the validator server while `summit-deposit-rpc` is running:
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -313,16 +310,16 @@ Do not leave the signing endpoint running after obtaining the file.
 
 ### 6. Send the signature file to Seismic operations
 
-Send the `deposit-signature.json` to Seismic operations through a secure transfer channel.
+Send the `deposit-signature.json` to Seismic operations through a secure
+transfer channel.
 
 Do **not** send validator private-key files, a wallet private key, seed phrases,
 or JWT secrets. Do not publish the signature file in a public issue or source
 repository.
 
-Seismic operations will submit the staking transaction on your behalf. Wait
-for the transaction hash and confirmation that its receipt has status
-`0x1` before starting the full validator.
-
+Seismic operations will submit the staking transaction on your behalf. Wait for
+the transaction hash and confirmation that its receipt has status `0x1` before
+starting the full validator.
 
 ### 7. Start the validator after staking confirmation
 
@@ -357,19 +354,19 @@ operator-managed tunnel; they are not exposed directly on public interfaces.
 
 The configured routes are:
 
-| Public path | Local upstream | Notes |
-| --- | --- | --- |
-| `/` | `127.0.0.1:3000` | Grafana |
-| `/staking` | `/var/www/html/staking` | Static staking UI |
-| `/rpc` | `127.0.0.1:8545` | Reth HTTP JSON-RPC |
-| `/ws` | `127.0.0.1:8546` | Reth WebSocket JSON-RPC |
-| `/summit` | `127.0.0.1:3030` | Summit RPC |
-| `/ops` | `127.0.0.1:8552` | Signature-authenticated privileged Reth RPC |
-| `/prom-summit` | `127.0.0.1:9090` | Rate-limited and JWT-protected |
-| `/prom-reth` | `127.0.0.1:9001` | Rate-limited and JWT-protected |
+| Public path    | Local upstream          | Notes                                       |
+| -------------- | ----------------------- | ------------------------------------------- |
+| `/`            | `127.0.0.1:3000`        | Grafana                                     |
+| `/staking`     | `/var/www/html/staking` | Static staking UI                           |
+| `/rpc`         | `127.0.0.1:8545`        | Reth HTTP JSON-RPC                          |
+| `/ws`          | `127.0.0.1:8546`        | Reth WebSocket JSON-RPC                     |
+| `/summit`      | `127.0.0.1:3030`        | Summit RPC                                  |
+| `/ops`         | `127.0.0.1:8552`        | Signature-authenticated privileged Reth RPC |
+| `/prom-summit` | `127.0.0.1:9090`        | Rate-limited and JWT-protected              |
+| `/prom-reth`   | `127.0.0.1:9001`        | Rate-limited and JWT-protected              |
 
-The localhost-only `summit-deposit-rpc` service on port 3031 is deliberately
-not proxied.
+The localhost-only `summit-deposit-rpc` service on port 3031 is deliberately not
+proxied.
 
 ### Start or reload OpenResty
 

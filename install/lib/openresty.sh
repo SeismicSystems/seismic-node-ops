@@ -70,7 +70,7 @@ install_openresty() {
 
         printf '%s\n' \
             "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openresty.gpg] https://openresty.org/package/ubuntu $(lsb_release -sc) main" \
-            > /etc/apt/sources.list.d/openresty.list
+            >/etc/apt/sources.list.d/openresty.list
 
         if ! apt-get update >>"$LOG_FILE" 2>&1; then
             die "apt-get update failed after adding the OpenResty repository; see $LOG_FILE"
@@ -122,8 +122,8 @@ install_openresty() {
         "$LUA_RESTY_JWT_RELEASE" \
         "$LUA_RESTY_JWT_REVISION"
 
-    if [[ ! -f /etc/ssl/resty-auto-ssl-fallback.crt \
-        || ! -f /etc/ssl/resty-auto-ssl-fallback.key ]]; then
+    if [[ ! -f /etc/ssl/resty-auto-ssl-fallback.crt ||
+        ! -f /etc/ssl/resty-auto-ssl-fallback.key ]]; then
         info "Generating the OpenResty fallback TLS certificate..."
         if ! openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
             -subj '/CN=sni-support-required-for-valid-ssl' \

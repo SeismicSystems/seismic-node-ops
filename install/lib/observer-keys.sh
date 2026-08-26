@@ -55,8 +55,8 @@ configure_observer_bootstrapper_file() {
         return
     fi
 
-    [[ ! -L "$OBSERVER_BOOTSTRAPPERS_SOURCE" \
-        && -s "$OBSERVER_BOOTSTRAPPERS_SOURCE" ]] \
+    [[ ! -L "$OBSERVER_BOOTSTRAPPERS_SOURCE" &&
+        -s "$OBSERVER_BOOTSTRAPPERS_SOURCE" ]] \
         || die "Summit bootstrappers source became invalid: $OBSERVER_BOOTSTRAPPERS_SOURCE"
     run_as_service_user test -r "$OBSERVER_BOOTSTRAPPERS_SOURCE" \
         || die "Service user cannot read the Summit bootstrappers source: $OBSERVER_BOOTSTRAPPERS_SOURCE"
@@ -92,8 +92,8 @@ setup_summit_observer_keys() {
             || die "Observer keys are assigned to $existing_assignment, not $expected_assignment; use separate persistent paths for a different assignment."
         chown "$SERVICE_USER:$SERVICE_GROUP" "$OBSERVER_ASSIGNMENT_FILE"
         chmod 0600 "$OBSERVER_ASSIGNMENT_FILE"
-    elif [[ -e "$node_key" || -L "$node_key" \
-        || -e "$consensus_key" || -L "$consensus_key" ]]; then
+    elif [[ -e "$node_key" || -L "$node_key" ||
+        -e "$consensus_key" || -L "$consensus_key" ]]; then
         die "Summit keys exist without an observer assignment marker; refusing to reuse or replace them."
     else
         write_observer_assignment
@@ -122,8 +122,8 @@ setup_summit_observer_keys() {
             rm -rf -- "$staging"
             die "Observer Summit consensus-key generation failed; see $LOG_FILE"
         fi
-        if [[ ! -s "$staging/consensus_key.pem" \
-            || -L "$staging/consensus_key.pem" ]]; then
+        if [[ ! -s "$staging/consensus_key.pem" ||
+            -L "$staging/consensus_key.pem" ]]; then
             rm -rf -- "$staging"
             die "Summit did not produce an observer consensus key."
         fi

@@ -23,19 +23,19 @@ collect_system_packages() {
         SYSTEM_PACKAGES=(supervisor "${SYSTEM_PACKAGES[@]}")
     fi
 
-    if [[ "$SUMMIT_INSTALL_METHOD" == "source" \
-        || "$RETH_INSTALL_METHOD" == "source" \
-        || ("$INSTALL_CHECKPOINTER" == true \
-            && "$CHECKPOINTER_INSTALL_METHOD" == "source") \
-        || ("$INSTALL_CUSTODIAN" == true \
-            && "$CUSTODIAN_INSTALL_METHOD" == "source") ]]; then
+    if [[ "$SUMMIT_INSTALL_METHOD" == "source" ||
+        "$RETH_INSTALL_METHOD" == "source" ||
+        ("$INSTALL_CHECKPOINTER" == true &&
+        "$CHECKPOINTER_INSTALL_METHOD" == "source") ||
+        ("$INSTALL_CUSTODIAN" == true &&
+        "$CUSTODIAN_INSTALL_METHOD" == "source") ]]; then
         needs_source_build=true
         needs_git=true
     fi
 
-    if [[ "$INSTALL_CHECKPOINTER" == true \
-        && ("$RETH_INSTALL_METHOD" == "source" \
-            || -n "$RETH_SOURCE_DIR_FOR_MDBX") ]]; then
+    if [[ "$INSTALL_CHECKPOINTER" == true &&
+        ("$RETH_INSTALL_METHOD" == "source" ||
+        -n "$RETH_SOURCE_DIR_FOR_MDBX") ]]; then
         needs_mdbx_build=true
     fi
 

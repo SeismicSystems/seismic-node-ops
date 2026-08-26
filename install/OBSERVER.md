@@ -22,8 +22,7 @@ The installer is designed to avoid replacing persistent observer state:
 - Persistent directories must be absolute, non-root, and non-overlapping.
 - Existing Reth P2P keys are validated and preserved.
 - Existing observer consensus and parent node keys are preserved only when the
-  assignment marker matches the configured parent public key and observer
-  index.
+  assignment marker matches the configured parent public key and observer index.
 - Keys without an assignment marker, or a marker for another assignment, cause
   the installer to stop rather than reuse or replace them.
 - Existing observer Custodian root keys are preserved for verification against
@@ -71,13 +70,13 @@ The installation log is written to:
 The installer does not configure cloud firewall, security-group, or host
 firewall rules. Configure the required access before starting the observer.
 
-| Port | Protocol | Purpose | Required exposure |
-| --- | --- | --- | --- |
-| `30303` | TCP and UDP | seismic-reth P2P and discovery | Public |
-| `18551` or configured port | TCP and UDP | Summit observer P2P | Public |
-| `80` | TCP | HTTP redirect and ACME challenge | Public when OpenResty is enabled |
-| `443` | TCP | OpenResty HTTPS endpoint | Public when OpenResty is enabled |
-| `7876` or configured port | TCP | Observer Custodian council listener | Externally reachable when Custodian is enabled; restrict sources to intended participants |
+| Port                       | Protocol    | Purpose                             | Required exposure                                                                         |
+| -------------------------- | ----------- | ----------------------------------- | ----------------------------------------------------------------------------------------- |
+| `30303`                    | TCP and UDP | seismic-reth P2P and discovery      | Public                                                                                    |
+| `18551` or configured port | TCP and UDP | Summit observer P2P                 | Public                                                                                    |
+| `80`                       | TCP         | HTTP redirect and ACME challenge    | Public when OpenResty is enabled                                                          |
+| `443`                      | TCP         | OpenResty HTTPS endpoint            | Public when OpenResty is enabled                                                          |
+| `7876` or configured port  | TCP         | Observer Custodian council listener | Externally reachable when Custodian is enabled; restrict sources to intended participants |
 
 When observer Custodian is enabled, the observer also needs outbound TCP access
 to the configured parent validator Custodian council endpoint. The parent
@@ -190,13 +189,13 @@ Reth bootnode RPC used to discover an execution-layer enode.
 
 The default persistent paths are:
 
-| State | Default path |
-| --- | --- |
-| Reth data | `/persistence/reth` |
-| Summit observer data | `/persistence/summit` |
-| Observer and Reth keys | `/persistence/keys` |
+| State                             | Default path               |
+| --------------------------------- | -------------------------- |
+| Reth data                         | `/persistence/reth`        |
+| Summit observer data              | `/persistence/summit`      |
+| Observer and Reth keys            | `/persistence/keys`        |
 | Checkpointer output, when enabled | `/persistence/checkpoints` |
-| Custodian data, when enabled | `/persistence/custodian` |
+| Custodian data, when enabled      | `/persistence/custodian`   |
 
 Important files derived from those paths include:
 
@@ -237,9 +236,9 @@ required destination is:
 /persistence/keys/summit/node_key.pem
 ```
 
-The file must be owned by the configured service user and have mode `0600`.
-The Summit key directory must have mode `0700`. The private key must correspond
-to the parent public key entered during installation.
+The file must be owned by the configured service user and have mode `0600`. The
+Summit key directory must have mode `0700`. The private key must correspond to
+the parent public key entered during installation.
 
 Summit derives the observer's secondary P2P identity from the parent node key
 and observer index. The observer's separate consensus key does not make it a
@@ -254,8 +253,8 @@ seismic-reth stores its MDBX execution database under:
 ```
 
 Treat this as persistent execution-layer state. Do not delete it during an
-installer rerun, and do not manually copy or modify the live database while
-Reth is running.
+installer rerun, and do not manually copy or modify the live database while Reth
+is running.
 
 When summit-checkpointer is enabled, it uses `mdbx_copy` to produce a consistent
 Reth database copy. `mdbx_copy` must be built from the same vendored libmdbx
@@ -462,16 +461,16 @@ operator-managed tunnel.
 
 The configured routes are:
 
-| Public path | Local upstream | Notes |
-| --- | --- | --- |
-| `/` | `127.0.0.1:3000` | Grafana |
-| `/staking` | `/var/www/html/staking` | Static staking UI |
-| `/rpc` | `127.0.0.1:8545` | Reth HTTP JSON-RPC |
-| `/ws` | `127.0.0.1:8546` | Reth WebSocket JSON-RPC |
-| `/summit` | `127.0.0.1:3030` | Summit RPC |
-| `/ops` | `127.0.0.1:8552` | Signature-authenticated privileged Reth RPC |
-| `/prom-summit` | `127.0.0.1:9090` | Rate-limited and JWT-protected |
-| `/prom-reth` | `127.0.0.1:9001` | Rate-limited and JWT-protected |
+| Public path    | Local upstream          | Notes                                       |
+| -------------- | ----------------------- | ------------------------------------------- |
+| `/`            | `127.0.0.1:3000`        | Grafana                                     |
+| `/staking`     | `/var/www/html/staking` | Static staking UI                           |
+| `/rpc`         | `127.0.0.1:8545`        | Reth HTTP JSON-RPC                          |
+| `/ws`          | `127.0.0.1:8546`        | Reth WebSocket JSON-RPC                     |
+| `/summit`      | `127.0.0.1:3030`        | Summit RPC                                  |
+| `/ops`         | `127.0.0.1:8552`        | Signature-authenticated privileged Reth RPC |
+| `/prom-summit` | `127.0.0.1:9090`        | Rate-limited and JWT-protected              |
+| `/prom-reth`   | `127.0.0.1:9001`        | Rate-limited and JWT-protected              |
 
 The Summit admin RPC on loopback port `3031` is deliberately not proxied.
 
@@ -538,8 +537,8 @@ On a normal rerun, the installer:
 - Preserves Summit keys when the assignment marker matches.
 - Refuses to reuse keys for another parent or observer index.
 - Preserves an existing observer Custodian root key.
-- Replaces the installer-managed bootstrappers file from the accepted source,
-  or removes it when no source is configured.
+- Replaces the installer-managed bootstrappers file from the accepted source, or
+  removes it when no source is configured.
 - Replaces generated OpenResty and Supervisor configuration.
 - Leaves services stopped and does not reload Supervisor or OpenResty.
 
@@ -607,9 +606,9 @@ first troubleshooting step.
 
 ### Summit cannot start
 
-Check the Summit executable, genesis readability, assignment marker, both
-Summit key files, Engine API IPC availability, public P2P address, and Summit
-error log.
+Check the Summit executable, genesis readability, assignment marker, both Summit
+key files, Engine API IPC availability, public P2P address, and Summit error
+log.
 
 ### Observer cannot find Summit peers
 

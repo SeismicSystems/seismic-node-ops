@@ -22,8 +22,8 @@ print_missing_service_prerequisites() {
         warn "seismic-reth cannot start until its P2P key exists at $RETH_P2P_KEY_PATH."
         missing=true
     fi
-    if [[ ! -f "$SUMMIT_KEYS_DIR/node_key.pem" \
-        || ! -f "$SUMMIT_KEYS_DIR/consensus_key.pem" ]]; then
+    if [[ ! -f "$SUMMIT_KEYS_DIR/node_key.pem" ||
+        ! -f "$SUMMIT_KEYS_DIR/consensus_key.pem" ]]; then
         warn "Summit cannot start until node_key.pem and consensus_key.pem exist under $SUMMIT_KEYS_DIR."
         missing=true
     fi
