@@ -89,8 +89,13 @@ send it over an untrusted plaintext network.
 The following application ports must remain loopback-only:
 
 ```text
-3000 3030 3031 8545 8546 8552 8999 9001 9090
+3000 3030 3031 8545 8546 8552 8999 9001 9090 42069
 ```
+
+When summit-checkpointer is enabled, its direct listener remains on
+`127.0.0.1:42069`. When OpenResty is enabled, remote clients use the
+rate-limited and JWT-protected `/checkpointer` HTTPS route instead of direct
+access to that port.
 
 ### Supplied internal-testnet genesis
 
@@ -147,9 +152,13 @@ The current source-build defaults are:
 ```text
 Summit:       m/metrics
 seismic-reth: feat/purpose-key-rotation-reth
-Checkpointer: m/dynamic-epochs-and-ckpt-chain
+Checkpointer: main
 Custodian:    d/centralized-custodian
 ```
+
+A prebuilt or already-present deferred summit-checkpointer must support
+`--bind-address`; the generated Supervisor program uses it to keep the
+checkpointer RPC and snapshot server on `127.0.0.1:42069`.
 
 A prebuilt or already-present deferred observer Custodian is checked for these
 required options:
@@ -451,28 +460,32 @@ started manually again after a server or Supervisor restart.
 ## OpenResty public endpoint
 
 When enabled, OpenResty terminates HTTPS, obtains certificates through
-`lua-resty-auto-ssl`, applies per-client rate limiting, and proxies local Reth
-and Summit endpoints.
+`lua-resty-auto-ssl`, applies per-client rate limiting, and proxies local Reth,
+Summit, and summit-checkpointer endpoints.
 
-Reth HTTP and WebSocket RPC, Reth Ops RPC, Summit RPC, and metrics listeners
-remain bound to loopback whether or not OpenResty is enabled. When OpenResty is
-disabled, these endpoints are available only from the node itself or through an
-operator-managed tunnel.
+Reth HTTP and WebSocket RPC, Reth Ops RPC, Summit RPC, metrics listeners, and
+the summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
+enabled. When OpenResty is disabled, these endpoints are available only from the
+node itself or through an operator-managed tunnel.
 
 The configured routes are:
 
-| Public path    | Local upstream          | Notes                                       |
-| -------------- | ----------------------- | ------------------------------------------- |
-| `/`            | `127.0.0.1:3000`        | Grafana                                     |
-| `/staking`     | `/var/www/html/staking` | Static staking UI                           |
-| `/rpc`         | `127.0.0.1:8545`        | Reth HTTP JSON-RPC                          |
-| `/ws`          | `127.0.0.1:8546`        | Reth WebSocket JSON-RPC                     |
-| `/summit`      | `127.0.0.1:3030`        | Summit RPC                                  |
-| `/ops`         | `127.0.0.1:8552`        | Signature-authenticated privileged Reth RPC |
-| `/prom-summit` | `127.0.0.1:9090`        | Rate-limited and JWT-protected              |
-| `/prom-reth`   | `127.0.0.1:9001`        | Rate-limited and JWT-protected              |
+| Public path     | Local upstream          | Notes                                            |
+| --------------- | ----------------------- | ------------------------------------------------ |
+| `/`             | `127.0.0.1:3000`        | Grafana                                          |
+| `/staking`      | `/var/www/html/staking` | Static staking UI                                |
+| `/rpc`          | `127.0.0.1:8545`        | Reth HTTP JSON-RPC                               |
+| `/ws`           | `127.0.0.1:8546`        | Reth WebSocket JSON-RPC                          |
+| `/summit`       | `127.0.0.1:3030`        | Summit RPC                                       |
+| `/ops`          | `127.0.0.1:8552`        | Signature-authenticated privileged Reth RPC      |
+| `/checkpointer` | `127.0.0.1:42069`       | Rate-limited and JWT-protected RPC and snapshots |
+| `/prom-summit`  | `127.0.0.1:9090`        | Rate-limited and JWT-protected                   |
+| `/prom-reth`    | `127.0.0.1:9001`        | Rate-limited and JWT-protected                   |
 
-The Summit admin RPC on loopback port `3031` is deliberately not proxied.
+The `/checkpointer` route uses the same secret stored at
+`/etc/seismic/openresty-jwt-secret` as the protected metrics routes. Clients
+must send `Authorization: Bearer <token>`. The Summit admin RPC on loopback port
+`3031` remains deliberately unproxied.
 
 ### Start or reload OpenResty
 
@@ -510,6 +523,7 @@ Confirm that:
   `18551`.
 - Reth ports `8545`, `8546`, `8552`, and `9001` are loopback-only.
 - Summit ports `3030`, `3031`, and `9090` are loopback-only.
+- summit-checkpointer port `42069` is loopback-only when enabled.
 - Custodian listens on the configured council address when enabled.
 - OpenResty listens on ports `80` and `443` only when configured and explicitly
   started.

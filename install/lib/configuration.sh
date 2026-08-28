@@ -541,7 +541,7 @@ configure_checkpointer() {
     INSTALL_CHECKPOINTER=false
     CHECKPOINTER_TARGET_BIN="/usr/local/bin/summit-checkpointer"
     MDBX_COPY_TARGET_BIN="/usr/local/bin/mdbx_copy"
-    CHECKPOINTER_SOURCE_REF="m/dynamic-epochs-and-ckpt-chain"
+    CHECKPOINTER_SOURCE_REF="main"
     CHECKPOINTER_INSTALL_METHOD=""
     CHECKPOINTS_DIR=""
     CHECKPOINTER_BINARY=""
