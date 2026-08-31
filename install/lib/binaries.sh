@@ -132,6 +132,29 @@ prepare_source_root() {
         || die "Could not prepare source root: $source_root"
 }
 
+clean_reth_mdbx_build_artifacts() {
+    local source_dir=$1
+    local libmdbx_dir="$source_dir/crates/storage/libmdbx-rs/mdbx-sys/libmdbx"
+    local tracked_status
+    local status
+
+    [[ -d "$source_dir/.git" && -f "$libmdbx_dir/Makefile" ]] || return
+
+    tracked_status=$(run_as_service_user git -C "$source_dir" \
+        status --porcelain --untracked-files=no) \
+        || die "Could not inspect tracked seismic-reth source changes."
+    [[ -z "$tracked_status" ]] || return
+
+    status=$(run_as_service_user git -C "$source_dir" status --porcelain) \
+        || die "Could not inspect generated seismic-reth build artifacts."
+    [[ -n "$status" ]] || return
+
+    info "Cleaning generated libmdbx artifacts from the seismic-reth checkout..."
+    run_as_service_user make -C "$libmdbx_dir" clean \
+        >>"$LOG_FILE" 2>&1 \
+        || die "Could not clean generated seismic-reth libmdbx artifacts; see $LOG_FILE"
+}
+
 prepare_source_checkout() {
     local description=$1
     local repository=$2
@@ -163,6 +186,10 @@ prepare_source_checkout() {
             || die "Could not read $description Git origin."
         [[ "$origin" == "$repository" ]] \
             || die "$description checkout has unexpected origin: $origin"
+
+        if [[ "$description" == "seismic-reth" ]]; then
+            clean_reth_mdbx_build_artifacts "$source_dir"
+        fi
 
         status=$(run_as_service_user git -C "$source_dir" status --porcelain) \
             || die "Could not inspect the $description working tree."

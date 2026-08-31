@@ -106,6 +106,12 @@ install_mdbx_copy() {
     if ! "$MDBX_COPY_TARGET_BIN" -V >>"$LOG_FILE" 2>&1; then
         die "mdbx_copy validation failed; see $LOG_FILE"
     fi
+
+    info "Cleaning generated libmdbx build artifacts..."
+    run_as_service_user make -C "$libmdbx_dir" clean \
+        >>"$LOG_FILE" 2>&1 \
+        || die "Could not clean generated libmdbx build artifacts; see $LOG_FILE"
+
     success "Reth-compatible mdbx_copy installed from $reth_source_dir"
 }
 
