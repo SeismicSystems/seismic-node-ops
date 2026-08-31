@@ -190,16 +190,44 @@ render_checkpointer_toml() {
 }
 
 find_conflicting_supervisor_config() {
+    local config_dir
     local path
+    local found=false
 
+    config_dir=$(dirname -- "$SUPERVISOR_CONFIG_PATH")
     while IFS= read -r -d '' path; do
         [[ "$path" == "$SUPERVISOR_CONFIG_PATH" ]] && continue
         if grep -Eq '^\[program:(reth|summit|summit-observer|summit-observer-checkpoint|summit-deposit-rpc|checkpointer|custodian)\]' "$path"; then
             printf '%s\n' "$path"
-            return 0
+            found=true
         fi
-    done < <(find /etc/supervisor/conf.d -maxdepth 1 -type f -print0)
-    return 1
+    done < <(find "$config_dir" -maxdepth 1 -type f -print0)
+
+    [[ "$found" == true ]]
+}
+
+replace_conflicting_supervisor_config() {
+    local conflicts=()
+    local path
+
+    mapfile -t conflicts < <(find_conflicting_supervisor_config || true)
+    ((${#conflicts[@]} > 0)) || return
+
+    warn "Existing Supervisor files define Seismic services:"
+    for path in "${conflicts[@]}"; do
+        warn "  $path"
+    done
+
+    if ! confirm "Replace these files with $SUPERVISOR_CONFIG_PATH?"; then
+        die "Existing Supervisor configuration was not replaced."
+    fi
+
+    for path in "${conflicts[@]}"; do
+        [[ ! -L "$path" && -f "$path" ]] \
+            || die "Conflicting Supervisor path changed before replacement: $path"
+        info "Removing conflicting Supervisor configuration: $path"
+        rm -f -- "$path"
+    done
 }
 
 prepare_supervisor_logs() {
@@ -224,7 +252,6 @@ prepare_supervisor_logs() {
 
 deploy_supervisor_configuration() {
     local staging
-    local conflict
 
     section "Deploying Supervisor configuration"
     validate_supervisor_runtime_inputs
@@ -235,9 +262,7 @@ deploy_supervisor_configuration() {
         die "Bootnode RPC validation failed after configuration acceptance."
     fi
 
-    conflict=$(find_conflicting_supervisor_config || true)
-    [[ -z "$conflict" ]] \
-        || die "Another Supervisor file already defines Seismic services: $conflict"
+    replace_conflicting_supervisor_config
     [[ ! -L "$SUPERVISOR_CONFIG_PATH" ]] \
         || die "Supervisor target must not be a symbolic link: $SUPERVISOR_CONFIG_PATH"
     [[ ! -L "$CHECKPOINTER_CONFIG_PATH" ]] \

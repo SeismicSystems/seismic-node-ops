@@ -99,7 +99,6 @@ prepare_observer_supervisor_logs() {
 
 deploy_observer_supervisor_configuration() {
     local staging
-    local conflict
 
     section "Deploying observer Supervisor configuration"
     validate_observer_supervisor_runtime_inputs
@@ -110,9 +109,7 @@ deploy_observer_supervisor_configuration() {
         die "Bootnode RPC validation failed after configuration acceptance."
     fi
 
-    conflict=$(find_conflicting_supervisor_config || true)
-    [[ -z "$conflict" ]] \
-        || die "Another Supervisor file already defines Seismic services: $conflict"
+    replace_conflicting_supervisor_config
     [[ ! -L "$SUPERVISOR_CONFIG_PATH" ]] \
         || die "Supervisor target must not be a symbolic link: $SUPERVISOR_CONFIG_PATH"
     [[ ! -L "$CHECKPOINTER_CONFIG_PATH" ]] \
