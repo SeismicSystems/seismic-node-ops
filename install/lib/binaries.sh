@@ -138,16 +138,16 @@ clean_reth_mdbx_build_artifacts() {
     local tracked_status
     local status
 
-    [[ -d "$source_dir/.git" && -f "$libmdbx_dir/Makefile" ]] || return
+    [[ -d "$source_dir/.git" && -f "$libmdbx_dir/Makefile" ]] || return 0
 
     tracked_status=$(run_as_service_user git -C "$source_dir" \
         status --porcelain --untracked-files=no) \
         || die "Could not inspect tracked seismic-reth source changes."
-    [[ -z "$tracked_status" ]] || return
+    [[ -z "$tracked_status" ]] || return 0
 
     status=$(run_as_service_user git -C "$source_dir" status --porcelain) \
         || die "Could not inspect generated seismic-reth build artifacts."
-    [[ -n "$status" ]] || return
+    [[ -n "$status" ]] || return 0
 
     info "Cleaning generated libmdbx artifacts from the seismic-reth checkout..."
     run_as_service_user make -C "$libmdbx_dir" clean \

@@ -211,7 +211,7 @@ replace_conflicting_supervisor_config() {
     local path
 
     mapfile -t conflicts < <(find_conflicting_supervisor_config || true)
-    ((${#conflicts[@]} > 0)) || return
+    ((${#conflicts[@]} > 0)) || return 0
 
     warn "Existing Supervisor files define Seismic services:"
     for path in "${conflicts[@]}"; do

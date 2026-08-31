@@ -6,7 +6,7 @@
 # keeping observer assignment, parent-key provisioning, and Custodian parent
 # synchronization explicit. It never starts node services.
 
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
@@ -14,6 +14,7 @@ LOG_FILE="${LOG_FILE:-/var/log/seismic-observer-install.log}"
 
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
+trap 'unexpected_error "$?" "$LINENO"' ERR
 # shellcheck source=lib/preflight.sh
 source "$SCRIPT_DIR/lib/preflight.sh"
 # shellcheck source=lib/packages.sh

@@ -31,3 +31,12 @@ die() {
     error "$*"
     exit 1
 }
+
+unexpected_error() {
+    local exit_code=$1
+    local line=$2
+
+    trap - ERR
+    error "Installer stopped unexpectedly at line $line with exit status $exit_code. See $LOG_FILE."
+    exit "$exit_code"
+}
