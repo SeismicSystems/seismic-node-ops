@@ -6,6 +6,7 @@ DEFAULT_SECRET_PATH="/etc/seismic/openresty-jwt-secret"
 SECRET_PATH_FILE=${OPENRESTY_JWT_SECRET_PATH_FILE:-/etc/seismic/openresty-jwt-secret.path}
 SECRET_PATH=""
 TTL_SECONDS=3600
+MAX_TTL_SECONDS=15552000
 SUBJECT="seismic-operator"
 
 usage() {
@@ -17,7 +18,8 @@ The token is printed to standard output; the JWT secret is never printed.
 
 Options:
   --secret-path PATH    Override the installed JWT secret path
-  --ttl-seconds NUMBER  Token lifetime from 1 to 86400 seconds (default: 3600)
+  --ttl-seconds NUMBER  Token lifetime from 1 to $MAX_TTL_SECONDS seconds, or -1
+                        for no expiration (default: 3600)
   --subject SUBJECT     JWT subject claim (default: seismic-operator)
   --help                Show this help
 
@@ -142,9 +144,12 @@ done
 command -v python3 >/dev/null 2>&1 || die "python3 is required."
 command -v realpath >/dev/null 2>&1 || die "realpath is required."
 
-[[ "$TTL_SECONDS" =~ ^[1-9][0-9]*$ ]] \
-    || die "--ttl-seconds must be a positive integer."
-((TTL_SECONDS <= 86400)) || die "--ttl-seconds must not exceed 86400."
+if [[ "$TTL_SECONDS" != "-1" ]]; then
+    [[ "$TTL_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+        || die "--ttl-seconds must be -1 or a positive integer."
+    ((TTL_SECONDS <= MAX_TTL_SECONDS)) \
+        || die "--ttl-seconds must not exceed $MAX_TTL_SECONDS (180 days)."
+fi
 [[ -n "$SUBJECT" ]] || die "--subject must not be empty."
 ((${#SUBJECT} <= 128)) || die "--subject must not exceed 128 characters."
 contains_control_characters "$SUBJECT" && die "--subject must not contain control characters."
@@ -195,8 +200,9 @@ payload = {
     "sub": subject,
     "iat": now,
     "nbf": now - 5,
-    "exp": now + ttl_seconds,
 }
+if ttl_seconds != -1:
+    payload["exp"] = now + ttl_seconds
 encoded_header = base64url(json.dumps(header, separators=(",", ":")).encode())
 encoded_payload = base64url(json.dumps(payload, separators=(",", ":")).encode())
 signing_input = f"{encoded_header}.{encoded_payload}".encode()
