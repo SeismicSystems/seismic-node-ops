@@ -158,6 +158,7 @@ print_observer_configuration_summary() {
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
         _out "  https://$DOMAIN"
         _out "  Rate limit: $RATE_LIMIT_RPS requests/sec, burst $RATE_LIMIT_BURST"
+        _out "  JWT secret: $OPENRESTY_JWT_SECRET_PATH (contents hidden)"
     else
         _out "  Disabled"
     fi

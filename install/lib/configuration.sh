@@ -433,6 +433,7 @@ configure_public_endpoint() {
     DOMAIN=""
     RATE_LIMIT_RPS=""
     RATE_LIMIT_BURST=""
+    OPENRESTY_JWT_SECRET_PATH=${OPENRESTY_JWT_SECRET_PATH:-/etc/seismic/openresty-jwt-secret}
 
     if ! confirm "Configure a public HTTPS endpoint with OpenResty?"; then
         _out "Public HTTPS endpoint: disabled"
@@ -440,6 +441,12 @@ configure_public_endpoint() {
     fi
 
     CONFIGURE_PUBLIC_ENDPOINT=true
+    if [[ "${OPENRESTY_JWT_SECRET_PATH_CONFIGURED:-false}" != true ]] \
+        && load_persisted_openresty_jwt_secret_path; then
+        OPENRESTY_JWT_SECRET_PATH=$PERSISTED_OPENRESTY_JWT_SECRET_PATH
+        info "Using the previously installed OpenResty JWT secret path as the default."
+    fi
+
     while true; do
         prompt DOMAIN "Public domain" ""
         DOMAIN=${DOMAIN,,}
@@ -476,9 +483,16 @@ configure_public_endpoint() {
         break
     done
 
+    configure_file_path \
+        OPENRESTY_JWT_SECRET_PATH \
+        "OpenResty JWT secret file" \
+        "$OPENRESTY_JWT_SECRET_PATH"
+    OPENRESTY_JWT_SECRET_PATH_CONFIGURED=true
+
     _out "Public HTTPS endpoint enabled: $CONFIGURE_PUBLIC_ENDPOINT"
     success "Public HTTPS endpoint configured: https://$DOMAIN"
     _out "Rate limit: $RATE_LIMIT_RPS requests/sec, burst $RATE_LIMIT_BURST"
+    _out "JWT secret: $OPENRESTY_JWT_SECRET_PATH (contents hidden)"
 }
 
 validate_http_url() {

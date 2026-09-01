@@ -313,17 +313,48 @@ configuration-file path and defaults to:
 The generated Supervisor command uses the selected path. Its parent directory
 hierarchy must be root-owned and must not be group- or world-writable.
 
-When OpenResty is enabled, the installer writes:
+When OpenResty is enabled, the installer prompts for an absolute JWT-secret file
+path and defaults to:
+
+```text
+/etc/seismic/openresty-jwt-secret
+```
+
+It also writes:
 
 ```text
 /usr/local/openresty/nginx/conf/nginx.conf
 /usr/local/openresty/nginx/lua/rate_limit.lua
 /usr/local/openresty/nginx/lua/jwt_auth.lua
-/etc/seismic/openresty-jwt-secret
 /etc/logrotate.d/openresty
 ```
 
-The JWT secret is root-owned and is not printed by the installer.
+The generated JWT middleware reads the selected secret path. The secret is
+installed as `root:nogroup` with mode `0640` and is not printed by the
+installer. Its parent hierarchy must be root-owned, non-writable by group or
+others, and traversable by the OpenResty worker user. Reruns reuse a secret
+already at the selected path. When changing from the default to a custom path
+that does not yet exist, the installer copies the existing default secret
+without removing the old file; remove it only after validating the new OpenResty
+configuration.
+
+The installer records the selected path in:
+
+```text
+/etc/seismic/openresty-jwt-secret.path
+```
+
+This root-owned metadata file contains only the path, not the secret. Installer
+reruns use it as the JWT-secret prompt default. Generate a one-hour bearer token
+from the repository root with:
+
+```bash
+TOKEN=$(sudo ./tools/generate-openresty-jwt.sh)
+```
+
+The script reads the metadata file, falls back to the standard secret path for
+older installations, and prints only the token. Use `--secret-path` to override
+the lookup or `--ttl-seconds` to select a lifetime up to 86400 seconds.
 
 Reth HTTP, WebSocket, Ops, and metrics endpoints and Summit RPC, admin RPC, and
 metrics endpoints bind to loopback whether or not OpenResty is enabled.
@@ -486,10 +517,11 @@ The configured routes are:
 | `/prom-summit`  | `127.0.0.1:9090`        | Rate-limited and JWT-protected                   |
 | `/prom-reth`    | `127.0.0.1:9001`        | Rate-limited and JWT-protected                   |
 
-The `/checkpointer` route uses the same secret stored at
-`/etc/seismic/openresty-jwt-secret` as the protected metrics routes. Clients
-must send `Authorization: Bearer <token>`. The Summit admin RPC on loopback port
-`3031` remains deliberately unproxied.
+The `/checkpointer` route uses the same secret at the selected JWT-secret path
+as the protected metrics routes. The default path is
+`/etc/seismic/openresty-jwt-secret`. Clients must send
+`Authorization: Bearer <token>`. The Summit admin RPC on loopback port `3031`
+remains deliberately unproxied.
 
 ### Start or reload OpenResty
 

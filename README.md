@@ -25,6 +25,12 @@ install/install-observer.sh
 
 See the **[Observer Installer and First-Start Guide](install/OBSERVER.md)**.
 
+Generate short-lived bearer tokens for OpenResty-protected endpoints with:
+
+```text
+tools/generate-openresty-jwt.sh
+```
+
 The Summit internal-testnet genesis file is provided at:
 
 ```text
@@ -40,13 +46,14 @@ Run the same checks locally from the repository root. ShellCheck must be
 installed; Go and Node.js with `npx` are also required.
 
 ```bash
-go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install
+go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install tools
 
 (
   cd install
   shellcheck -x \
     install-validator.sh \
-    install-observer.sh
+    install-observer.sh \
+    ../tools/generate-openresty-jwt.sh
 )
 
 npx --yes prettier@3.6.2 --check '**/*.md'

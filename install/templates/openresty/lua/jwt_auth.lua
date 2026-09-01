@@ -1,6 +1,6 @@
 local jwt = require "resty.jwt"
 
-local secret_file, secret_error = io.open("/etc/seismic/openresty-jwt-secret", "r")
+local secret_file, secret_error = io.open("OPENRESTY_JWT_SECRET_PATH_PLACEHOLDER", "r")
 if not secret_file then
     ngx.log(ngx.ERR, "could not open JWT secret: ", secret_error)
     return ngx.exit(500)
