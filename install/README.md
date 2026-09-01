@@ -257,7 +257,10 @@ TOKEN=$(sudo ./tools/generate-openresty-jwt.sh)
 
 The script reads the metadata file, falls back to the standard secret path for
 older installations, and prints only the token. Use `--secret-path` to override
-the lookup or `--ttl-seconds` to select a lifetime up to 86400 seconds.
+the lookup or `--ttl-seconds` to select a lifetime up to 15552000 seconds (180
+days). Setting `--ttl-seconds -1` omits the expiration claim; that token remains
+valid until the shared JWT secret is rotated, so store and use it as a permanent
+credential.
 
 ## First validator startup
 

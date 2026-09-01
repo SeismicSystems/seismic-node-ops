@@ -25,7 +25,7 @@ install/install-observer.sh
 
 See the **[Observer Installer and First-Start Guide](install/OBSERVER.md)**.
 
-Generate short-lived bearer tokens for OpenResty-protected endpoints with:
+Generate bearer tokens for OpenResty-protected endpoints with:
 
 ```text
 tools/generate-openresty-jwt.sh
