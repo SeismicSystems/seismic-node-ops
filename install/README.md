@@ -11,6 +11,9 @@ Supervisor programs, and optional OpenResty endpoint. It deliberately does not
 start the validator services. Follow the first-start procedure in this document
 after installation.
 
+For an observer node, use `install/install-observer.sh` and follow the separate
+**[Observer Installer and First-Start Guide](OBSERVER.md)**.
+
 ## Safety model
 
 The installer is designed to avoid replacing persistent validator state:
@@ -46,14 +49,18 @@ The installer does not configure cloud firewall, security-group, or host
 firewall rules. Configure the required inbound access before starting the
 validator.
 
-| Port | Protocol | Purpose | Required exposure |
-| --- | --- | --- | --- |
-| `30303` | TCP and UDP | seismic-reth P2P and discovery | Public |
-| `18551` | TCP and UDP | Summit consensus P2P | Public |
-| `80` | TCP | HTTP redirect and ACME challenge | Public when OpenResty is enabled |
-| `443` | TCP | OpenResty HTTPS endpoint | Public when OpenResty is enabled |
-| `7876` | TCP | Custodian council communication | Externally reachable when Custodian is enabled; restrict sources to intended council participants |
+| Port    | Protocol    | Purpose                          | Required exposure                                                                                 |
+| ------- | ----------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `30303` | TCP and UDP | seismic-reth P2P and discovery   | Public                                                                                            |
+| `18551` | TCP and UDP | Summit consensus P2P             | Public                                                                                            |
+| `80`    | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled                                                                  |
+| `443`   | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled                                                                  |
+| `7876`  | TCP         | Custodian council communication  | Externally reachable when Custodian is enabled; restrict sources to intended council participants |
 
+When summit-checkpointer is enabled, its RPC and snapshot server binds only to
+`127.0.0.1:42069`. Do not expose TCP port `42069` directly through a firewall.
+When OpenResty is enabled, it provides the rate-limited and JWT-protected
+`/checkpointer` HTTPS route instead.
 
 The installation log is written to:
 
@@ -102,14 +109,17 @@ When Centralized Custodian is enabled, the installer always uses its publicly
 known shared default root key and does not prompt for a custom key. This makes
 epoch-0 purpose keys public.
 
-The Custodian council listener defaults to `0.0.0.0:7876`. TCP port `7876`
-must be reachable from outside the node for key rotation.
-Configure the cloud firewall, security group, and host firewall as
-needed, and restrict allowed source addresses to the intended council
-participants rather than exposing the port more broadly than necessary.
+The Custodian council listener defaults to `0.0.0.0:7876`. TCP port `7876` must
+be reachable from outside the node for key rotation. The generated validator
+Custodian program also receives the Summit key directory so it can authenticate
+and serve configured observer Custodians. Configure the cloud firewall, security
+group, and host firewall as needed, and restrict allowed source addresses to
+intended council participants and observer hosts rather than exposing the port
+more broadly than necessary. Observer root keys and plaintext epoch-key material
+transit the parent-Custodian connection; use a private network or TLS tunnel.
 
-For Summit, seismic-reth, and summit-checkpointer, supported installation modes
-are:
+For Summit, seismic-reth, summit-checkpointer, and Centralized Custodian,
+supported installation modes are:
 
 1. Install a supplied prebuilt executable.
 2. Build from source during installation.
@@ -120,22 +130,26 @@ The current source-build defaults are:
 ```text
 Summit:       m/metrics
 seismic-reth: feat/purpose-key-rotation-reth
+Checkpointer: main
+Custodian:    d/centralized-custodian
 ```
 
 Deferred binaries must be installed at the configured target paths before the
-corresponding services are started.
+corresponding services are started. A prebuilt or already-present deferred
+summit-checkpointer must support `--bind-address`; the generated Supervisor
+program uses it to keep the checkpointer RPC on loopback.
 
 ## Persistent layout
 
 The default persistent paths are:
 
-| State | Default path |
-| --- | --- |
-| Reth data | `/persistence/reth` |
-| Summit data | `/persistence/summit` |
-| Validator keys | `/persistence/keys` |
+| State                             | Default path               |
+| --------------------------------- | -------------------------- |
+| Reth data                         | `/persistence/reth`        |
+| Summit data                       | `/persistence/summit`      |
+| Validator keys                    | `/persistence/keys`        |
 | Checkpointer output, when enabled | `/persistence/checkpoints` |
-| Custodian data, when enabled | `/persistence/custodian` |
+| Custodian data, when enabled      | `/persistence/custodian`   |
 
 Important files derived from those paths include:
 
@@ -157,8 +171,8 @@ seismic-reth stores its MDBX execution database under:
 ```
 
 Treat this as persistent execution-layer state. Do not delete it during an
-installer rerun, and do not manually copy or modify the live database while
-Reth is running.
+installer rerun, and do not manually copy or modify the live database while Reth
+is running.
 
 When summit-checkpointer is enabled, it uses `mdbx_copy` to produce a consistent
 Reth database copy. `mdbx_copy` must be built from the same vendored libmdbx
@@ -192,17 +206,58 @@ enabled. Supervisor logs are written under:
 /var/log/seismic-validator/
 ```
 
-When OpenResty is enabled, the installer writes:
+When summit-checkpointer is enabled, the installer prompts for an absolute
+configuration-file path and defaults to:
+
+```text
+/etc/seismic/summit-checkpointer.toml
+```
+
+The generated Supervisor command uses the selected path. Its parent directory
+hierarchy must be root-owned and must not be group- or world-writable.
+
+When OpenResty is enabled, the installer prompts for an absolute JWT-secret file
+path and defaults to:
+
+```text
+/etc/seismic/openresty-jwt-secret
+```
+
+It also writes:
 
 ```text
 /usr/local/openresty/nginx/conf/nginx.conf
 /usr/local/openresty/nginx/lua/rate_limit.lua
 /usr/local/openresty/nginx/lua/jwt_auth.lua
-/etc/seismic/openresty-jwt-secret
 /etc/logrotate.d/openresty
 ```
 
-The JWT secret is root-owned and is not printed by the installer.
+The generated JWT middleware reads the selected secret path. The secret is
+installed as `root:nogroup` with mode `0640` and is not printed by the
+installer. Its parent hierarchy must be root-owned, non-writable by group or
+others, and traversable by the OpenResty worker user. Reruns reuse a secret
+already at the selected path. When changing from the default to a custom path
+that does not yet exist, the installer copies the existing default secret
+without removing the old file; remove it only after validating the new OpenResty
+configuration.
+
+The installer records the selected path in:
+
+```text
+/etc/seismic/openresty-jwt-secret.path
+```
+
+This root-owned metadata file contains only the path, not the secret. Installer
+reruns use it as the JWT-secret prompt default. Generate a one-hour bearer token
+from the repository root with:
+
+```bash
+TOKEN=$(sudo ./tools/generate-openresty-jwt.sh)
+```
+
+The script reads the metadata file, falls back to the standard secret path for
+older installations, and prints only the token. Use `--secret-path` to override
+the lookup or `--ttl-seconds` to select a lifetime up to 86400 seconds.
 
 ## First validator startup
 
@@ -264,8 +319,7 @@ exits to the encoded address.
 
 ### 4. Save the signed deposit response as JSON
 
-Run the following on the validator server while `summit-deposit-rpc` is
-running:
+Run the following on the validator server while `summit-deposit-rpc` is running:
 
 ```bash
 curl --fail-with-body --silent --show-error \
@@ -305,16 +359,16 @@ Do not leave the signing endpoint running after obtaining the file.
 
 ### 6. Send the signature file to Seismic operations
 
-Send the `deposit-signature.json` to Seismic operations through a secure transfer channel.
+Send the `deposit-signature.json` to Seismic operations through a secure
+transfer channel.
 
 Do **not** send validator private-key files, a wallet private key, seed phrases,
 or JWT secrets. Do not publish the signature file in a public issue or source
 repository.
 
-Seismic operations will submit the staking transaction on your behalf. Wait
-for the transaction hash and confirmation that its receipt has status
-`0x1` before starting the full validator.
-
+Seismic operations will submit the staking transaction on your behalf. Wait for
+the transaction hash and confirmation that its receipt has status `0x1` before
+starting the full validator.
 
 ### 7. Start the validator after staking confirmation
 
@@ -339,29 +393,34 @@ started manually again after a server or Supervisor restart.
 ## OpenResty public endpoint
 
 When enabled, OpenResty terminates HTTPS, obtains certificates through
-`lua-resty-auto-ssl`, applies per-client rate limiting, and proxies local Reth
-and Summit endpoints.
+`lua-resty-auto-ssl`, applies per-client rate limiting, and proxies local Reth,
+Summit, and summit-checkpointer endpoints.
 
-Reth HTTP and WebSocket RPC, Summit RPC, and their metrics listeners remain
-bound to loopback whether or not OpenResty is enabled. When OpenResty is
-disabled, these endpoints are available only from the node itself or through an
-operator-managed tunnel; they are not exposed directly on public interfaces.
+Reth HTTP and WebSocket RPC, Summit RPC, their metrics listeners, and the
+summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
+enabled. When OpenResty is disabled, these endpoints are available only from the
+node itself or through an operator-managed tunnel; they are not exposed directly
+on public interfaces.
 
 The configured routes are:
 
-| Public path | Local upstream | Notes |
-| --- | --- | --- |
-| `/` | `127.0.0.1:3000` | Grafana |
-| `/staking` | `/var/www/html/staking` | Static staking UI |
-| `/rpc` | `127.0.0.1:8545` | Reth HTTP JSON-RPC |
-| `/ws` | `127.0.0.1:8546` | Reth WebSocket JSON-RPC |
-| `/summit` | `127.0.0.1:3030` | Summit RPC |
-| `/ops` | `127.0.0.1:8552` | Signature-authenticated privileged Reth RPC |
-| `/prom-summit` | `127.0.0.1:9090` | Rate-limited and JWT-protected |
-| `/prom-reth` | `127.0.0.1:9001` | Rate-limited and JWT-protected |
+| Public path     | Local upstream          | Notes                                            |
+| --------------- | ----------------------- | ------------------------------------------------ |
+| `/`             | `127.0.0.1:3000`        | Grafana                                          |
+| `/staking`      | `/var/www/html/staking` | Static staking UI                                |
+| `/rpc`          | `127.0.0.1:8545`        | Reth HTTP JSON-RPC                               |
+| `/ws`           | `127.0.0.1:8546`        | Reth WebSocket JSON-RPC                          |
+| `/summit`       | `127.0.0.1:3030`        | Summit RPC                                       |
+| `/ops`          | `127.0.0.1:8552`        | Signature-authenticated privileged Reth RPC      |
+| `/checkpointer` | `127.0.0.1:42069`       | Rate-limited and JWT-protected RPC and snapshots |
+| `/prom-summit`  | `127.0.0.1:9090`        | Rate-limited and JWT-protected                   |
+| `/prom-reth`    | `127.0.0.1:9001`        | Rate-limited and JWT-protected                   |
 
-The localhost-only `summit-deposit-rpc` service on port 3031 is deliberately
-not proxied.
+The `/checkpointer` route uses the same secret at the selected JWT-secret path
+as the protected metrics routes. The default path is
+`/etc/seismic/openresty-jwt-secret`. Clients must send
+`Authorization: Bearer <token>`. The localhost-only `summit-deposit-rpc` service
+on port `3031` remains deliberately unproxied.
 
 ### Start or reload OpenResty
 
@@ -388,6 +447,14 @@ intentionally changing them.
 On a normal rerun, the installer preserves existing validator keys and state,
 then replaces its generated OpenResty and Supervisor configuration. It does not
 start or reload those services.
+
+For source installations, new checkouts fetch all remote branches. On a rerun,
+the installer validates the origin and clean working tree, configures `origin`
+to fetch all branches, fetches and prunes remote references, checks out or
+creates the configured local branch, and merges `origin/<branch>` with
+`--ff-only` before rebuilding. Dirty, diverged, or force-pushed checkouts are
+rejected rather than reset. The installer does not update its own
+`seismic-node-ops` checkout.
 
 Before applying a later `supervisorctl update`, inspect running services:
 

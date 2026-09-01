@@ -8,25 +8,34 @@ collect_system_packages() {
     local needs_git=false
 
     SYSTEM_PACKAGES=(
-        supervisor
         curl
         jq
         ca-certificates
         openssl
     )
 
-    if [[ "$SUMMIT_INSTALL_METHOD" == "source" \
-        || "$RETH_INSTALL_METHOD" == "source" \
-        || ("$INSTALL_CHECKPOINTER" == true \
-            && "$CHECKPOINTER_INSTALL_METHOD" == "source") \
-        || "$INSTALL_CUSTODIAN" == true ]]; then
+    # Preserve the package and daemon lifecycle on installer reruns. Installing
+    # Supervisor for the first time is safe because Seismic program files have
+    # not been deployed yet; an already-installed package is deliberately not
+    # upgraded or reinstalled here.
+    if ! dpkg-query -W -f='${Status}' supervisor 2>/dev/null \
+        | grep -q '^install ok installed$'; then
+        SYSTEM_PACKAGES=(supervisor "${SYSTEM_PACKAGES[@]}")
+    fi
+
+    if [[ "$SUMMIT_INSTALL_METHOD" == "source" ||
+        "$RETH_INSTALL_METHOD" == "source" ||
+        ("$INSTALL_CHECKPOINTER" == true &&
+        "$CHECKPOINTER_INSTALL_METHOD" == "source") ||
+        ("$INSTALL_CUSTODIAN" == true &&
+        "$CUSTODIAN_INSTALL_METHOD" == "source") ]]; then
         needs_source_build=true
         needs_git=true
     fi
 
-    if [[ "$INSTALL_CHECKPOINTER" == true \
-        && ("$RETH_INSTALL_METHOD" == "source" \
-            || -n "$RETH_SOURCE_DIR_FOR_MDBX") ]]; then
+    if [[ "$INSTALL_CHECKPOINTER" == true &&
+        ("$RETH_INSTALL_METHOD" == "source" ||
+        -n "$RETH_SOURCE_DIR_FOR_MDBX") ]]; then
         needs_mdbx_build=true
     fi
 

@@ -11,7 +11,10 @@ LUA_RESTY_JWT_RELEASE="v0.1.11"
 LUA_RESTY_JWT_REVISION="ee1d024071f872e2b5a66eaaf9aeaf86c5bab3ed"
 
 LUA_RESTY_AUTO_SSL_VERSION="0.13.1-1"
-OPENRESTY_JWT_SECRET_PATH="/etc/seismic/openresty-jwt-secret"
+DEFAULT_OPENRESTY_JWT_SECRET_PATH="/etc/seismic/openresty-jwt-secret"
+OPENRESTY_JWT_SECRET_PATH_FILE="/etc/seismic/openresty-jwt-secret.path"
+OPENRESTY_JWT_SECRET_PATH="$DEFAULT_OPENRESTY_JWT_SECRET_PATH"
+PERSISTED_OPENRESTY_JWT_SECRET_PATH=""
 
 install_pinned_openresty_lua_library() {
     local description=$1
@@ -70,7 +73,7 @@ install_openresty() {
 
         printf '%s\n' \
             "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openresty.gpg] https://openresty.org/package/ubuntu $(lsb_release -sc) main" \
-            > /etc/apt/sources.list.d/openresty.list
+            >/etc/apt/sources.list.d/openresty.list
 
         if ! apt-get update >>"$LOG_FILE" 2>&1; then
             die "apt-get update failed after adding the OpenResty repository; see $LOG_FILE"
@@ -122,8 +125,8 @@ install_openresty() {
         "$LUA_RESTY_JWT_RELEASE" \
         "$LUA_RESTY_JWT_REVISION"
 
-    if [[ ! -f /etc/ssl/resty-auto-ssl-fallback.crt \
-        || ! -f /etc/ssl/resty-auto-ssl-fallback.key ]]; then
+    if [[ ! -f /etc/ssl/resty-auto-ssl-fallback.crt ||
+        ! -f /etc/ssl/resty-auto-ssl-fallback.key ]]; then
         info "Generating the OpenResty fallback TLS certificate..."
         if ! openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
             -subj '/CN=sni-support-required-for-valid-ssl' \
@@ -141,31 +144,180 @@ install_openresty() {
     success "OpenResty dependencies are ready; configuration has not been deployed or started."
 }
 
+load_persisted_openresty_jwt_secret_path() {
+    local owner_uid
+    local mode
+    local mode_value
+    local lines=()
+    local selected
+    local normalized
+
+    PERSISTED_OPENRESTY_JWT_SECRET_PATH=""
+    if [[ ! -e "$OPENRESTY_JWT_SECRET_PATH_FILE" && ! -L "$OPENRESTY_JWT_SECRET_PATH_FILE" ]]; then
+        return 1
+    fi
+
+    [[ ! -L "$OPENRESTY_JWT_SECRET_PATH_FILE" ]] \
+        || die "OpenResty JWT secret path metadata must not be a symbolic link: $OPENRESTY_JWT_SECRET_PATH_FILE"
+    [[ -f "$OPENRESTY_JWT_SECRET_PATH_FILE" ]] \
+        || die "OpenResty JWT secret path metadata is not a regular file: $OPENRESTY_JWT_SECRET_PATH_FILE"
+    owner_uid=$(stat -c %u -- "$OPENRESTY_JWT_SECRET_PATH_FILE") \
+        || die "Could not inspect OpenResty JWT secret path metadata ownership."
+    [[ "$owner_uid" == "0" ]] \
+        || die "OpenResty JWT secret path metadata must be root-owned."
+    mode=$(stat -c %a -- "$OPENRESTY_JWT_SECRET_PATH_FILE") \
+        || die "Could not inspect OpenResty JWT secret path metadata permissions."
+    mode_value=$((8#$mode))
+    ((!(mode_value & 0022))) \
+        || die "OpenResty JWT secret path metadata must not be group- or world-writable."
+
+    mapfile -t lines <"$OPENRESTY_JWT_SECRET_PATH_FILE"
+    ((${#lines[@]} == 1)) \
+        || die "OpenResty JWT secret path metadata must contain exactly one line."
+    selected=${lines[0]}
+    [[ "$selected" == /* && "$selected" != "/" ]] \
+        || die "OpenResty JWT secret path metadata does not contain a valid absolute path."
+    normalized=$(realpath -m -- "$selected")
+    [[ "$normalized" == "$selected" ]] \
+        || die "OpenResty JWT secret path metadata is not normalized: $selected"
+
+    PERSISTED_OPENRESTY_JWT_SECRET_PATH=$selected
+    return 0
+}
+
+persist_openresty_jwt_secret_path() {
+    local parent
+    local resolved_parent
+    local current
+    local owner_uid
+    local mode
+    local mode_value
+    local staging
+
+    parent=$(dirname -- "$OPENRESTY_JWT_SECRET_PATH_FILE")
+    resolved_parent=$(realpath -m -- "$parent")
+    [[ "$resolved_parent" == "$parent" ]] \
+        || die "OpenResty JWT secret path metadata parent must not contain symbolic links: $parent"
+
+    if [[ ! -e "$parent" ]]; then
+        install -d -o root -g root -m 0755 -- "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" ]] \
+        || die "OpenResty JWT secret path metadata parent is not a safe directory: $parent"
+
+    current=$parent
+    while true; do
+        [[ ! -L "$current" ]] \
+            || die "OpenResty JWT secret path metadata parent chain contains a symbolic link: $current"
+        owner_uid=$(stat -c %u -- "$current") \
+            || die "Could not inspect OpenResty JWT secret path metadata parent ownership: $current"
+        [[ "$owner_uid" == "0" ]] \
+            || die "OpenResty JWT secret path metadata parent must be root-owned: $current"
+        mode=$(stat -c %a -- "$current") \
+            || die "Could not inspect OpenResty JWT secret path metadata parent permissions: $current"
+        mode_value=$((8#$mode))
+        ((!(mode_value & 0022))) \
+            || die "OpenResty JWT secret path metadata parent must not be group- or world-writable: $current"
+        [[ "$current" == "/" ]] && break
+        current=$(dirname -- "$current")
+    done
+
+    staging=$(mktemp "$parent/.openresty-jwt-secret-path.XXXXXX")
+    chmod 0600 "$staging"
+    printf '%s\n' "$OPENRESTY_JWT_SECRET_PATH" >"$staging"
+    chown root:root "$staging"
+    chmod 0644 "$staging"
+    mv -- "$staging" "$OPENRESTY_JWT_SECRET_PATH_FILE"
+}
+
+prepare_openresty_jwt_secret_parent() {
+    local parent
+    local resolved_parent
+    local current
+    local owner_uid
+    local mode
+    local mode_value
+
+    parent=$(dirname -- "$OPENRESTY_JWT_SECRET_PATH")
+    resolved_parent=$(realpath -m -- "$parent")
+    [[ "$resolved_parent" == "$parent" ]] \
+        || die "OpenResty JWT secret parent must not contain symbolic links: $parent"
+
+    if [[ ! -e "$parent" ]]; then
+        install -d -o root -g root -m 0755 -- "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" ]] \
+        || die "OpenResty JWT secret parent is not a safe directory: $parent"
+
+    current=$parent
+    while true; do
+        [[ ! -L "$current" ]] \
+            || die "OpenResty JWT secret parent chain contains a symbolic link: $current"
+        owner_uid=$(stat -c %u -- "$current") \
+            || die "Could not inspect OpenResty JWT secret parent ownership: $current"
+        [[ "$owner_uid" == "0" ]] \
+            || die "OpenResty JWT secret parent must be root-owned: $current"
+        mode=$(stat -c %a -- "$current") \
+            || die "Could not inspect OpenResty JWT secret parent permissions: $current"
+        mode_value=$((8#$mode))
+        ((!(mode_value & 0022))) \
+            || die "OpenResty JWT secret parent must not be group- or world-writable: $current"
+        [[ "$current" == "/" ]] && break
+        current=$(dirname -- "$current")
+    done
+
+    command -v runuser >/dev/null 2>&1 \
+        || die "runuser is required to validate OpenResty JWT secret access."
+    runuser -u nobody -- test -x "$parent" \
+        || die "OpenResty worker user cannot traverse JWT secret parent: $parent"
+}
+
 setup_openresty_jwt_secret() {
     local legacy_lua="/usr/local/openresty/nginx/lua/jwt_auth.lua"
     local legacy_secret=""
+    local secret_parent
     local staging
 
-    install -d -o root -g root -m 0755 /etc/seismic
+    prepare_openresty_jwt_secret_parent
+    secret_parent=$(dirname -- "$OPENRESTY_JWT_SECRET_PATH")
 
     if [[ -e "$OPENRESTY_JWT_SECRET_PATH" || -L "$OPENRESTY_JWT_SECRET_PATH" ]]; then
         [[ ! -L "$OPENRESTY_JWT_SECRET_PATH" ]] \
             || die "OpenResty JWT secret must not be a symbolic link: $OPENRESTY_JWT_SECRET_PATH"
+        [[ -f "$OPENRESTY_JWT_SECRET_PATH" ]] \
+            || die "OpenResty JWT secret exists but is not a regular file: $OPENRESTY_JWT_SECRET_PATH"
         [[ -s "$OPENRESTY_JWT_SECRET_PATH" ]] \
             || die "OpenResty JWT secret exists but is empty: $OPENRESTY_JWT_SECRET_PATH"
         chown root:nogroup "$OPENRESTY_JWT_SECRET_PATH"
         chmod 0640 "$OPENRESTY_JWT_SECRET_PATH"
+        runuser -u nobody -- test -r "$OPENRESTY_JWT_SECRET_PATH" \
+            || die "OpenResty worker user cannot read the JWT secret."
         info "Reusing the existing OpenResty JWT secret."
         return
     fi
 
-    if [[ -f "$legacy_lua" && ! -L "$legacy_lua" ]]; then
+    if [[ "$OPENRESTY_JWT_SECRET_PATH" != "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" ]] \
+        && [[ -e "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" || -L "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" ]]; then
+        [[ ! -L "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" ]] \
+            || die "Default OpenResty JWT secret must not be a symbolic link: $DEFAULT_OPENRESTY_JWT_SECRET_PATH"
+        [[ -f "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" ]] \
+            || die "Default OpenResty JWT secret exists but is not a regular file: $DEFAULT_OPENRESTY_JWT_SECRET_PATH"
+        [[ -s "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" ]] \
+            || die "Default OpenResty JWT secret exists but is empty: $DEFAULT_OPENRESTY_JWT_SECRET_PATH"
+    elif [[ -f "$legacy_lua" && ! -L "$legacy_lua" ]]; then
         legacy_secret=$(sed -n 's/.*local JWT_SECRET = "\([^"]*\)".*/\1/p' "$legacy_lua" | head -n 1)
     fi
 
-    staging=$(mktemp /etc/seismic/.openresty-jwt-secret.XXXXXX)
+    staging=$(mktemp "$secret_parent/.openresty-jwt-secret.XXXXXX")
     chmod 0600 "$staging"
-    if [[ -n "$legacy_secret" ]]; then
+    if [[ "$OPENRESTY_JWT_SECRET_PATH" != "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" ]] \
+        && [[ -s "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" ]]; then
+        if ! cp -- "$DEFAULT_OPENRESTY_JWT_SECRET_PATH" "$staging"; then
+            rm -f -- "$staging"
+            die "Could not copy the existing default JWT secret to the selected path."
+        fi
+        info "Copying the existing default JWT secret to the selected path."
+    elif [[ -n "$legacy_secret" ]]; then
         printf '%s\n' "$legacy_secret" >"$staging"
         info "Migrating the existing embedded OpenResty JWT secret."
     elif ! openssl rand -base64 32 >"$staging"; then
@@ -182,6 +334,8 @@ setup_openresty_jwt_secret() {
     chown root:nogroup "$staging"
     chmod 0640 "$staging"
     mv -- "$staging" "$OPENRESTY_JWT_SECRET_PATH"
+    runuser -u nobody -- test -r "$OPENRESTY_JWT_SECRET_PATH" \
+        || die "OpenResty worker user cannot read the installed JWT secret."
     success "OpenResty JWT secret stored securely; its value was not logged."
 }
 
@@ -221,7 +375,9 @@ deploy_openresty_configuration() {
             -e "s|RATE_LIMIT_RPS_PLACEHOLDER|$RATE_LIMIT_RPS|g" \
             -e "s|RATE_LIMIT_BURST_PLACEHOLDER|$RATE_LIMIT_BURST|g" \
             "$template_root/lua/rate_limit.lua" >"$staging/rate_limit.lua" \
-        || ! cp "$template_root/lua/jwt_auth.lua" "$staging/jwt_auth.lua"; then
+        || ! sed \
+            "s|OPENRESTY_JWT_SECRET_PATH_PLACEHOLDER|$OPENRESTY_JWT_SECRET_PATH|g" \
+            "$template_root/lua/jwt_auth.lua" >"$staging/jwt_auth.lua"; then
         rm -rf -- "$staging"
         die "Could not render the OpenResty configuration templates."
     fi
@@ -260,6 +416,7 @@ deploy_openresty_configuration() {
         die "Installed OpenResty configuration validation failed; see $LOG_FILE"
     fi
 
+    persist_openresty_jwt_secret_path
     success "OpenResty configuration deployed for https://$DOMAIN."
     info "OpenResty was not started, enabled, or reloaded."
 }

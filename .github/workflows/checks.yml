@@ -1,0 +1,63 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Shell checks
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24.x
+          cache: false
+
+      - name: Install shfmt
+        run: |
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.12.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run shfmt
+        run: shfmt -d install tools
+
+      - name: Run ShellCheck
+        working-directory: install
+        run: |
+          shellcheck -x \
+            install-validator.sh \
+            install-observer.sh \
+            ../tools/generate-openresty-jwt.sh
+
+  markdown:
+    name: Markdown checks
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Prettier
+        run: npx --yes prettier@3.6.2 --check '**/*.md'
+
+      - name: Run Markdownlint
+        run: npx --yes markdownlint-cli2@0.21.0 './**/*.md' '#./.git/**'

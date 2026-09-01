@@ -36,7 +36,7 @@ setup_runtime_directories() {
 
     prepare_runtime_directory "$RETH_DATA_DIR" 0750 "Reth data directory"
     prepare_runtime_directory "$SUMMIT_DATA_DIR" 0750 "Summit data directory"
-    prepare_runtime_directory "$VALIDATOR_KEYS_DIR" 0700 "Validator keys directory"
+    prepare_runtime_directory "$VALIDATOR_KEYS_DIR" 0700 "Node keys directory"
 
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         prepare_runtime_directory \

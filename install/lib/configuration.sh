@@ -42,14 +42,14 @@ configure_service_user() {
     [[ "$default_user" != "root" ]] || default_user="ubuntu"
 
     while true; do
-        prompt SERVICE_USER "User to run validator services as" "$default_user"
+        prompt SERVICE_USER "User to run node services as" "$default_user"
 
         if [[ ! "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]*\$?$ ]]; then
             error "Invalid service username: $SERVICE_USER"
             continue
         fi
         if [[ "$SERVICE_USER" == "root" ]]; then
-            error "Validator services must not run as root."
+            error "Node services must not run as root."
             continue
         fi
         if ! id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -124,9 +124,9 @@ directory_conflicts_with_existing() {
         configured_path=${!configured_variable}
         [[ -n "$configured_path" ]] || continue
 
-        if [[ "$selected" == "$configured_path" \
-            || "$selected" == "$configured_path/"* \
-            || "$configured_path" == "$selected/"* ]]; then
+        if [[ "$selected" == "$configured_path" ||
+            "$selected" == "$configured_path/"* ||
+            "$configured_path" == "$selected/"* ]]; then
             error "$description and ${configured_descriptions[i]} must not be identical or nested."
             return 0
         fi
@@ -176,6 +176,92 @@ configure_directory() {
     printf -v "$variable_name" '%s' "$selected"
     success "$description selected: $selected"
     print_available_disk_space "$selected"
+}
+
+configure_file_path() {
+    local variable_name=$1
+    local description=$2
+    local default=$3
+    local selected
+    local parent
+    local probe
+    local current
+    local owner_uid
+    local mode
+    local mode_value
+    local parent_safe
+
+    while true; do
+        prompt "$variable_name" "$description" "$default"
+        selected=${!variable_name}
+
+        if [[ "$selected" != /* ]]; then
+            error "$description must be an absolute path."
+            continue
+        fi
+        if [[ "$selected" == "/" ]]; then
+            error "The filesystem root cannot be used for $description."
+            continue
+        fi
+        if contains_unsafe_path_characters "$selected"; then
+            error "$description contains unsupported whitespace or shell characters."
+            continue
+        fi
+        if [[ -L "$selected" ]]; then
+            error "$description must not be a symbolic link: $selected"
+            continue
+        fi
+        if [[ -e "$selected" && ! -f "$selected" ]]; then
+            error "$description exists but is not a regular file: $selected"
+            continue
+        fi
+
+        parent=$(dirname -- "$selected")
+        probe=$parent
+        while [[ ! -e "$probe" ]]; do
+            probe=$(dirname -- "$probe")
+        done
+        if [[ ! -d "$probe" ]]; then
+            error "$description has a non-directory parent: $probe"
+            continue
+        fi
+        if [[ -L "$probe" ]]; then
+            error "$description parent must not be a symbolic link: $probe"
+            continue
+        fi
+
+        current=$probe
+        parent_safe=true
+        while true; do
+            if [[ -L "$current" ]]; then
+                error "$description parent chain contains a symbolic link: $current"
+                parent_safe=false
+                break
+            fi
+            owner_uid=$(stat -c %u -- "$current")
+            if [[ "$owner_uid" != "0" ]]; then
+                error "$description parent must be root-owned: $current"
+                parent_safe=false
+                break
+            fi
+            mode=$(stat -c %a -- "$current")
+            mode_value=$((8#$mode))
+            if ((mode_value & 0022)); then
+                error "$description parent must not be group- or world-writable: $current"
+                parent_safe=false
+                break
+            fi
+            [[ "$current" == "/" ]] && break
+            current=$(dirname -- "$current")
+        done
+        [[ "$parent_safe" == true ]] || continue
+
+        selected=$(realpath -m -- "$selected")
+        break
+    done
+
+    printf -v "$variable_name" '%s' "$selected"
+    success "$description selected: $selected"
 }
 
 configure_prebuilt_binary() {
@@ -310,8 +396,8 @@ print_component_installation() {
     esac
 }
 
-configure_validator_software() {
-    section "Validator software configuration"
+configure_node_software() {
+    section "Node software configuration"
 
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
@@ -324,14 +410,20 @@ configure_validator_software() {
 
     configure_component_installation \
         SUMMIT_INSTALL_METHOD SUMMIT_BINARY "Summit" SUMMIT_TARGET_BIN
+    _out ""
     configure_component_installation \
         RETH_INSTALL_METHOD RETH_BINARY "seismic-reth" RETH_TARGET_BIN
 
-    _out "Validator software:"
+    _out ""
+    _out "Node software:"
     print_component_installation \
         "Summit" "$SUMMIT_INSTALL_METHOD" "$SUMMIT_BINARY" "$SUMMIT_TARGET_BIN"
     print_component_installation \
         "Seismic Reth" "$RETH_INSTALL_METHOD" "$RETH_BINARY" "$RETH_TARGET_BIN"
+}
+
+configure_validator_software() {
+    configure_node_software
 }
 
 configure_public_endpoint() {
@@ -341,6 +433,7 @@ configure_public_endpoint() {
     DOMAIN=""
     RATE_LIMIT_RPS=""
     RATE_LIMIT_BURST=""
+    OPENRESTY_JWT_SECRET_PATH=${OPENRESTY_JWT_SECRET_PATH:-/etc/seismic/openresty-jwt-secret}
 
     if ! confirm "Configure a public HTTPS endpoint with OpenResty?"; then
         _out "Public HTTPS endpoint: disabled"
@@ -348,6 +441,12 @@ configure_public_endpoint() {
     fi
 
     CONFIGURE_PUBLIC_ENDPOINT=true
+    if [[ "${OPENRESTY_JWT_SECRET_PATH_CONFIGURED:-false}" != true ]] \
+        && load_persisted_openresty_jwt_secret_path; then
+        OPENRESTY_JWT_SECRET_PATH=$PERSISTED_OPENRESTY_JWT_SECRET_PATH
+        info "Using the previously installed OpenResty JWT secret path as the default."
+    fi
+
     while true; do
         prompt DOMAIN "Public domain" ""
         DOMAIN=${DOMAIN,,}
@@ -384,9 +483,16 @@ configure_public_endpoint() {
         break
     done
 
+    configure_file_path \
+        OPENRESTY_JWT_SECRET_PATH \
+        "OpenResty JWT secret file" \
+        "$OPENRESTY_JWT_SECRET_PATH"
+    OPENRESTY_JWT_SECRET_PATH_CONFIGURED=true
+
     _out "Public HTTPS endpoint enabled: $CONFIGURE_PUBLIC_ENDPOINT"
     success "Public HTTPS endpoint configured: https://$DOMAIN"
     _out "Rate limit: $RATE_LIMIT_RPS requests/sec, burst $RATE_LIMIT_BURST"
+    _out "JWT secret: $OPENRESTY_JWT_SECRET_PATH (contents hidden)"
 }
 
 validate_http_url() {
@@ -537,7 +643,8 @@ configure_checkpointer() {
     INSTALL_CHECKPOINTER=false
     CHECKPOINTER_TARGET_BIN="/usr/local/bin/summit-checkpointer"
     MDBX_COPY_TARGET_BIN="/usr/local/bin/mdbx_copy"
-    CHECKPOINTER_SOURCE_REF="m/dynamic-epochs-and-ckpt-chain"
+    CHECKPOINTER_CONFIG_PATH=${CHECKPOINTER_CONFIG_PATH:-/etc/seismic/summit-checkpointer.toml}
+    CHECKPOINTER_SOURCE_REF="main"
     CHECKPOINTER_INSTALL_METHOD=""
     CHECKPOINTS_DIR=""
     CHECKPOINTER_BINARY=""
@@ -549,6 +656,10 @@ configure_checkpointer() {
             "Checkpointer output directory" \
             "/persistence/checkpoints" \
             "Stores Reth snapshots and Summit verification bundles produced by summit-checkpointer."
+        configure_file_path \
+            CHECKPOINTER_CONFIG_PATH \
+            "Checkpointer configuration file" \
+            "$CHECKPOINTER_CONFIG_PATH"
         configure_component_installation \
             CHECKPOINTER_INSTALL_METHOD \
             CHECKPOINTER_BINARY \
@@ -567,6 +678,7 @@ configure_checkpointer() {
         if [[ "$CHECKPOINTER_INSTALL_METHOD" == "source" ]]; then
             _out "  Checkpointer source ref: $CHECKPOINTER_SOURCE_REF"
         fi
+        _out "  Checkpointer config: $CHECKPOINTER_CONFIG_PATH"
         print_mdbx_copy_plan
     fi
 }
@@ -588,10 +700,13 @@ configure_custodian() {
     INSTALL_CUSTODIAN=false
     CUSTODIAN_DATA_DIR=""
     CUSTODIAN_TARGET_BIN="/usr/local/bin/seismic-centralized-custodian-service"
+    CUSTODIAN_INSTALL_METHOD=""
+    CUSTODIAN_BINARY=""
     CUSTODIAN_SOCKET=""
     COUNCIL_LISTEN=""
     COUNCIL_ADDRESS=""
     CUSTODIAN_CHAIN_ID=""
+    PARENT_CUSTODIAN=""
     CUSTODIAN_REQUIRED_SUMMIT_REF="m/metrics"
     CUSTODIAN_REQUIRED_RETH_REF="feat/purpose-key-rotation-reth"
     CUSTODIAN_SOURCE_REF="d/centralized-custodian"
@@ -635,8 +750,25 @@ configure_custodian() {
     done
     success "Custodian Unix socket selected: $CUSTODIAN_SOCKET"
 
-    _out "Custodian will use the publicly known shared default root key."
-    warn "The shared default makes epoch-0 purpose keys public."
+    if [[ "${NODE_ROLE:-validator}" == "observer" ]]; then
+        _out "Enter the Custodian council endpoint running on the parent validator."
+        _out "The observer uses it to fetch or verify the root key and synchronize epoch-key deliveries."
+        while true; do
+            prompt PARENT_CUSTODIAN \
+                "Parent validator Custodian council endpoint (host:port; default port 7876)" \
+                ""
+            if validate_host_port "$PARENT_CUSTODIAN"; then
+                break
+            fi
+            error "Parent validator Custodian council endpoint must be host:port with a valid port."
+        done
+        _out "The observer Custodian will fetch and verify its root key through $PARENT_CUSTODIAN."
+        warn "The parent Custodian connection transports root-key and epoch-key material."
+        warn "Use a private network or protect the connection with a TLS tunnel."
+    else
+        _out "Custodian will use the publicly known shared default root key."
+        warn "The shared default makes epoch-0 purpose keys public."
+    fi
 
     while true; do
         prompt COUNCIL_LISTEN "Custodian council listen address" "0.0.0.0:7876"
@@ -666,17 +798,32 @@ configure_custodian() {
         error "Custodian chain ID must be a positive integer."
     done
 
+    configure_component_installation \
+        CUSTODIAN_INSTALL_METHOD \
+        CUSTODIAN_BINARY \
+        "Centralized Custodian" \
+        CUSTODIAN_TARGET_BIN
+
     warn "Custodian requires Summit compatible with $CUSTODIAN_REQUIRED_SUMMIT_REF."
     warn "Custodian requires seismic-reth compatible with $CUSTODIAN_REQUIRED_RETH_REF."
 
     _out "Centralized Custodian: $INSTALL_CUSTODIAN"
     _out "  Data:       $CUSTODIAN_DATA_DIR"
     _out "  Socket:     $CUSTODIAN_SOCKET"
-    _out "  Root key:   publicly known shared default"
+    if [[ "${NODE_ROLE:-validator}" == "observer" ]]; then
+        _out "  Root key:   fetched and verified through parent Custodian"
+        _out "  Parent:     $PARENT_CUSTODIAN"
+    else
+        _out "  Root key:   publicly known shared default"
+    fi
     _out "  Council:    $COUNCIL_LISTEN ($COUNCIL_ADDRESS)"
     _out "  Chain ID:   $CUSTODIAN_CHAIN_ID"
-    _out "  Binary:     build from source -> $CUSTODIAN_TARGET_BIN"
-    _out "  Source ref: $CUSTODIAN_SOURCE_REF"
+    print_component_installation \
+        "Custodian" "$CUSTODIAN_INSTALL_METHOD" \
+        "$CUSTODIAN_BINARY" "$CUSTODIAN_TARGET_BIN"
+    if [[ "$CUSTODIAN_INSTALL_METHOD" == "source" ]]; then
+        _out "  Source ref: $CUSTODIAN_SOURCE_REF"
+    fi
 }
 
 configure_directories() {
@@ -769,6 +916,7 @@ print_configuration_summary() {
         if [[ "$CHECKPOINTER_INSTALL_METHOD" == "source" ]]; then
             _out "  Source ref: $CHECKPOINTER_SOURCE_REF"
         fi
+        _out "  Config: $CHECKPOINTER_CONFIG_PATH"
         print_mdbx_copy_plan
     else
         _out "  Enabled: false"
@@ -779,14 +927,23 @@ print_configuration_summary() {
         _out "  Enabled: true"
         _out "  Data:    $CUSTODIAN_DATA_DIR"
         _out "  Socket:  $CUSTODIAN_SOCKET"
-        _out "  Root key: publicly known shared default"
+        if [[ "${NODE_ROLE:-validator}" == "observer" ]]; then
+            _out "  Root key: fetched and verified through parent Custodian"
+            _out "  Parent Custodian: $PARENT_CUSTODIAN"
+        else
+            _out "  Root key: publicly known shared default"
+        fi
         _out "  Council listen:  $COUNCIL_LISTEN"
         _out "  Council address: $COUNCIL_ADDRESS"
         _out "  Chain ID:        $CUSTODIAN_CHAIN_ID"
-        _out "  Binary:          build from source -> $CUSTODIAN_TARGET_BIN"
+        print_component_installation \
+            "Custodian" "$CUSTODIAN_INSTALL_METHOD" \
+            "$CUSTODIAN_BINARY" "$CUSTODIAN_TARGET_BIN"
         _out "  Required Summit compatibility: $CUSTODIAN_REQUIRED_SUMMIT_REF"
         _out "  Required Reth compatibility:   $CUSTODIAN_REQUIRED_RETH_REF"
-        _out "  Custodian source ref:          $CUSTODIAN_SOURCE_REF"
+        if [[ "$CUSTODIAN_INSTALL_METHOD" == "source" ]]; then
+            _out "  Custodian source ref:          $CUSTODIAN_SOURCE_REF"
+        fi
     else
         _out "  Enabled: false"
     fi
@@ -841,6 +998,7 @@ review_configuration() {
 }
 
 configure() {
+    NODE_ROLE="validator"
     section "Configuration"
     configure_service_user
     configure_directories

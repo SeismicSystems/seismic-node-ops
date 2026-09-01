@@ -71,7 +71,8 @@ validate_supervisor_runtime_inputs() {
 validate_supervisor_templates() {
     local template_root="$TEMPLATES_DIR/supervisor"
     local required=(
-        "$template_root/validator.conf"
+        "$template_root/reth.conf"
+        "$template_root/summit-validator.conf"
         "$template_root/deposit-rpc.conf"
         "$template_root/checkpointer.conf"
         "$template_root/custodian.conf"
@@ -84,13 +85,13 @@ validate_supervisor_templates() {
     done
 }
 
-render_validator_supervisor_config() {
-    local template="$TEMPLATES_DIR/supervisor/validator.conf"
+render_reth_supervisor_config() {
+    local template="$TEMPLATES_DIR/supervisor/reth.conf"
     local conf
     local bootnode_argument=""
     local purpose_key_arguments="--seismic.purpose-keys-source built-in"
     local rpc_bind="127.0.0.1"
-    local summit_bind="127.0.0.1"
+
     [[ -z "$BOOTNODE_ENODE" ]] \
         || bootnode_argument="--bootnodes $BOOTNODE_ENODE"
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
@@ -105,6 +106,17 @@ render_validator_supervisor_config() {
     conf=${conf//RETH_DATA_DIR_PLACEHOLDER/$RETH_DATA_DIR}
     conf=${conf//PURPOSE_KEYS_ARGUMENTS_PLACEHOLDER/$purpose_key_arguments}
     conf=${conf//BOOTNODE_ARGUMENT_PLACEHOLDER/$bootnode_argument}
+    conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
+    conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
+    printf '%s\n' "$conf"
+}
+
+render_summit_validator_supervisor_config() {
+    local template="$TEMPLATES_DIR/supervisor/summit-validator.conf"
+    local conf
+    local summit_bind="127.0.0.1"
+
+    conf=$(<"$template")
     conf=${conf//SUMMIT_BINARY_PLACEHOLDER/$SUMMIT_TARGET_BIN}
     conf=${conf//GENESIS_PATH_PLACEHOLDER/$GENESIS_PATH}
     conf=${conf//SUMMIT_KEYS_DIR_PLACEHOLDER/$SUMMIT_KEYS_DIR}
@@ -114,6 +126,11 @@ render_validator_supervisor_config() {
     conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
     conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
     printf '%s\n' "$conf"
+}
+
+render_validator_supervisor_config() {
+    render_reth_supervisor_config
+    render_summit_validator_supervisor_config
 }
 
 render_deposit_rpc_supervisor_config() {
@@ -153,6 +170,7 @@ render_custodian_supervisor_config() {
     conf=${conf//COUNCIL_LISTEN_PLACEHOLDER/$COUNCIL_LISTEN}
     conf=${conf//COUNCIL_ADDRESS_PLACEHOLDER/$COUNCIL_ADDRESS}
     conf=${conf//CUSTODIAN_CHAIN_ID_PLACEHOLDER/$CUSTODIAN_CHAIN_ID}
+    conf=${conf//SUMMIT_KEYS_DIR_PLACEHOLDER/$SUMMIT_KEYS_DIR}
     conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
     conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
     printf '%s\n' "$conf"
@@ -172,16 +190,81 @@ render_checkpointer_toml() {
 }
 
 find_conflicting_supervisor_config() {
+    local config_dir
     local path
+    local found=false
 
+    config_dir=$(dirname -- "$SUPERVISOR_CONFIG_PATH")
     while IFS= read -r -d '' path; do
         [[ "$path" == "$SUPERVISOR_CONFIG_PATH" ]] && continue
-        if grep -Eq '^\[program:(reth|summit|summit-deposit-rpc|checkpointer|custodian)\]' "$path"; then
+        if grep -Eq '^\[program:(reth|summit|summit-observer|summit-observer-checkpoint|summit-deposit-rpc|checkpointer|custodian)\]' "$path"; then
             printf '%s\n' "$path"
-            return 0
+            found=true
         fi
-    done < <(find /etc/supervisor/conf.d -maxdepth 1 -type f -print0)
-    return 1
+    done < <(find "$config_dir" -maxdepth 1 -type f -print0)
+
+    [[ "$found" == true ]]
+}
+
+replace_conflicting_supervisor_config() {
+    local conflicts=()
+    local path
+
+    mapfile -t conflicts < <(find_conflicting_supervisor_config || true)
+    ((${#conflicts[@]} > 0)) || return 0
+
+    warn "Existing Supervisor files define Seismic services:"
+    for path in "${conflicts[@]}"; do
+        warn "  $path"
+    done
+
+    if ! confirm "Replace these files with $SUPERVISOR_CONFIG_PATH?"; then
+        die "Existing Supervisor configuration was not replaced."
+    fi
+
+    for path in "${conflicts[@]}"; do
+        [[ ! -L "$path" && -f "$path" ]] \
+            || die "Conflicting Supervisor path changed before replacement: $path"
+        info "Removing conflicting Supervisor configuration: $path"
+        rm -f -- "$path"
+    done
+}
+
+prepare_checkpointer_config_parent() {
+    local parent
+    local resolved_parent
+    local current
+    local owner_uid
+    local mode
+    local mode_value
+
+    parent=$(dirname -- "$CHECKPOINTER_CONFIG_PATH")
+    resolved_parent=$(realpath -m -- "$parent")
+    [[ "$resolved_parent" == "$parent" ]] \
+        || die "Checkpointer configuration parent must not contain symbolic links: $parent"
+
+    if [[ ! -e "$parent" ]]; then
+        install -d -o root -g root -m 0755 -- "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" ]] \
+        || die "Checkpointer configuration parent is not a safe directory: $parent"
+
+    current=$parent
+    while true; do
+        [[ ! -L "$current" ]] \
+            || die "Checkpointer configuration parent chain contains a symbolic link: $current"
+        owner_uid=$(stat -c %u -- "$current") \
+            || die "Could not inspect checkpointer configuration parent ownership: $current"
+        [[ "$owner_uid" == "0" ]] \
+            || die "Checkpointer configuration parent must be root-owned: $current"
+        mode=$(stat -c %a -- "$current") \
+            || die "Could not inspect checkpointer configuration parent permissions: $current"
+        mode_value=$((8#$mode))
+        ((!(mode_value & 0022))) \
+            || die "Checkpointer configuration parent must not be group- or world-writable: $current"
+        [[ "$current" == "/" ]] && break
+        current=$(dirname -- "$current")
+    done
 }
 
 prepare_supervisor_logs() {
@@ -195,8 +278,8 @@ prepare_supervisor_logs() {
         || die "Supervisor log directory must not be a symbolic link: $SUPERVISOR_LOG_DIR"
     install -d -o root -g root -m 0755 "$SUPERVISOR_LOG_DIR"
     for name in "${names[@]}"; do
-        [[ ! -L "$SUPERVISOR_LOG_DIR/$name.log" \
-            && ! -L "$SUPERVISOR_LOG_DIR/$name.err" ]] \
+        [[ ! -L "$SUPERVISOR_LOG_DIR/$name.log" &&
+            ! -L "$SUPERVISOR_LOG_DIR/$name.err" ]] \
             || die "Supervisor log files must not be symbolic links for service: $name"
         touch "$SUPERVISOR_LOG_DIR/$name.log" "$SUPERVISOR_LOG_DIR/$name.err"
         chown root:root "$SUPERVISOR_LOG_DIR/$name.log" "$SUPERVISOR_LOG_DIR/$name.err"
@@ -206,7 +289,6 @@ prepare_supervisor_logs() {
 
 deploy_supervisor_configuration() {
     local staging
-    local conflict
 
     section "Deploying Supervisor configuration"
     validate_supervisor_runtime_inputs
@@ -217,9 +299,7 @@ deploy_supervisor_configuration() {
         die "Bootnode RPC validation failed after configuration acceptance."
     fi
 
-    conflict=$(find_conflicting_supervisor_config || true)
-    [[ -z "$conflict" ]] \
-        || die "Another Supervisor file already defines Seismic services: $conflict"
+    replace_conflicting_supervisor_config
     [[ ! -L "$SUPERVISOR_CONFIG_PATH" ]] \
         || die "Supervisor target must not be a symbolic link: $SUPERVISOR_CONFIG_PATH"
     [[ ! -L "$CHECKPOINTER_CONFIG_PATH" ]] \
@@ -227,7 +307,8 @@ deploy_supervisor_configuration() {
 
     staging=$(mktemp -d)
     render_deposit_rpc_supervisor_config >"$staging/seismic-validator.conf"
-    render_validator_supervisor_config >>"$staging/seismic-validator.conf"
+    render_reth_supervisor_config >>"$staging/seismic-validator.conf"
+    render_summit_validator_supervisor_config >>"$staging/seismic-validator.conf"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         render_checkpointer_supervisor_config \
             >>"$staging/seismic-validator.conf"
@@ -244,8 +325,8 @@ deploy_supervisor_configuration() {
     fi
 
     prepare_supervisor_logs
-    install -d -o root -g root -m 0755 /etc/seismic
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
+        prepare_checkpointer_config_parent
         install -o root -g root -m 0644 \
             "$staging/summit-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH"
     else

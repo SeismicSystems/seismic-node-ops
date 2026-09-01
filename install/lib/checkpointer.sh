@@ -43,6 +43,29 @@ install_checkpointer_binary() {
     esac
 }
 
+check_checkpointer_cli_support() {
+    local help_output
+
+    [[ -x "$CHECKPOINTER_TARGET_BIN" ]] || return 1
+    help_output=$("$CHECKPOINTER_TARGET_BIN" --help 2>&1) || return 1
+    grep -q -- '--bind-address' <<<"$help_output"
+}
+
+validate_checkpointer_cli_support() {
+    local security_error
+
+    if [[ ! -e "$CHECKPOINTER_TARGET_BIN" && ! -L "$CHECKPOINTER_TARGET_BIN" ]]; then
+        return 1
+    fi
+    if ! security_error=$(check_service_executable_security "$CHECKPOINTER_TARGET_BIN"); then
+        die "summit-checkpointer executable is not safe for service use: $security_error"
+    fi
+    check_checkpointer_cli_support \
+        || die "Installed summit-checkpointer does not support --bind-address."
+
+    success "summit-checkpointer command-line compatibility validated"
+}
+
 install_mdbx_copy() {
     local reth_source_dir
     local libmdbx_dir
@@ -83,6 +106,12 @@ install_mdbx_copy() {
     if ! "$MDBX_COPY_TARGET_BIN" -V >>"$LOG_FILE" 2>&1; then
         die "mdbx_copy validation failed; see $LOG_FILE"
     fi
+
+    info "Cleaning generated libmdbx build artifacts..."
+    run_as_service_user make -C "$libmdbx_dir" clean \
+        >>"$LOG_FILE" 2>&1 \
+        || die "Could not clean generated libmdbx build artifacts; see $LOG_FILE"
+
     success "Reth-compatible mdbx_copy installed from $reth_source_dir"
 }
 
@@ -94,6 +123,10 @@ install_checkpointer() {
 
     section "Installing summit-checkpointer"
     install_checkpointer_binary
+    if ! validate_checkpointer_cli_support; then
+        warn "summit-checkpointer executable is deferred and not present at $CHECKPOINTER_TARGET_BIN."
+        warn "Provide a compatible executable with --bind-address support before starting the checkpointer."
+    fi
     install_mdbx_copy
     success "summit-checkpointer binary and compatible mdbx_copy installation phase complete."
 }

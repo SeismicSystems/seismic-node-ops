@@ -132,6 +132,29 @@ prepare_source_root() {
         || die "Could not prepare source root: $source_root"
 }
 
+clean_reth_mdbx_build_artifacts() {
+    local source_dir=$1
+    local libmdbx_dir="$source_dir/crates/storage/libmdbx-rs/mdbx-sys/libmdbx"
+    local tracked_status
+    local status
+
+    [[ -d "$source_dir/.git" && -f "$libmdbx_dir/Makefile" ]] || return 0
+
+    tracked_status=$(run_as_service_user git -C "$source_dir" \
+        status --porcelain --untracked-files=no) \
+        || die "Could not inspect tracked seismic-reth source changes."
+    [[ -z "$tracked_status" ]] || return 0
+
+    status=$(run_as_service_user git -C "$source_dir" status --porcelain) \
+        || die "Could not inspect generated seismic-reth build artifacts."
+    [[ -n "$status" ]] || return 0
+
+    info "Cleaning generated libmdbx artifacts from the seismic-reth checkout..."
+    run_as_service_user make -C "$libmdbx_dir" clean \
+        >>"$LOG_FILE" 2>&1 \
+        || die "Could not clean generated seismic-reth libmdbx artifacts; see $LOG_FILE"
+}
+
 prepare_source_checkout() {
     local description=$1
     local repository=$2
@@ -148,7 +171,6 @@ prepare_source_checkout() {
         info "Cloning $description branch $branch into $source_dir..."
         if ! run_as_service_user git clone \
             --branch "$branch" \
-            --single-branch \
             "$repository" \
             "$source_dir" >>"$LOG_FILE" 2>&1; then
             die "Could not clone $description; see $LOG_FILE"
@@ -164,6 +186,10 @@ prepare_source_checkout() {
         [[ "$origin" == "$repository" ]] \
             || die "$description checkout has unexpected origin: $origin"
 
+        if [[ "$description" == "seismic-reth" ]]; then
+            clean_reth_mdbx_build_artifacts "$source_dir"
+        fi
+
         status=$(run_as_service_user git -C "$source_dir" status --porcelain) \
             || die "Could not inspect the $description working tree."
         if [[ -n "$status" ]]; then
@@ -171,9 +197,13 @@ prepare_source_checkout() {
         fi
 
         info "Updating $description branch $branch with fast-forward only..."
-        run_as_service_user git -C "$source_dir" fetch origin "$branch" \
+        run_as_service_user git -C "$source_dir" remote \
+            set-branches origin '*' \
             >>"$LOG_FILE" 2>&1 \
-            || die "Could not fetch $description branch $branch; see $LOG_FILE"
+            || die "Could not configure $description to fetch all origin branches."
+        run_as_service_user git -C "$source_dir" fetch --prune origin \
+            >>"$LOG_FILE" 2>&1 \
+            || die "Could not fetch $description branches; see $LOG_FILE"
 
         if run_as_service_user git -C "$source_dir" show-ref \
             --verify --quiet "refs/heads/$branch"; then
@@ -283,9 +313,13 @@ install_reth_binary() {
     esac
 }
 
-install_validator_binaries() {
-    section "Installing validator binaries"
+install_node_binaries() {
+    section "Installing node binaries"
     install_summit_binary
     install_reth_binary
     success "Summit and seismic-reth installation methods completed."
+}
+
+install_validator_binaries() {
+    install_node_binaries
 }

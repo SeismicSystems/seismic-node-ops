@@ -97,10 +97,10 @@ setup_summit_validator_keys() {
         die "Summit validator key generation failed; see $LOG_FILE"
     fi
 
-    if [[ ! -s "$staging/node_key.pem" \
-        || ! -s "$staging/consensus_key.pem" \
-        || -L "$staging/node_key.pem" \
-        || -L "$staging/consensus_key.pem" ]]; then
+    if [[ ! -s "$staging/node_key.pem" ||
+        ! -s "$staging/consensus_key.pem" ||
+        -L "$staging/node_key.pem" ||
+        -L "$staging/consensus_key.pem" ]]; then
         rm -rf -- "$staging"
         die "Summit reported success but did not produce a complete validator key set."
     fi
