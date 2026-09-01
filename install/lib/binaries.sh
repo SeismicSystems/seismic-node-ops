@@ -171,7 +171,6 @@ prepare_source_checkout() {
         info "Cloning $description branch $branch into $source_dir..."
         if ! run_as_service_user git clone \
             --branch "$branch" \
-            --single-branch \
             "$repository" \
             "$source_dir" >>"$LOG_FILE" 2>&1; then
             die "Could not clone $description; see $LOG_FILE"
@@ -199,12 +198,12 @@ prepare_source_checkout() {
 
         info "Updating $description branch $branch with fast-forward only..."
         run_as_service_user git -C "$source_dir" remote \
-            set-branches origin "$branch" \
+            set-branches origin '*' \
             >>"$LOG_FILE" 2>&1 \
-            || die "Could not configure $description branch $branch for fetching."
-        run_as_service_user git -C "$source_dir" fetch origin \
+            || die "Could not configure $description to fetch all origin branches."
+        run_as_service_user git -C "$source_dir" fetch --prune origin \
             >>"$LOG_FILE" 2>&1 \
-            || die "Could not fetch $description branch $branch; see $LOG_FILE"
+            || die "Could not fetch $description branches; see $LOG_FILE"
 
         if run_as_service_user git -C "$source_dir" show-ref \
             --verify --quiet "refs/heads/$branch"; then

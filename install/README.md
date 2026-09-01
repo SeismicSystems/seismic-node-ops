@@ -448,6 +448,14 @@ On a normal rerun, the installer preserves existing validator keys and state,
 then replaces its generated OpenResty and Supervisor configuration. It does not
 start or reload those services.
 
+For source installations, new checkouts fetch all remote branches. On a rerun,
+the installer validates the origin and clean working tree, configures `origin`
+to fetch all branches, fetches and prunes remote references, checks out or
+creates the configured local branch, and merges `origin/<branch>` with
+`--ff-only` before rebuilding. Dirty, diverged, or force-pushed checkouts are
+rejected rather than reset. The installer does not update its own
+`seismic-node-ops` checkout.
+
 Before applying a later `supervisorctl update`, inspect running services:
 
 ```bash
