@@ -230,6 +230,43 @@ replace_conflicting_supervisor_config() {
     done
 }
 
+prepare_checkpointer_config_parent() {
+    local parent
+    local resolved_parent
+    local current
+    local owner_uid
+    local mode
+    local mode_value
+
+    parent=$(dirname -- "$CHECKPOINTER_CONFIG_PATH")
+    resolved_parent=$(realpath -m -- "$parent")
+    [[ "$resolved_parent" == "$parent" ]] \
+        || die "Checkpointer configuration parent must not contain symbolic links: $parent"
+
+    if [[ ! -e "$parent" ]]; then
+        install -d -o root -g root -m 0755 -- "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" ]] \
+        || die "Checkpointer configuration parent is not a safe directory: $parent"
+
+    current=$parent
+    while true; do
+        [[ ! -L "$current" ]] \
+            || die "Checkpointer configuration parent chain contains a symbolic link: $current"
+        owner_uid=$(stat -c %u -- "$current") \
+            || die "Could not inspect checkpointer configuration parent ownership: $current"
+        [[ "$owner_uid" == "0" ]] \
+            || die "Checkpointer configuration parent must be root-owned: $current"
+        mode=$(stat -c %a -- "$current") \
+            || die "Could not inspect checkpointer configuration parent permissions: $current"
+        mode_value=$((8#$mode))
+        ((!(mode_value & 0022))) \
+            || die "Checkpointer configuration parent must not be group- or world-writable: $current"
+        [[ "$current" == "/" ]] && break
+        current=$(dirname -- "$current")
+    done
+}
+
 prepare_supervisor_logs() {
     local names=(summit-deposit-rpc reth summit)
     local name
@@ -288,8 +325,8 @@ deploy_supervisor_configuration() {
     fi
 
     prepare_supervisor_logs
-    install -d -o root -g root -m 0755 /etc/seismic
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
+        prepare_checkpointer_config_parent
         install -o root -g root -m 0644 \
             "$staging/summit-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH"
     else

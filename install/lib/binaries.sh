@@ -198,7 +198,11 @@ prepare_source_checkout() {
         fi
 
         info "Updating $description branch $branch with fast-forward only..."
-        run_as_service_user git -C "$source_dir" fetch origin "$branch" \
+        run_as_service_user git -C "$source_dir" remote \
+            set-branches origin "$branch" \
+            >>"$LOG_FILE" 2>&1 \
+            || die "Could not configure $description branch $branch for fetching."
+        run_as_service_user git -C "$source_dir" fetch origin \
             >>"$LOG_FILE" 2>&1 \
             || die "Could not fetch $description branch $branch; see $LOG_FILE"
 

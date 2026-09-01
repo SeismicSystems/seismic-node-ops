@@ -178,6 +178,92 @@ configure_directory() {
     print_available_disk_space "$selected"
 }
 
+configure_file_path() {
+    local variable_name=$1
+    local description=$2
+    local default=$3
+    local selected
+    local parent
+    local probe
+    local current
+    local owner_uid
+    local mode
+    local mode_value
+    local parent_safe
+
+    while true; do
+        prompt "$variable_name" "$description" "$default"
+        selected=${!variable_name}
+
+        if [[ "$selected" != /* ]]; then
+            error "$description must be an absolute path."
+            continue
+        fi
+        if [[ "$selected" == "/" ]]; then
+            error "The filesystem root cannot be used for $description."
+            continue
+        fi
+        if contains_unsafe_path_characters "$selected"; then
+            error "$description contains unsupported whitespace or shell characters."
+            continue
+        fi
+        if [[ -L "$selected" ]]; then
+            error "$description must not be a symbolic link: $selected"
+            continue
+        fi
+        if [[ -e "$selected" && ! -f "$selected" ]]; then
+            error "$description exists but is not a regular file: $selected"
+            continue
+        fi
+
+        parent=$(dirname -- "$selected")
+        probe=$parent
+        while [[ ! -e "$probe" ]]; do
+            probe=$(dirname -- "$probe")
+        done
+        if [[ ! -d "$probe" ]]; then
+            error "$description has a non-directory parent: $probe"
+            continue
+        fi
+        if [[ -L "$probe" ]]; then
+            error "$description parent must not be a symbolic link: $probe"
+            continue
+        fi
+
+        current=$probe
+        parent_safe=true
+        while true; do
+            if [[ -L "$current" ]]; then
+                error "$description parent chain contains a symbolic link: $current"
+                parent_safe=false
+                break
+            fi
+            owner_uid=$(stat -c %u -- "$current")
+            if [[ "$owner_uid" != "0" ]]; then
+                error "$description parent must be root-owned: $current"
+                parent_safe=false
+                break
+            fi
+            mode=$(stat -c %a -- "$current")
+            mode_value=$((8#$mode))
+            if ((mode_value & 0022)); then
+                error "$description parent must not be group- or world-writable: $current"
+                parent_safe=false
+                break
+            fi
+            [[ "$current" == "/" ]] && break
+            current=$(dirname -- "$current")
+        done
+        [[ "$parent_safe" == true ]] || continue
+
+        selected=$(realpath -m -- "$selected")
+        break
+    done
+
+    printf -v "$variable_name" '%s' "$selected"
+    success "$description selected: $selected"
+}
+
 configure_prebuilt_binary() {
     local variable_name=$1
     local description=$2
@@ -324,9 +410,11 @@ configure_node_software() {
 
     configure_component_installation \
         SUMMIT_INSTALL_METHOD SUMMIT_BINARY "Summit" SUMMIT_TARGET_BIN
+    _out ""
     configure_component_installation \
         RETH_INSTALL_METHOD RETH_BINARY "seismic-reth" RETH_TARGET_BIN
 
+    _out ""
     _out "Node software:"
     print_component_installation \
         "Summit" "$SUMMIT_INSTALL_METHOD" "$SUMMIT_BINARY" "$SUMMIT_TARGET_BIN"
@@ -541,6 +629,7 @@ configure_checkpointer() {
     INSTALL_CHECKPOINTER=false
     CHECKPOINTER_TARGET_BIN="/usr/local/bin/summit-checkpointer"
     MDBX_COPY_TARGET_BIN="/usr/local/bin/mdbx_copy"
+    CHECKPOINTER_CONFIG_PATH=${CHECKPOINTER_CONFIG_PATH:-/etc/seismic/summit-checkpointer.toml}
     CHECKPOINTER_SOURCE_REF="main"
     CHECKPOINTER_INSTALL_METHOD=""
     CHECKPOINTS_DIR=""
@@ -553,6 +642,10 @@ configure_checkpointer() {
             "Checkpointer output directory" \
             "/persistence/checkpoints" \
             "Stores Reth snapshots and Summit verification bundles produced by summit-checkpointer."
+        configure_file_path \
+            CHECKPOINTER_CONFIG_PATH \
+            "Checkpointer configuration file" \
+            "$CHECKPOINTER_CONFIG_PATH"
         configure_component_installation \
             CHECKPOINTER_INSTALL_METHOD \
             CHECKPOINTER_BINARY \
@@ -571,6 +664,7 @@ configure_checkpointer() {
         if [[ "$CHECKPOINTER_INSTALL_METHOD" == "source" ]]; then
             _out "  Checkpointer source ref: $CHECKPOINTER_SOURCE_REF"
         fi
+        _out "  Checkpointer config: $CHECKPOINTER_CONFIG_PATH"
         print_mdbx_copy_plan
     fi
 }
@@ -808,6 +902,7 @@ print_configuration_summary() {
         if [[ "$CHECKPOINTER_INSTALL_METHOD" == "source" ]]; then
             _out "  Source ref: $CHECKPOINTER_SOURCE_REF"
         fi
+        _out "  Config: $CHECKPOINTER_CONFIG_PATH"
         print_mdbx_copy_plan
     else
         _out "  Enabled: false"

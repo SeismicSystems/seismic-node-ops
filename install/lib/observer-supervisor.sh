@@ -137,8 +137,8 @@ deploy_observer_supervisor_configuration() {
     fi
 
     prepare_observer_supervisor_logs
-    install -d -o root -g root -m 0755 /etc/seismic
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
+        prepare_checkpointer_config_parent
         install -o root -g root -m 0644 \
             "$staging/summit-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH"
     else

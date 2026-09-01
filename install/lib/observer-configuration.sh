@@ -173,6 +173,7 @@ print_observer_configuration_summary() {
         print_component_installation \
             "Checkpointer" "$CHECKPOINTER_INSTALL_METHOD" \
             "$CHECKPOINTER_BINARY" "$CHECKPOINTER_TARGET_BIN"
+        _out "  Config: $CHECKPOINTER_CONFIG_PATH"
         print_mdbx_copy_plan
     fi
 

@@ -303,11 +303,15 @@ Supervisor logs are written under:
 /var/log/seismic-observer/
 ```
 
-When summit-checkpointer is enabled, its generated configuration is written to:
+When summit-checkpointer is enabled, the installer prompts for an absolute
+configuration-file path and defaults to:
 
 ```text
 /etc/seismic/summit-checkpointer.toml
 ```
+
+The generated Supervisor command uses the selected path. Its parent directory
+hierarchy must be root-owned and must not be group- or world-writable.
 
 When OpenResty is enabled, the installer writes:
 
