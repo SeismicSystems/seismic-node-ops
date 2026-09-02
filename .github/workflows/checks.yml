@@ -41,7 +41,15 @@ jobs:
           shellcheck -x \
             install-validator.sh \
             install-observer.sh \
+            ../tools/checkpoint-start/install-checkpoint.sh \
             ../tools/generate-openresty-jwt.sh
+
+      - name: Check Python
+        run: |
+          python3 -m py_compile \
+            tools/checkpoint-start/install-checkpoint.py \
+            tools/checkpoint-start/summit-checkpoint-runner.py
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
 
   markdown:
     name: Markdown checks

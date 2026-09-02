@@ -13,10 +13,16 @@ print_missing_service_prerequisites() {
     if ! security_error=$(check_service_executable_security "$SUMMIT_TARGET_BIN"); then
         warn "Summit cannot start until its executable is secured at $SUMMIT_TARGET_BIN: $security_error."
         missing=true
-    elif ! run_as_service_user "$SUMMIT_TARGET_BIN" deposit-rpc --help \
-        >/dev/null 2>&1; then
-        warn "Summit cannot complete validator registration because it does not support the deposit-rpc subcommand: $SUMMIT_TARGET_BIN."
-        missing=true
+    else
+        if ! run_as_service_user "$SUMMIT_TARGET_BIN" deposit-rpc --help \
+            >/dev/null 2>&1; then
+            warn "Summit cannot complete validator registration because it does not support the deposit-rpc subcommand: $SUMMIT_TARGET_BIN."
+            missing=true
+        fi
+        if ! check_summit_checkpoint_cli_support; then
+            warn "Summit cannot start from a checkpoint because it does not support --checkpoint-path and --weak-subjectivity-path: $SUMMIT_TARGET_BIN."
+            missing=true
+        fi
     fi
     if [[ ! -f "$RETH_P2P_KEY_PATH" ]]; then
         warn "seismic-reth cannot start until its P2P key exists at $RETH_P2P_KEY_PATH."
@@ -115,4 +121,6 @@ print_manual_start_instructions() {
     _out ""
     warn "Supervisor programs use autostart=false and autorestart=false."
     warn "Start them manually again after a server or Supervisor restart."
+    warn "Do not start summit-checkpoint until a verified checkpoint-start configuration has been installed."
+    warn "The summit and summit-checkpoint programs are mutually exclusive."
 }

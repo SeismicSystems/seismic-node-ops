@@ -31,6 +31,12 @@ Generate bearer tokens for OpenResty-protected endpoints with:
 tools/generate-openresty-jwt.sh
 ```
 
+Install or roll back a verified validator or observer checkpoint with:
+
+```text
+tools/checkpoint-start/install-checkpoint.sh
+```
+
 The Summit internal-testnet genesis file is provided at:
 
 ```text
@@ -53,8 +59,14 @@ go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install tools
   shellcheck -x \
     install-validator.sh \
     install-observer.sh \
+    ../tools/checkpoint-start/install-checkpoint.sh \
     ../tools/generate-openresty-jwt.sh
 )
+
+python3 -m py_compile \
+  tools/checkpoint-start/install-checkpoint.py \
+  tools/checkpoint-start/summit-checkpoint-runner.py
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 npx --yes prettier@3.6.2 --check '**/*.md'
 npx --yes markdownlint-cli2@0.21.0 './**/*.md' '#./.git/**'

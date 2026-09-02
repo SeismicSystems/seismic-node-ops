@@ -112,6 +112,10 @@ Keep this file in place after installation. The generated Supervisor program
 references the selected path directly, and the configured service user must be
 able to read it.
 
+The installer requires Ubuntu's system Python at `/usr/bin/python3`, version
+3.12 or newer, with the standard-library `tomllib` module. It validates this
+before collecting configuration and includes `python3` in the package plan.
+
 ## Run the installer
 
 Run the installer from the repository root:
@@ -288,14 +292,29 @@ It always defines:
 
 - `reth`
 - `summit-observer`
+- `summit-observer-checkpoint`
 
 It also defines `checkpointer` and `custodian` when those components are
 enabled. It does not define `summit-deposit-rpc`; observers do not create
 validator deposit signatures.
 
-The installer also does not create a checkpoint-start Supervisor program.
-Starting a validator or observer from a checkpoint is handled by the dedicated
-checkpoint-start CLI.
+`summit-observer-checkpoint` is manual-only and reads its checkpoint and
+weak-subjectivity paths from:
+
+```text
+/etc/seismic/observer-checkpoint-start.toml
+```
+
+The installer does not create this runtime file or download a checkpoint. It
+installs the checkpoint runner at:
+
+```text
+/usr/local/libexec/seismic/summit-checkpoint-runner
+```
+
+The checkpoint program fails if the file or required artifacts are missing. The
+normal and checkpoint observer programs use the same process lock and cannot run
+simultaneously.
 
 Supervisor logs are written under:
 
@@ -315,6 +334,30 @@ exists when the installer starts, the installer asks for permission to overwrite
 it after a successful installation. It does not read or reuse the existing
 contents. Declining the overwrite cancels the installation before configuration
 begins.
+
+## Install an observer checkpoint
+
+Stage the snapshot archive, its matching `manifest.json`, and an independently
+obtained weak-subjectivity TOML under root-owned, non-writable paths. Then run:
+
+```bash
+sudo ./tools/checkpoint-start/install-checkpoint.sh install \
+  --role observer \
+  --archive /root/seismic-checkpoint/epoch_12.tar.gz \
+  --manifest /root/seismic-checkpoint/manifest.json \
+  --weak-subjectivity-path /root/seismic-trust/weak_subjectivity.toml
+```
+
+The tool reads `/etc/seismic/observer-installation.toml`, verifies the observer
+assignment and preserved node keys, checks that related Supervisor programs are
+stopped, restores matching Reth state, and backs up and empties the Summit
+mutable store. Reth, Summit, the checkpoint destination, and the rollback
+directory must share a filesystem so state moves remain atomic. It writes
+`/etc/seismic/observer-checkpoint-start.toml` and leaves every service stopped.
+
+The tool prints the root-only rollback directory and exact rollback command. Do
+not remove the backup until checkpoint startup and the transition back to normal
+observer startup have both been verified.
 
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:

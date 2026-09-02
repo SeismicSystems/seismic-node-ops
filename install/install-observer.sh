@@ -66,8 +66,6 @@ main() {
     info "Seismic observer installer"
     preflight
     confirm_installation_inventory_overwrite "$INSTALLATION_INVENTORY_PATH"
-    command -v python3 >/dev/null \
-        || die "python3 is required for observer socket-address validation."
     configure_observer
     install_system_packages
     install_openresty

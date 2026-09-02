@@ -13,10 +13,16 @@ print_missing_observer_prerequisites() {
     if ! security_error=$(check_service_executable_security "$SUMMIT_TARGET_BIN"); then
         warn "Summit cannot start until its executable is secured at $SUMMIT_TARGET_BIN: $security_error."
         missing=true
-    elif ! run_as_service_user "$SUMMIT_TARGET_BIN" run --help 2>&1 \
-        | grep -q -- '--observer'; then
-        warn "Summit does not support the required --observer option: $SUMMIT_TARGET_BIN."
-        missing=true
+    else
+        if ! run_as_service_user "$SUMMIT_TARGET_BIN" run --help 2>&1 \
+            | grep -q -- '--observer'; then
+            warn "Summit does not support the required --observer option: $SUMMIT_TARGET_BIN."
+            missing=true
+        fi
+        if ! check_summit_checkpoint_cli_support; then
+            warn "Summit cannot start from a checkpoint because it does not support --checkpoint-path and --weak-subjectivity-path: $SUMMIT_TARGET_BIN."
+            missing=true
+        fi
     fi
     if [[ ! -f "$RETH_P2P_KEY_PATH" ]]; then
         warn "seismic-reth cannot start until its P2P key exists at $RETH_P2P_KEY_PATH."
@@ -101,6 +107,8 @@ print_observer_manual_start_instructions() {
     _out ""
     warn "Supervisor programs use autostart=false and autorestart=false."
     warn "Start them manually again after a server or Supervisor restart."
+    warn "Do not start summit-observer-checkpoint until a verified checkpoint-start configuration has been installed."
+    warn "The summit-observer and summit-observer-checkpoint programs are mutually exclusive."
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
         warn "This host needs outbound TCP access to parent Custodian $PARENT_CUSTODIAN."
         warn "The parent Custodian firewall must allow this observer's source IP."

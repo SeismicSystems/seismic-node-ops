@@ -8,6 +8,7 @@ collect_system_packages() {
     local needs_git=false
 
     SYSTEM_PACKAGES=(
+        python3
         curl
         jq
         ca-certificates

@@ -2,6 +2,28 @@
 
 # Shared provider-independent installer preflight checks.
 
+validate_system_python() {
+    local python_version
+
+    [[ -x /usr/bin/python3 ]] \
+        || die "System Python is required at /usr/bin/python3."
+    if ! python_version=$(
+        /usr/bin/python3 - <<'PY'
+import sys
+import tomllib
+
+if sys.version_info < (3, 12):
+    raise SystemExit(1)
+
+print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+PY
+    ); then
+        die "Python 3.12 or newer with the standard-library tomllib module is required at /usr/bin/python3."
+    fi
+
+    success "System Python validated: $python_version with tomllib"
+}
+
 preflight() {
     local os_id
 
@@ -18,6 +40,8 @@ preflight() {
 
     command -v apt-get >/dev/null \
         || die "apt-get not found; this installer requires Ubuntu with apt-get."
+
+    validate_system_python
 
     [[ -d "$TEMPLATES_DIR" ]] \
         || die "Templates not found at $TEMPLATES_DIR."

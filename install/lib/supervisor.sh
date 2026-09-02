@@ -4,6 +4,9 @@
 
 SUPERVISOR_CONFIG_PATH="/etc/supervisor/conf.d/seismic-validator.conf"
 CHECKPOINTER_CONFIG_PATH="/etc/seismic/summit-checkpointer.toml"
+CHECKPOINT_START_CONFIG_PATH="/etc/seismic/validator-checkpoint-start.toml"
+SUMMIT_CHECKPOINT_RUNNER_SOURCE="$SCRIPT_DIR/../tools/checkpoint-start/summit-checkpoint-runner.py"
+SUMMIT_CHECKPOINT_RUNNER_PATH="/usr/local/libexec/seismic/summit-checkpoint-runner"
 SUPERVISOR_LOG_DIR="/var/log/seismic-validator"
 
 normalize_bootnode_rpc_base() {
@@ -56,6 +59,15 @@ fetch_bootnode_enode() {
     success "Bootnode Reth enode discovered: ${BOOTNODE_ENODE:0:60}..."
 }
 
+check_summit_checkpoint_cli_support() {
+    local summit_help
+
+    summit_help=$(run_as_service_user "$SUMMIT_TARGET_BIN" run --help 2>&1) \
+        || return 1
+    grep -q -- '--checkpoint-path' <<<"$summit_help" \
+        && grep -q -- '--weak-subjectivity-path' <<<"$summit_help"
+}
+
 validate_supervisor_runtime_inputs() {
     [[ ! -L "$GENESIS_PATH" ]] \
         || die "Summit genesis path became a symbolic link: $GENESIS_PATH"
@@ -66,6 +78,15 @@ validate_supervisor_runtime_inputs() {
 
     [[ -d /etc/supervisor/conf.d ]] \
         || die "Supervisor configuration directory is missing: /etc/supervisor/conf.d"
+    [[ -x /usr/bin/flock ]] \
+        || die "Summit process locking requires /usr/bin/flock."
+    /usr/bin/flock --help 2>&1 | grep -q -- '--no-fork' \
+        || die "Installed flock does not support --no-fork."
+
+    if [[ -x "$SUMMIT_TARGET_BIN" ]] \
+        && ! check_summit_checkpoint_cli_support; then
+        die "Installed Summit does not support checkpoint startup with --checkpoint-path and --weak-subjectivity-path: $SUMMIT_TARGET_BIN"
+    fi
 }
 
 validate_supervisor_templates() {
@@ -73,6 +94,7 @@ validate_supervisor_templates() {
     local required=(
         "$template_root/reth.conf"
         "$template_root/summit-validator.conf"
+        "$template_root/summit-validator-checkpoint.conf"
         "$template_root/deposit-rpc.conf"
         "$template_root/checkpointer.conf"
         "$template_root/custodian.conf"
@@ -83,6 +105,8 @@ validate_supervisor_templates() {
     for path in "${required[@]}"; do
         [[ -f "$path" ]] || die "Required Supervisor template not found: $path"
     done
+    [[ -f "$SUMMIT_CHECKPOINT_RUNNER_SOURCE" ]] \
+        || die "Summit checkpoint runner not found: $SUMMIT_CHECKPOINT_RUNNER_SOURCE"
 }
 
 render_reth_supervisor_config() {
@@ -128,9 +152,29 @@ render_summit_validator_supervisor_config() {
     printf '%s\n' "$conf"
 }
 
+render_summit_validator_checkpoint_supervisor_config() {
+    local template="$TEMPLATES_DIR/supervisor/summit-validator-checkpoint.conf"
+    local conf
+    local summit_bind="127.0.0.1"
+
+    conf=$(<"$template")
+    conf=${conf//SUMMIT_CHECKPOINT_RUNNER_PLACEHOLDER/$SUMMIT_CHECKPOINT_RUNNER_PATH}
+    conf=${conf//CHECKPOINT_START_CONFIG_PLACEHOLDER/$CHECKPOINT_START_CONFIG_PATH}
+    conf=${conf//SUMMIT_BINARY_PLACEHOLDER/$SUMMIT_TARGET_BIN}
+    conf=${conf//GENESIS_PATH_PLACEHOLDER/$GENESIS_PATH}
+    conf=${conf//SUMMIT_KEYS_DIR_PLACEHOLDER/$SUMMIT_KEYS_DIR}
+    conf=${conf//SUMMIT_DATA_DIR_PLACEHOLDER/$SUMMIT_DATA_DIR}
+    conf=${conf//SUMMIT_RPC_BIND_PLACEHOLDER/$summit_bind}
+    conf=${conf//SUMMIT_PROM_BIND_PLACEHOLDER/$summit_bind}
+    conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
+    conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
+    printf '%s\n' "$conf"
+}
+
 render_validator_supervisor_config() {
     render_reth_supervisor_config
     render_summit_validator_supervisor_config
+    render_summit_validator_checkpoint_supervisor_config
 }
 
 render_deposit_rpc_supervisor_config() {
@@ -197,7 +241,7 @@ find_conflicting_supervisor_config() {
     config_dir=$(dirname -- "$SUPERVISOR_CONFIG_PATH")
     while IFS= read -r -d '' path; do
         [[ "$path" == "$SUPERVISOR_CONFIG_PATH" ]] && continue
-        if grep -Eq '^\[program:(reth|summit|summit-observer|summit-observer-checkpoint|summit-deposit-rpc|checkpointer|custodian)\]' "$path"; then
+        if grep -Eq '^\[program:(reth|summit|summit-checkpoint|summit-observer|summit-observer-checkpoint|summit-deposit-rpc|checkpointer|custodian)\]' "$path"; then
             printf '%s\n' "$path"
             found=true
         fi
@@ -267,8 +311,30 @@ prepare_checkpointer_config_parent() {
     done
 }
 
+deploy_summit_checkpoint_runner() {
+    local parent
+    local resolved_parent
+    local security_error
+
+    parent=$(dirname -- "$SUMMIT_CHECKPOINT_RUNNER_PATH")
+    resolved_parent=$(realpath -m -- "$parent")
+    [[ "$resolved_parent" == "$parent" ]] \
+        || die "Summit checkpoint runner parent must not contain symbolic links: $parent"
+    install -d -o root -g root -m 0755 -- "$parent"
+    [[ -d "$parent" && ! -L "$parent" ]] \
+        || die "Summit checkpoint runner parent is not a safe directory: $parent"
+    [[ ! -L "$SUMMIT_CHECKPOINT_RUNNER_PATH" ]] \
+        || die "Summit checkpoint runner target must not be a symbolic link: $SUMMIT_CHECKPOINT_RUNNER_PATH"
+    install -o root -g root -m 0755 \
+        -- "$SUMMIT_CHECKPOINT_RUNNER_SOURCE" "$SUMMIT_CHECKPOINT_RUNNER_PATH"
+    if ! security_error=$(check_service_executable_security "$SUMMIT_CHECKPOINT_RUNNER_PATH"); then
+        die "Summit checkpoint runner is not safe for service use: $security_error"
+    fi
+    success "Summit checkpoint runner installed: $SUMMIT_CHECKPOINT_RUNNER_PATH"
+}
+
 prepare_supervisor_logs() {
-    local names=(summit-deposit-rpc reth summit)
+    local names=(summit-deposit-rpc reth summit summit-checkpoint)
     local name
 
     [[ "$INSTALL_CHECKPOINTER" != true ]] || names+=(checkpointer)
@@ -300,6 +366,7 @@ deploy_supervisor_configuration() {
     fi
 
     replace_conflicting_supervisor_config
+    deploy_summit_checkpoint_runner
     [[ ! -L "$SUPERVISOR_CONFIG_PATH" ]] \
         || die "Supervisor target must not be a symbolic link: $SUPERVISOR_CONFIG_PATH"
     [[ ! -L "$CHECKPOINTER_CONFIG_PATH" ]] \
@@ -309,6 +376,8 @@ deploy_supervisor_configuration() {
     render_deposit_rpc_supervisor_config >"$staging/seismic-validator.conf"
     render_reth_supervisor_config >>"$staging/seismic-validator.conf"
     render_summit_validator_supervisor_config >>"$staging/seismic-validator.conf"
+    render_summit_validator_checkpoint_supervisor_config \
+        >>"$staging/seismic-validator.conf"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         render_checkpointer_supervisor_config \
             >>"$staging/seismic-validator.conf"

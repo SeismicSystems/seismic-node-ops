@@ -87,6 +87,10 @@ Keep this file in place after installation. The generated Supervisor programs
 reference the selected path directly, and the configured service user must be
 able to read it.
 
+The installer requires Ubuntu's system Python at `/usr/bin/python3`, version
+3.12 or newer, with the standard-library `tomllib` module. It validates this
+before collecting configuration and includes `python3` in the package plan.
+
 ## Run the installer
 
 Run the installer from the repository root:
@@ -198,9 +202,26 @@ It always defines:
 - `summit-deposit-rpc`
 - `reth`
 - `summit`
+- `summit-checkpoint`
 
 It also defines `checkpointer` and `custodian` when those components are
-enabled. Supervisor logs are written under:
+enabled. `summit-checkpoint` is manual-only and reads its checkpoint and
+weak-subjectivity paths from:
+
+```text
+/etc/seismic/validator-checkpoint-start.toml
+```
+
+The installer does not create this runtime file or download a checkpoint. It
+installs the checkpoint runner at:
+
+```text
+/usr/local/libexec/seismic/summit-checkpoint-runner
+```
+
+The checkpoint program fails if the file or required artifacts are missing. The
+normal and checkpoint Summit programs use the same process lock and cannot run
+simultaneously. Supervisor logs are written under:
 
 ```text
 /var/log/seismic-validator/
@@ -218,6 +239,32 @@ paths; it contains no key material or other secrets. If it already exists when
 the installer starts, the installer asks for permission to overwrite it after a
 successful installation. It does not read or reuse the existing contents.
 Declining the overwrite cancels the installation before configuration begins.
+
+## Install a validator checkpoint
+
+Stage the snapshot archive, its matching `manifest.json`, and an independently
+obtained weak-subjectivity TOML under root-owned, non-writable paths. Then run:
+
+```bash
+sudo ./tools/checkpoint-start/install-checkpoint.sh install \
+  --role validator \
+  --archive /root/seismic-checkpoint/epoch_12.tar.gz \
+  --manifest /root/seismic-checkpoint/manifest.json \
+  --weak-subjectivity-path /root/seismic-trust/weak_subjectivity.toml
+```
+
+The tool verifies the manifest and archive, checks that related Supervisor
+programs are stopped, preserves node keys, backs up and replaces the matching
+Reth state, and backs up and empties the Summit mutable store. Reth, Summit, the
+checkpoint destination, and the rollback directory must share a filesystem so
+state moves remain atomic. The default checkpoint and rollback locations are
+derived from the configured data paths. It writes
+`/etc/seismic/validator-checkpoint-start.toml` and leaves every service stopped.
+
+The tool prints the root-only rollback directory as soon as it is created and
+again in its final summary, together with the exact rollback command. Do not
+remove that directory until checkpoint startup and the transition back to normal
+Summit startup have both been verified.
 
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
