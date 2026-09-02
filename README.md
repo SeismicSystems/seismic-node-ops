@@ -34,7 +34,7 @@ tools/generate-openresty-jwt.sh
 Install or roll back a verified validator or observer checkpoint with:
 
 ```text
-tools/checkpoint-start/install-checkpoint.sh
+tools/checkpoint-start/install-checkpoint.py
 ```
 
 The Summit internal-testnet genesis file is provided at:
@@ -59,7 +59,6 @@ go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install tools
   shellcheck -x \
     install-validator.sh \
     install-observer.sh \
-    ../tools/checkpoint-start/install-checkpoint.sh \
     ../tools/generate-openresty-jwt.sh
 )
 

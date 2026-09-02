@@ -246,7 +246,7 @@ Stage the snapshot archive, its matching `manifest.json`, and an independently
 obtained weak-subjectivity TOML under root-owned, non-writable paths. Then run:
 
 ```bash
-sudo ./tools/checkpoint-start/install-checkpoint.sh install \
+sudo ./tools/checkpoint-start/install-checkpoint.py install \
   --role validator \
   --archive /root/seismic-checkpoint/epoch_12.tar.gz \
   --manifest /root/seismic-checkpoint/manifest.json \

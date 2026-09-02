@@ -1271,9 +1271,9 @@ def install_checkpoint(args: argparse.Namespace) -> None:
     print(f"Installed epoch {manifest['epoch']} checkpoint. Services remain stopped.")
     print_rollback_paths(backup)
     print("Rollback command:")
-    wrapper = Path(__file__).with_name("install-checkpoint.sh")
+    installer = Path(__file__)
     print(
-        f"  sudo {shlex.quote(str(wrapper))} rollback "
+        f"  sudo {shlex.quote(str(installer))} rollback "
         f"--backup {shlex.quote(str(backup))}"
     )
     print(

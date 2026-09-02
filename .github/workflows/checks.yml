@@ -41,7 +41,6 @@ jobs:
           shellcheck -x \
             install-validator.sh \
             install-observer.sh \
-            ../tools/checkpoint-start/install-checkpoint.sh \
             ../tools/generate-openresty-jwt.sh
 
       - name: Check Python
