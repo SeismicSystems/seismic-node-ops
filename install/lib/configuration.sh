@@ -35,6 +35,56 @@ confirm() {
     done
 }
 
+confirm_installation_inventory_overwrite() {
+    local path=$1
+
+    [[ -e "$path" || -L "$path" ]] || return
+
+    warn "An installation inventory already exists: $path"
+    warn "The installer will not read or reuse its contents."
+    if ! confirm "Overwrite it after a successful installation?"; then
+        info "Installation cancelled; the existing inventory was not changed."
+        exit 0
+    fi
+}
+
+install_installation_inventory() {
+    local path=$1
+    local parent
+    local resolved_parent
+    local name
+    local staging
+
+    parent=$(dirname -- "$path")
+    resolved_parent=$(realpath -m -- "$parent")
+    [[ "$resolved_parent" == "$parent" ]] \
+        || die "Installation inventory parent must not contain symbolic links: $parent"
+
+    if [[ ! -e "$parent" ]]; then
+        install -d -o root -g root -m 0755 -- "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" ]] \
+        || die "Installation inventory parent is not a safe directory: $parent"
+
+    name=${path##*/}
+    staging=$(mktemp "$parent/.${name}.XXXXXX") \
+        || die "Could not create the installation inventory staging file."
+    if ! cat >"$staging"; then
+        rm -f -- "$staging"
+        die "Could not render the installation inventory."
+    fi
+    if ! chown root:root "$staging" || ! chmod 0644 "$staging"; then
+        rm -f -- "$staging"
+        die "Could not secure the installation inventory staging file."
+    fi
+    if ! mv -fT -- "$staging" "$path"; then
+        rm -f -- "$staging"
+        die "Could not install the installation inventory: $path"
+    fi
+
+    success "Installation inventory written: $path"
+}
+
 configure_service_user() {
     local default_user=${SUDO_USER:-ubuntu}
 

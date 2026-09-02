@@ -206,6 +206,19 @@ enabled. Supervisor logs are written under:
 /var/log/seismic-validator/
 ```
 
+After a successful installation, the installer atomically writes the runtime
+paths needed by post-install checkpoint tools to:
+
+```text
+/etc/seismic/validator-installation.toml
+```
+
+The root-owned file contains only the configured Reth and Summit data and key
+paths; it contains no key material or other secrets. If it already exists when
+the installer starts, the installer asks for permission to overwrite it after a
+successful installation. It does not read or reuse the existing contents.
+Declining the overwrite cancels the installation before configuration begins.
+
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
 
