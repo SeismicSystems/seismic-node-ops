@@ -335,7 +335,9 @@ credential.
 
 ## First validator startup
 
-Use the node tool to generate the fixed deposit-signature request:
+Use the node tool to generate the fixed deposit-signature request. It loads the
+installed Supervisor program definitions itself, so no manual `supervisorctl`
+steps are required first:
 
 ```bash
 sudo ./tools/seismic-node.py validator deposit-signature \

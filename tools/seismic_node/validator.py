@@ -147,6 +147,9 @@ def generate_deposit_signature(args: Any) -> None:
     output = args.output
     checkpoint.require_absolute(output, "Deposit-signature output")
     confirm_output_overwrite(output, args.overwrite)
+    # Load the installed program definitions so this works on a freshly
+    # installed host; everything is autostart=false, so nothing starts here.
+    supervisor.prepare_supervisor()
     # Deposit signing uses the same keys and state as Summit, so no other node
     # service may be active during this short-lived RPC operation.
     supervisor.require_stopped(

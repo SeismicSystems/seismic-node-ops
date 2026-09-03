@@ -439,6 +439,7 @@ class ValidatorTests(unittest.TestCase):
             mock.patch.object(checkpoint, "load_inventory"),
             mock.patch.object(checkpoint, "require_absolute"),
             mock.patch.object(validator, "confirm_output_overwrite"),
+            mock.patch.object(supervisor, "prepare_supervisor") as prepare,
             mock.patch.object(supervisor, "require_stopped"),
             mock.patch.object(
                 supervisor,
@@ -450,6 +451,7 @@ class ValidatorTests(unittest.TestCase):
             mock.patch.object(checkpoint, "atomic_write"),
         ):
             validator.generate_deposit_signature(args)
+        prepare.assert_called_once()
 
         self.assertEqual(
             calls,
@@ -486,6 +488,7 @@ class ValidatorTests(unittest.TestCase):
             mock.patch.object(checkpoint, "load_inventory"),
             mock.patch.object(checkpoint, "require_absolute"),
             mock.patch.object(validator, "confirm_output_overwrite"),
+            mock.patch.object(supervisor, "prepare_supervisor"),
             mock.patch.object(supervisor, "require_stopped"),
             mock.patch.object(
                 supervisor,

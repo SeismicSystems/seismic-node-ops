@@ -96,10 +96,10 @@ an interactive operator is not prompted twice.
 
 ### Supervisor startup
 
-Observer startup and authorized validator checkpoint startup first run
-`systemctl enable --now supervisor`, followed by `supervisorctl reread` and
-`supervisorctl update`. They then call `supervisor.start_node()`, which starts
-dependencies in this order:
+Observer startup, authorized validator checkpoint startup, and deposit-signature
+generation first run `systemctl enable --now supervisor`, followed by
+`supervisorctl reread` and `supervisorctl update`. Startup then calls
+`supervisor.start_node()`, which starts dependencies in this order:
 
 1. `custodian`, when configured.
 2. `reth`.
