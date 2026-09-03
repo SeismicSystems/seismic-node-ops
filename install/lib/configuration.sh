@@ -143,6 +143,7 @@ print_available_disk_space() {
         info "Directory does not exist yet; using nearest existing parent: $probe"
     fi
 
+    _out ""
     _out "Available disk space for $path:"
     df -h --output=source,size,used,avail,pcent,target -- "$probe"
 }
@@ -194,6 +195,7 @@ configure_directory() {
 
     _out "$description:"
     _out "  $contents"
+    _out ""
 
     while true; do
         prompt "$variable_name" "$description" "$default"
@@ -226,6 +228,7 @@ configure_directory() {
     printf -v "$variable_name" '%s' "$selected"
     success "$description selected: $selected"
     print_available_disk_space "$selected"
+    _out ""
 }
 
 configure_file_path() {
