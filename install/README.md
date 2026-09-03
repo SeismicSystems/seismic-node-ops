@@ -32,7 +32,7 @@ Review the complete interactive configuration summary before accepting it.
 
 ## Requirements
 
-- Ubuntu with `apt-get`. Other Linux distributions are not supported.
+- Ubuntu 24.04 LTS (Noble) with `apt-get`.
 - Root access through `sudo`.
 - An existing non-root Linux user that will run the validator services.
 - The Summit internal-testnet genesis TOML supplied in this repository at

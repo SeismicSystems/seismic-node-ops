@@ -25,7 +25,7 @@ PY
 }
 
 preflight() {
-    local os_id
+    local os_id os_version
 
     section "Preflight checks"
 
@@ -37,6 +37,9 @@ preflight() {
     os_id=$(awk -F= '$1 == "ID" { gsub(/"/, "", $2); print tolower($2); exit }' /etc/os-release)
     [[ "$os_id" == "ubuntu" ]] \
         || die "This installer supports Ubuntu only; detected operating system ID: ${os_id:-unknown}."
+    os_version=$(awk -F= '$1 == "VERSION_ID" { gsub(/"/, "", $2); print $2; exit }' /etc/os-release)
+    [[ "$os_version" == "24.04" ]] \
+        || die "This installer supports Ubuntu 24.04 LTS only; detected version: ${os_version:-unknown}."
 
     command -v apt-get >/dev/null \
         || die "apt-get not found; this installer requires Ubuntu with apt-get."
