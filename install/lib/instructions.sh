@@ -76,6 +76,8 @@ print_manual_start_instructions() {
     _out ""
     _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py validator deposit-signature --output /root/deposit-signature.json"
     _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py validator onboard --help"
+    _out "When onboarding authorizes full startup, it enables and starts Supervisor,"
+    _out "then runs supervisorctl reread and supervisorctl update."
     _out ""
     _out "For manual troubleshooting, start Summit's localhost-only"
     _out "deposit-signature RPC program:"
@@ -109,12 +111,30 @@ print_manual_start_instructions() {
         _out "  sudo supervisorctl start checkpointer"
     fi
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
+        _out ""
+        _out "Start or reload OpenResty separately:"
         _out "  sudo systemctl enable openresty"
         _out "  if sudo systemctl is-active --quiet openresty; then"
         _out "      sudo systemctl reload openresty"
         _out "  else"
         _out "      sudo systemctl start openresty"
         _out "  fi"
+    fi
+    _out ""
+    _out "Stop all validator node programs in reverse dependency order with:"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py validator stop"
+    _out "Supervisor and OpenResty remain running."
+    _out ""
+    _out "Manual stop commands:"
+    if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
+        _out "  sudo supervisorctl stop checkpointer"
+    fi
+    _out "  sudo supervisorctl stop summit-deposit-rpc"
+    _out "  sudo supervisorctl stop summit"
+    _out "  sudo supervisorctl stop summit-checkpoint"
+    _out "  sudo supervisorctl stop reth"
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        _out "  sudo supervisorctl stop custodian"
     fi
 
     _out ""

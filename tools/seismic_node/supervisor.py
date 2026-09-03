@@ -1,8 +1,10 @@
 """Conservative, command-scoped Supervisor process control.
 
-This module never reloads Supervisor configuration.  It starts only the selected
-node programs, records which start requests this invocation issued, and stops
-those programs in reverse order if a later startup step fails.
+Observer startup and authorized validator checkpoint startup enable Supervisor
+and load its current configuration before starting node programs. Program
+startup records which requests the invocation issued and reverses only those
+requests if a later startup step fails. Explicit shutdown stops node programs in
+reverse dependency order.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+SYSTEMCTL = Path("/usr/bin/systemctl")
 SUPERVISORCTL = Path("/usr/bin/supervisorctl")
 # BACKOFF and STARTING can still spawn or transition to RUNNING. Only terminal
 # states that cannot start without a new Supervisor command are safe here.
@@ -43,6 +46,18 @@ class ProgramStatus:
         return self.state == "RUNNING"
 
 
+def run_systemctl(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run the fixed systemctl binary without invoking a shell."""
+    if not SYSTEMCTL.is_file():
+        raise SupervisorError(f"systemctl is required at {SYSTEMCTL}")
+    return subprocess.run(
+        [str(SYSTEMCTL), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def run_supervisorctl(*arguments: str) -> subprocess.CompletedProcess[str]:
     """Run the fixed system supervisorctl binary without invoking a shell."""
     if not SUPERVISORCTL.is_file():
@@ -53,6 +68,34 @@ def run_supervisorctl(*arguments: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def require_command_success(
+    result: subprocess.CompletedProcess[str], description: str
+) -> None:
+    """Raise a concise error when a service-control command fails."""
+    if result.returncode == 0:
+        return
+    output = f"{result.stdout}\n{result.stderr}".strip()
+    detail = f": {output}" if output else ""
+    raise SupervisorError(f"{description} failed{detail}")
+
+
+def prepare_supervisor() -> None:
+    """Enable Supervisor and load the installed program configuration."""
+    require_command_success(
+        run_systemctl("enable", "--now", "supervisor"),
+        "Enabling and starting Supervisor",
+    )
+    require_command_success(
+        run_supervisorctl("reread"),
+        "Rereading Supervisor configuration",
+    )
+    require_command_success(
+        run_supervisorctl("update"),
+        "Updating Supervisor configuration",
+    )
+    print("Supervisor enabled, running, reread, and updated.")
 
 
 def status(name: str) -> ProgramStatus:
@@ -147,15 +190,16 @@ def start_program(
         time.sleep(0.5)
 
 
-def stop_program(name: str) -> None:
-    """Stop a program unless it is missing or already in a stopped state."""
+def stop_program(name: str) -> bool:
+    """Stop a program, returning whether a stop request was necessary."""
     current = status(name)
     if not current.exists or current.state in STOPPED_STATES:
-        return
+        return False
     result = run_supervisorctl("stop", name)
     if result.returncode != 0:
         output = f"{result.stdout}\n{result.stderr}".strip()
         raise SupervisorError(f"Could not stop {name}: {output}")
+    return True
 
 
 def optional_programs() -> tuple[bool, bool]:
@@ -204,3 +248,19 @@ def start_node(
         if cleanup_errors:
             print("Startup cleanup errors: " + "; ".join(cleanup_errors))
         raise
+
+
+def stop_node(summit_programs: tuple[str, ...]) -> list[str]:
+    """Stop configured node programs in reverse dependency order."""
+    sequence = [
+        "checkpointer",
+        *summit_programs,
+        "reth",
+        "custodian",
+    ]
+    stopped: list[str] = []
+    for name in sequence:
+        if stop_program(name):
+            stopped.append(name)
+            print(f"Stopped Supervisor program: {name}")
+    return stopped

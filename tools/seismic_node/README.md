@@ -19,8 +19,8 @@ boundary can be reviewed and tested independently.
 | `download.py`   | Selects a completed checkpoint epoch, polls remote manifests, downloads verified archives, and resolves local, URL, or Summit-RPC weak-subjectivity anchors.                                                       |
 | `rpc.py`        | Provides strict standard-library HTTP and JSON-RPC helpers with URL, redirect, response-size, token-file, archive-size, and SHA-256 checks.                                                                        |
 | `supervisor.py` | Starts selected Supervisor programs in dependency order and reverses only the start requests made by the current command after a partial failure.                                                                  |
-| `validator.py`  | Generates the exact deposit-signature response and applies validator lifecycle policy before checkpoint startup.                                                                                                   |
-| `observer.py`   | Selects normal or checkpoint observer startup without applying validator lifecycle rules.                                                                                                                          |
+| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before checkpoint startup, and coordinates validator shutdown.                                                                  |
+| `observer.py`   | Selects normal or checkpoint observer startup and coordinates observer shutdown without applying validator lifecycle rules.                                                                                        |
 
 `__init__.py` only identifies the internal package. It intentionally performs no
 startup work or global configuration.
@@ -95,7 +95,10 @@ an interactive operator is not prompted twice.
 
 ### Supervisor startup
 
-`supervisor.start_node()` starts dependencies in this order:
+Observer startup and authorized validator checkpoint startup first run
+`systemctl enable --now supervisor`, followed by `supervisorctl reread` and
+`supervisorctl update`. They then call `supervisor.start_node()`, which starts
+dependencies in this order:
 
 1. `custodian`, when configured.
 2. `reth`.
@@ -107,8 +110,20 @@ Supervisor accepts a start request, that program is recorded immediately. If a
 later program fails or times out, recorded programs are stopped in reverse
 order. Programs that were already running before the command are not stopped.
 
-The package never performs Supervisor `reread`, `update`, or configuration
-reload operations.
+### Supervisor shutdown
+
+`observer stop` and `validator stop` validate their role-specific installation
+inventories and call `supervisor.stop_node()` to stop programs in reverse
+dependency order:
+
+1. `checkpointer`, when configured.
+2. The role's deposit-signature, normal, and checkpoint Summit programs.
+3. `reth`.
+4. `custodian`, when configured.
+
+Missing and already-stopped programs are skipped. A stop failure aborts before
+lower-level dependencies are stopped. Supervisor itself and OpenResty remain
+running.
 
 ## Security invariants
 

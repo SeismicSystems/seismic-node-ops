@@ -1,4 +1,4 @@
-"""Validator deposit-signature generation and lifecycle-gated startup.
+"""Validator deposit-signature generation, lifecycle-gated startup, and shutdown.
 
 Deposit signing is intentionally isolated behind the temporary loopback-only
 Summit deposit RPC.  Onboarding then derives the validator identity from that
@@ -416,9 +416,19 @@ def start_checkpoint_validator(
         print("Checkpoint remains installed. All validator services remain stopped.")
         return
     checkpoint.validate_checkpoint_start_configuration("validator")
+    supervisor.prepare_supervisor()
     supervisor.start_node(
         "summit-checkpoint",
         "summit",
         startup_timeout=args.startup_timeout,
     )
     print("Validator checkpoint startup requested successfully.")
+
+
+def stop_validator(args: Any) -> None:
+    """Validate validator identity and stop its programs in dependency order."""
+    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
+    checkpoint.load_inventory("validator", inventory_path)
+    supervisor.stop_node(("summit-deposit-rpc", "summit", "summit-checkpoint"))
+    print("Validator services stopped successfully.")
+    print("Supervisor and OpenResty remain running.")

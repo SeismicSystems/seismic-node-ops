@@ -562,6 +562,61 @@ class ValidatorTests(unittest.TestCase):
                 validator.wait_for_start_authorization(args, "11" * 32).start
             )
 
+    def test_checkpoint_start_prepares_supervisor_before_programs(self) -> None:
+        args = SimpleNamespace(startup_timeout=30.0)
+        events: list[str] = []
+        with (
+            mock.patch.object(
+                validator,
+                "wait_for_start_authorization",
+                return_value=validator.StartDecision(start=True),
+            ),
+            mock.patch.object(checkpoint, "validate_checkpoint_start_configuration"),
+            mock.patch.object(
+                supervisor,
+                "prepare_supervisor",
+                side_effect=lambda: events.append("prepare"),
+            ) as prepare,
+            mock.patch.object(
+                supervisor,
+                "start_node",
+                side_effect=lambda *args, **kwargs: events.append("start"),
+            ) as start_node,
+        ):
+            validator.start_checkpoint_validator(
+                args,
+                "11" * 32,
+                allow_pre_joining_start=False,
+            )
+        self.assertEqual(events, ["prepare", "start"])
+        prepare.assert_called_once_with()
+        start_node.assert_called_once_with(
+            "summit-checkpoint",
+            "summit",
+            startup_timeout=30.0,
+        )
+
+    def test_stop_validates_inventory_and_stops_all_validator_modes(self) -> None:
+        args = SimpleNamespace(inventory=None)
+        with (
+            mock.patch.object(checkpoint, "load_inventory") as load_inventory,
+            mock.patch.object(supervisor, "stop_node") as stop_node,
+        ):
+            validator.stop_validator(args)
+        load_inventory.assert_called_once_with(
+            "validator", checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
+        )
+        stop_node.assert_called_once_with(
+            ("summit-deposit-rpc", "summit", "summit-checkpoint")
+        )
+
+    def test_cli_accepts_validator_stop_without_onboarding_options(self) -> None:
+        with mock.patch.object(sys, "argv", ["seismic-node.py", "validator", "stop"]):
+            args = node_cli.parse_args()
+        self.assertEqual(args.command, "validator")
+        self.assertEqual(args.validator_command, "stop")
+        self.assertIsNone(args.inventory)
+
 
 class ObserverTests(unittest.TestCase):
     def test_normal_start_ignores_installed_checkpoint_config(self) -> None:
@@ -570,6 +625,7 @@ class ObserverTests(unittest.TestCase):
             mode="normal",
             startup_timeout=30.0,
         )
+        events: list[str] = []
         with tempfile.TemporaryDirectory() as temporary_directory:
             checkpoint_config = Path(temporary_directory) / "observer-checkpoint.toml"
             checkpoint_config.write_text("checkpoint_path = '/unused'\n")
@@ -579,17 +635,66 @@ class ObserverTests(unittest.TestCase):
                     {"observer": checkpoint_config},
                 ),
                 mock.patch.object(checkpoint, "load_inventory"),
-                mock.patch.object(supervisor, "start_node") as start_node,
+                mock.patch.object(
+                    supervisor,
+                    "prepare_supervisor",
+                    side_effect=lambda: events.append("prepare"),
+                ) as prepare,
+                mock.patch.object(
+                    supervisor,
+                    "start_node",
+                    side_effect=lambda *args, **kwargs: events.append("start"),
+                ) as start_node,
             ):
                 observer.start_observer(args)
+        self.assertEqual(events, ["prepare", "start"])
+        prepare.assert_called_once_with()
         start_node.assert_called_once_with(
             "summit-observer",
             "summit-observer-checkpoint",
             startup_timeout=30.0,
         )
 
+    def test_stop_validates_inventory_and_stops_both_observer_modes(self) -> None:
+        args = SimpleNamespace(inventory=None)
+        with (
+            mock.patch.object(checkpoint, "load_inventory") as load_inventory,
+            mock.patch.object(supervisor, "stop_node") as stop_node,
+        ):
+            observer.stop_observer(args)
+        load_inventory.assert_called_once_with(
+            "observer", checkpoint.DEFAULT_INVENTORY_PATHS["observer"]
+        )
+        stop_node.assert_called_once_with(
+            ("summit-observer", "summit-observer-checkpoint")
+        )
+
+    def test_cli_accepts_observer_stop_without_mode(self) -> None:
+        with mock.patch.object(sys, "argv", ["seismic-node.py", "observer", "stop"]):
+            args = node_cli.parse_args()
+        self.assertEqual(args.command, "observer")
+        self.assertEqual(args.observer_command, "stop")
+        self.assertIsNone(args.inventory)
+
 
 class SupervisorTests(unittest.TestCase):
+    def test_prepare_supervisor_enables_rereads_and_updates(self) -> None:
+        success = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with (
+            mock.patch.object(
+                supervisor, "run_systemctl", return_value=success
+            ) as systemctl,
+            mock.patch.object(
+                supervisor, "run_supervisorctl", return_value=success
+            ) as supervisorctl,
+        ):
+            supervisor.prepare_supervisor()
+        systemctl.assert_called_once_with("enable", "--now", "supervisor")
+        self.assertEqual(
+            supervisorctl.call_args_list,
+            [mock.call("reread"), mock.call("update")],
+        )
+
     def test_status_accepts_supervisor_not_running_exit_code(self) -> None:
         result = subprocess.CompletedProcess(
             ["supervisorctl", "status", "reth"],
@@ -706,6 +811,48 @@ class SupervisorTests(unittest.TestCase):
             started,
             ["custodian", "reth", "summit-checkpoint", "checkpointer"],
         )
+
+    def test_stop_node_uses_reverse_dependency_order(self) -> None:
+        requested: list[str] = []
+
+        def fake_stop(name: str) -> bool:
+            requested.append(name)
+            return name != "summit-observer-checkpoint"
+
+        with mock.patch.object(supervisor, "stop_program", side_effect=fake_stop):
+            stopped = supervisor.stop_node(
+                ("summit-observer", "summit-observer-checkpoint")
+            )
+        self.assertEqual(
+            requested,
+            [
+                "checkpointer",
+                "summit-observer",
+                "summit-observer-checkpoint",
+                "reth",
+                "custodian",
+            ],
+        )
+        self.assertEqual(
+            stopped,
+            ["checkpointer", "summit-observer", "reth", "custodian"],
+        )
+
+    def test_stop_failure_preserves_lower_level_dependencies(self) -> None:
+        requested: list[str] = []
+
+        def fake_stop(name: str) -> bool:
+            requested.append(name)
+            if name == "summit-observer":
+                raise supervisor.SupervisorError("failed")
+            return True
+
+        with (
+            mock.patch.object(supervisor, "stop_program", side_effect=fake_stop),
+            self.assertRaisesRegex(supervisor.SupervisorError, "failed"),
+        ):
+            supervisor.stop_node(("summit-observer", "summit-observer-checkpoint"))
+        self.assertEqual(requested, ["checkpointer", "summit-observer"])
 
     def test_partial_start_failure_stops_only_started_programs_in_reverse(self) -> None:
         statuses = {

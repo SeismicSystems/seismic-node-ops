@@ -356,6 +356,17 @@ sudo ./tools/seismic-node.py validator onboard \
   --weak-subjectivity-rpc-url https://independent-validator.example/summit
 ```
 
+When startup is authorized, `validator onboard` automatically runs:
+
+```bash
+sudo systemctl enable --now supervisor
+sudo supervisorctl reread
+sudo supervisorctl update
+```
+
+It then starts Custodian when configured, Reth, `summit-checkpoint`, and
+summit-checkpointer when configured. It does not start or reload OpenResty.
+
 For unattended installation, pin `--checkpoint-epoch`, use
 `--checkpoint-policy exact`, and provide matching `--confirm-hostname` and
 `--confirm-epoch` values. This avoids a dynamically selected epoch differing
@@ -480,13 +491,17 @@ an existing normal state manually, start only the components enabled during
 installation, in this order:
 
 ```bash
-# Run this first only when Custodian was configured.
+sudo systemctl enable --now supervisor
+sudo supervisorctl reread
+sudo supervisorctl update
+
+# Run this only when Custodian was configured.
 sudo supervisorctl start custodian
 
 sudo supervisorctl start reth
 sudo supervisorctl start summit
 
-# Optional: Run this only when summit-checkpointer was enabled.
+# Run this only when summit-checkpointer was enabled.
 sudo supervisorctl start checkpointer
 
 sudo supervisorctl status
@@ -494,6 +509,31 @@ sudo supervisorctl status
 
 Because `autostart=false` and `autorestart=false`, these programs must be
 started manually again after a server or Supervisor restart.
+
+## Stop the validator
+
+Stop deposit-signature, normal, or checkpoint validator programs and their
+dependencies in reverse order with:
+
+```bash
+sudo ./tools/seismic-node.py validator stop
+sudo supervisorctl status
+```
+
+The command validates the validator installation inventory before stopping
+services. Supervisor and OpenResty remain running.
+
+The complete manual equivalent is:
+
+```bash
+sudo supervisorctl stop checkpointer       # when configured
+sudo supervisorctl stop summit-deposit-rpc
+sudo supervisorctl stop summit
+sudo supervisorctl stop summit-checkpoint
+sudo supervisorctl stop reth
+sudo supervisorctl stop custodian          # when configured
+sudo supervisorctl status
+```
 
 ## OpenResty public endpoint
 

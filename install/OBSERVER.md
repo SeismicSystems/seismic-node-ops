@@ -475,28 +475,55 @@ do not replace an existing observer root key.
 The parent validator Custodian must be running with its own `--summit-key-dir`
 argument so it can authenticate and serve observer requests.
 
-## First observer startup
+## Start the observer
 
 Do not start Custodian or Summit until the parent validator's private
 `node_key.pem` exists at the configured observer Summit key path.
 
-### 1. Load the Supervisor configuration
+### Coordinated start
+
+Use the node tool for normal startup:
+
+```bash
+sudo ./tools/seismic-node.py observer start --mode normal
+```
+
+The command validates the observer installation inventory and then runs:
 
 ```bash
 sudo systemctl enable --now supervisor
 sudo supervisorctl reread
 sudo supervisorctl update
+```
+
+It starts configured Supervisor programs in dependency order: Custodian when
+enabled, Reth, `summit-observer`, and summit-checkpointer when enabled. If a
+program started by the command fails, it stops only the programs that invocation
+started, in reverse order.
+
+The command does not start or reload OpenResty. Start OpenResty separately as
+described under [OpenResty public endpoint](#openresty-public-endpoint).
+
+### Manual start and troubleshooting
+
+The complete manual normal-mode equivalent is:
+
+```bash
+sudo systemctl enable --now supervisor
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl start custodian       # when configured
+sudo supervisorctl start reth
+sudo supervisorctl start summit-observer
+sudo supervisorctl start checkpointer    # when configured
 sudo supervisorctl status
 ```
 
-All observer programs should still be stopped because they use:
+For checkpoint mode, start `summit-observer-checkpoint` instead of
+`summit-observer`. The normal and checkpoint programs must not run together. The
+following sections provide individual checks and troubleshooting commands.
 
-```ini
-autostart=false
-autorestart=false
-```
-
-### 2. Start Custodian when enabled
+#### Start Custodian when enabled
 
 Custodian must start before Reth because Reth connects to its Unix socket during
 startup:
@@ -522,7 +549,7 @@ sudo tail -n 100 /var/log/seismic-observer/custodian.log
 
 Skip this step when Custodian was not enabled.
 
-### 3. Start Reth
+#### Start Reth
 
 ```bash
 sudo supervisorctl start reth
@@ -539,7 +566,7 @@ sudo tail -n 100 /var/log/seismic-observer/reth.log
 Reth must be running before Summit because Summit connects through the Engine
 API IPC socket.
 
-### 4. Start Summit observer
+#### Start Summit observer
 
 ```bash
 sudo supervisorctl start summit-observer
@@ -561,7 +588,7 @@ custodian -> reth -> summit-observer
 
 When Custodian is disabled, start only Reth and Summit observer in that order.
 
-### 5. Start summit-checkpointer when enabled
+#### Start summit-checkpointer when enabled
 
 ```bash
 sudo supervisorctl start checkpointer
@@ -581,6 +608,38 @@ checkpoint-start CLI.
 
 Because `autostart=false` and `autorestart=false`, all enabled programs must be
 started manually again after a server or Supervisor restart.
+
+## Stop the observer
+
+Use the node tool to stop both possible Summit observer modes and all configured
+dependencies in reverse order:
+
+```bash
+sudo ./tools/seismic-node.py observer stop
+sudo supervisorctl status
+```
+
+The command validates the observer installation inventory, then stops
+summit-checkpointer when configured, `summit-observer`,
+`summit-observer-checkpoint`, Reth, and Custodian when configured. It stops
+lower-level dependencies only after the programs that depend on them have
+stopped successfully.
+
+Supervisor and OpenResty remain running. Stop OpenResty separately only when the
+public endpoint should also be taken offline.
+
+### Manual stop
+
+The complete manual equivalent is:
+
+```bash
+sudo supervisorctl stop checkpointer                 # when configured
+sudo supervisorctl stop summit-observer
+sudo supervisorctl stop summit-observer-checkpoint
+sudo supervisorctl stop reth
+sudo supervisorctl stop custodian                    # when configured
+sudo supervisorctl status
+```
 
 ## OpenResty public endpoint
 

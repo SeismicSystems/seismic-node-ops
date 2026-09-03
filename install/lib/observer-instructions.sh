@@ -65,7 +65,7 @@ print_missing_observer_prerequisites() {
 }
 
 print_observer_manual_start_instructions() {
-    section "Manual observer service start"
+    section "Observer service control"
     print_missing_observer_prerequisites
 
     _out "The installer did not start, enable, reread, or update observer services."
@@ -73,27 +73,37 @@ print_observer_manual_start_instructions() {
     _out "  $SUMMIT_KEYS_DIR/node_key.pem"
     _out "It must be owned by $SERVICE_USER:$SERVICE_GROUP with mode 0600."
     _out ""
-    _out "After resolving all warnings, load the Supervisor configuration:"
+    _out "After resolving all warnings, use the Python node tool for coordinated startup:"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer start --mode normal"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer start --mode checkpoint --help"
+    _out "The start command enables and starts Supervisor, then runs reread and update."
     _out ""
+    _out "Stop all observer node programs in reverse dependency order with:"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer stop"
+    _out "Supervisor and OpenResty remain running."
+    _out ""
+    _out "Manual normal-mode start commands:"
     _out "  sudo systemctl enable --now supervisor"
     _out "  sudo supervisorctl reread"
     _out "  sudo supervisorctl update"
-    _out ""
-    _out "Use the Python node tool for coordinated startup:"
-    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer start --mode normal"
-    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer start --mode checkpoint --help"
-    _out ""
-    _out "For manual troubleshooting:"
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        _out "Start the observer Custodian first. It will fetch or verify its root key"
-        _out "through the parent Custodian at $PARENT_CUSTODIAN:"
         _out "  sudo supervisorctl start custodian"
     fi
-    _out "Start Reth before Summit:"
     _out "  sudo supervisorctl start reth"
     _out "  sudo supervisorctl start summit-observer"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         _out "  sudo supervisorctl start checkpointer"
+    fi
+    _out ""
+    _out "Manual stop commands:"
+    if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
+        _out "  sudo supervisorctl stop checkpointer"
+    fi
+    _out "  sudo supervisorctl stop summit-observer"
+    _out "  sudo supervisorctl stop summit-observer-checkpoint"
+    _out "  sudo supervisorctl stop reth"
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        _out "  sudo supervisorctl stop custodian"
     fi
 
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then

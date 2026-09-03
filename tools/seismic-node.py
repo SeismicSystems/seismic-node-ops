@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-"""Operator CLI for Seismic checkpoint installation and node onboarding.
+"""Operator CLI for Seismic checkpoint installation and node management.
 
 Argument parsing and top-level workflow composition live here; safety-critical
 validation and state changes live in the ``seismic_node`` package.  Keeping this
@@ -89,7 +89,7 @@ def add_startup_argument(parser: argparse.ArgumentParser) -> None:
 def parse_args() -> argparse.Namespace:
     """Construct the complete command tree without argparse abbreviations."""
     parser = argparse.ArgumentParser(
-        description="Install checkpoints and onboard Seismic nodes.",
+        description="Install checkpoints and manage Seismic nodes.",
         allow_abbrev=False,
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -132,7 +132,22 @@ def parse_args() -> argparse.Namespace:
     validator_deposit.add_argument("--http-timeout", type=float, default=10.0)
     add_startup_argument(validator_deposit)
 
-    validator_onboard = validator_commands.add_parser("onboard", allow_abbrev=False)
+    validator_onboard = validator_commands.add_parser(
+        "onboard",
+        allow_abbrev=False,
+        help="install or validate a checkpoint and start validator services",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Manual checkpoint-start equivalent after lifecycle authorization:\n"
+            "  sudo systemctl enable --now supervisor\n"
+            "  sudo supervisorctl reread\n"
+            "  sudo supervisorctl update\n"
+            "  sudo supervisorctl start custodian          # when configured\n"
+            "  sudo supervisorctl start reth\n"
+            "  sudo supervisorctl start summit-checkpoint\n"
+            "  sudo supervisorctl start checkpointer       # when configured"
+        ),
+    )
     add_inventory_argument(validator_onboard)
     validator_onboard.add_argument("--deposit-signature", type=Path, required=True)
     validator_onboard.add_argument(
@@ -150,11 +165,45 @@ def parse_args() -> argparse.Namespace:
     add_checkpoint_destination_arguments(validator_onboard)
     add_startup_argument(validator_onboard)
 
+    validator_stop = validator_commands.add_parser(
+        "stop",
+        allow_abbrev=False,
+        help="stop validator services in reverse dependency order",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Manual equivalent:\n"
+            "  sudo supervisorctl stop checkpointer       # when configured\n"
+            "  sudo supervisorctl stop summit-deposit-rpc\n"
+            "  sudo supervisorctl stop summit\n"
+            "  sudo supervisorctl stop summit-checkpoint\n"
+            "  sudo supervisorctl stop reth\n"
+            "  sudo supervisorctl stop custodian          # when configured\n"
+            "Supervisor and OpenResty remain running."
+        ),
+    )
+    add_inventory_argument(validator_stop)
+
     observer_parser = commands.add_parser("observer", allow_abbrev=False)
     observer_commands = observer_parser.add_subparsers(
         dest="observer_command", required=True
     )
-    observer_start = observer_commands.add_parser("start", allow_abbrev=False)
+    observer_start = observer_commands.add_parser(
+        "start",
+        allow_abbrev=False,
+        help="prepare Supervisor and start observer services",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Manual normal-mode equivalent:\n"
+            "  sudo systemctl enable --now supervisor\n"
+            "  sudo supervisorctl reread\n"
+            "  sudo supervisorctl update\n"
+            "  sudo supervisorctl start custodian       # when configured\n"
+            "  sudo supervisorctl start reth\n"
+            "  sudo supervisorctl start summit-observer\n"
+            "  sudo supervisorctl start checkpointer    # when configured\n"
+            "For checkpoint mode, start summit-observer-checkpoint instead."
+        ),
+    )
     observer_start.add_argument(
         "--mode", choices=("normal", "checkpoint"), required=True
     )
@@ -162,6 +211,23 @@ def parse_args() -> argparse.Namespace:
     add_checkpoint_source_arguments(observer_start)
     add_checkpoint_destination_arguments(observer_start)
     add_startup_argument(observer_start)
+
+    observer_stop = observer_commands.add_parser(
+        "stop",
+        allow_abbrev=False,
+        help="stop observer services in reverse dependency order",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Manual equivalent:\n"
+            "  sudo supervisorctl stop checkpointer                 # when configured\n"
+            "  sudo supervisorctl stop summit-observer\n"
+            "  sudo supervisorctl stop summit-observer-checkpoint\n"
+            "  sudo supervisorctl stop reth\n"
+            "  sudo supervisorctl stop custodian                    # when configured\n"
+            "Supervisor and OpenResty remain running."
+        ),
+    )
+    add_inventory_argument(observer_stop)
 
     return parser.parse_args()
 
@@ -291,7 +357,10 @@ def print_startup_rollback(backup: Path) -> None:
 
 
 def handle_validator(args: argparse.Namespace) -> None:
-    """Generate a deposit response or run lifecycle-aware checkpoint onboarding."""
+    """Generate a deposit response, onboard, or stop validator services."""
+    if args.validator_command == "stop":
+        validator.stop_validator(args)
+        return
     if args.validator_command == "deposit-signature":
         validator.generate_deposit_signature(args)
         return
@@ -350,7 +419,11 @@ def handle_validator(args: argparse.Namespace) -> None:
 
 
 def handle_observer(args: argparse.Namespace) -> None:
-    """Optionally install a checkpoint, then start the requested observer mode."""
+    """Start or stop observer services, optionally installing a checkpoint."""
+    if args.observer_command == "stop":
+        observer.stop_observer(args)
+        return
+
     source_requested = checkpoint_source_requested(args)
     require_checkpoint_source_for_install_options(args, source_requested)
     if args.mode == "normal" and source_requested:
