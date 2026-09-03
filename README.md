@@ -25,22 +25,27 @@ install/install-observer.sh
 
 See the **[Observer Installer and First-Start Guide](install/OBSERVER.md)**.
 
-Generate bearer tokens for OpenResty-protected endpoints with:
+## Node onboarding and operations
 
-```text
-tools/generate-openresty-jwt.sh
-```
-
-Install checkpoints, create validator deposit signatures, and start validator or
-observer nodes with:
+After installation, one CLI downloads and installs checkpoints, creates
+validator deposit signatures, and starts and stops validator or observer
+services:
 
 ```text
 tools/seismic-node.py
 ```
 
-Its main commands are `checkpoint install`, `checkpoint rollback`,
+Its commands are `checkpoint install`, `checkpoint rollback`,
 `checkpoint delete-backup`, `validator deposit-signature`, `validator onboard`,
-`validator start`, `validator stop`, `observer start`, and `observer stop`.
+`validator start`, `validator stop`, `observer start`, and `observer stop`. The
+role guides show the onboarding workflows; implementation and security notes are
+in [`tools/seismic_node/README.md`](tools/seismic_node/README.md).
+
+Generate bearer tokens for OpenResty-protected endpoints with:
+
+```text
+tools/generate-openresty-jwt.sh
+```
 
 The Summit internal-testnet genesis file is provided at:
 
@@ -50,7 +55,7 @@ internal_testnet_genesis.toml
 
 ## Repository checks
 
-GitHub Actions checks shell scripts and Markdown through
+GitHub Actions checks shell scripts, Python, and Markdown through
 [`.github/workflows/checks.yml`](.github/workflows/checks.yml).
 
 Run the same checks locally from the repository root. ShellCheck must be
