@@ -38,7 +38,7 @@ confirm() {
 confirm_installation_inventory_overwrite() {
     local path=$1
 
-    [[ -e "$path" || -L "$path" ]] || return
+    [[ -e "$path" || -L "$path" ]] || return 0
 
     warn "An installation inventory already exists: $path"
     warn "The installer will not read or reuse its contents."
