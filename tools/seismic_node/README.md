@@ -19,7 +19,7 @@ boundary can be reviewed and tested independently.
 | `download.py`   | Selects a completed checkpoint epoch, polls remote manifests, downloads verified archives, and resolves local, URL, or Summit-RPC weak-subjectivity anchors.                                                       |
 | `rpc.py`        | Provides strict standard-library HTTP and JSON-RPC helpers with URL, redirect, response-size, token-file, archive-size, and SHA-256 checks.                                                                        |
 | `supervisor.py` | Starts selected Supervisor programs in dependency order and reverses only the start requests made by the current command after a partial failure.                                                                  |
-| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before checkpoint startup, and coordinates validator shutdown.                                                                  |
+| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before checkpoint startup, and coordinates lifecycle-free validator restarts and shutdown.                                      |
 | `observer.py`   | Selects normal or checkpoint observer startup and coordinates observer shutdown without applying validator lifecycle rules.                                                                                        |
 
 `__init__.py` only identifies the internal package. It intentionally performs no
@@ -96,10 +96,11 @@ an interactive operator is not prompted twice.
 
 ### Supervisor startup
 
-Observer startup, authorized validator checkpoint startup, and deposit-signature
-generation first run `systemctl enable --now supervisor`, followed by
-`supervisorctl reread` and `supervisorctl update`. Startup then calls
-`supervisor.start_node()`, which starts dependencies in this order:
+Observer startup, validator startup (`validator start` and authorized
+`validator onboard` startup), and deposit-signature generation first run
+`systemctl enable --now supervisor`, followed by `supervisorctl reread` and
+`supervisorctl update`. Startup then calls `supervisor.start_node()`, which
+starts dependencies in this order:
 
 1. `custodian`, when configured.
 2. `reth`.

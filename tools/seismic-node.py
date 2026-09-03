@@ -166,6 +166,30 @@ def parse_args() -> argparse.Namespace:
     add_checkpoint_destination_arguments(validator_onboard)
     add_startup_argument(validator_onboard)
 
+    validator_start = validator_commands.add_parser(
+        "start",
+        allow_abbrev=False,
+        help="start validator services from existing state without lifecycle checks",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Use validator onboard for first-time, lifecycle-gated startup.\n"
+            "Manual normal-mode equivalent:\n"
+            "  sudo systemctl enable --now supervisor\n"
+            "  sudo supervisorctl reread\n"
+            "  sudo supervisorctl update\n"
+            "  sudo supervisorctl start custodian       # when configured\n"
+            "  sudo supervisorctl start reth\n"
+            "  sudo supervisorctl start summit\n"
+            "  sudo supervisorctl start checkpointer    # when configured\n"
+            "For checkpoint mode, start summit-checkpoint instead."
+        ),
+    )
+    validator_start.add_argument(
+        "--mode", choices=("normal", "checkpoint"), required=True
+    )
+    add_inventory_argument(validator_start)
+    add_startup_argument(validator_start)
+
     validator_stop = validator_commands.add_parser(
         "stop",
         allow_abbrev=False,
@@ -357,7 +381,10 @@ def print_startup_rollback(backup: Path) -> None:
 
 
 def handle_validator(args: argparse.Namespace) -> None:
-    """Generate a deposit response, onboard, or stop validator services."""
+    """Generate a deposit response, onboard, start, or stop validator services."""
+    if args.validator_command == "start":
+        validator.start_validator(args)
+        return
     if args.validator_command == "stop":
         validator.stop_validator(args)
         return

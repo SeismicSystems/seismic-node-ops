@@ -40,7 +40,7 @@ tools/seismic-node.py
 
 Its main commands are `checkpoint install`, `checkpoint rollback`,
 `checkpoint delete-backup`, `validator deposit-signature`, `validator onboard`,
-`validator stop`, `observer start`, and `observer stop`.
+`validator start`, `validator stop`, `observer start`, and `observer stop`.
 
 The Summit internal-testnet genesis file is provided at:
 

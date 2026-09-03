@@ -426,6 +426,33 @@ def start_checkpoint_validator(
     print("Validator checkpoint startup requested successfully.")
 
 
+def start_validator(args: Any) -> None:
+    """Start validator services without lifecycle checks or checkpoint downloads.
+
+    ``validator onboard`` remains the lifecycle-gated entry point; this command
+    restarts an already onboarded validator from its persisted normal state or
+    from the installed checkpoint inputs.
+    """
+    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
+    checkpoint.load_inventory("validator", inventory_path)
+    if args.mode == "checkpoint":
+        checkpoint.validate_checkpoint_start_configuration("validator")
+        summit_program = "summit-checkpoint"
+        conflicting_program = "summit"
+    else:
+        # The normal Supervisor program does not read checkpoint-start config.
+        # Mutual exclusion is enforced against the checkpoint program instead.
+        summit_program = "summit"
+        conflicting_program = "summit-checkpoint"
+    supervisor.prepare_supervisor()
+    supervisor.start_node(
+        summit_program,
+        conflicting_program,
+        startup_timeout=args.startup_timeout,
+    )
+    print(f"Validator {args.mode} startup requested successfully.")
+
+
 def stop_validator(args: Any) -> None:
     """Validate validator identity and stop its programs in dependency order."""
     inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]

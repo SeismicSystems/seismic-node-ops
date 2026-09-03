@@ -448,10 +448,18 @@ Seismic operations will submit the staking transaction on your behalf. Record
 the transaction hash and confirmation. Starting before the account becomes
 `Joining` is possible but may not allow Summit to connect or synchronize yet.
 
-### 7. Manual normal-state startup
+### 7. Restart an onboarded validator
 
-For checkpoint onboarding, use `validator onboard` as shown above. To start from
-an existing normal state manually, start only the components enabled during
+For first-time, lifecycle-gated startup, use `validator onboard` as shown above.
+Restart an already onboarded validator from its existing state with:
+
+```bash
+sudo ./tools/seismic-node.py validator start --mode normal
+```
+
+Use `--mode checkpoint` to restart from the installed checkpoint inputs instead.
+The normal and checkpoint Summit programs cannot run at the same time. The
+manual normal-mode equivalent starts only the components enabled during
 installation, in this order:
 
 ```bash

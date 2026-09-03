@@ -669,6 +669,41 @@ class ValidatorTests(unittest.TestCase):
         self.assertIsNone(args.inventory)
 
 
+class ValidatorStartTests(unittest.TestCase):
+    def start_args(self, mode: str) -> SimpleNamespace:
+        return SimpleNamespace(inventory=None, mode=mode, startup_timeout=30.0)
+
+    def test_normal_start_ignores_installed_checkpoint_config(self) -> None:
+        with (
+            mock.patch.object(checkpoint, "load_inventory"),
+            mock.patch.object(supervisor, "prepare_supervisor"),
+            mock.patch.object(supervisor, "start_node") as start_node,
+        ):
+            validator.start_validator(self.start_args("normal"))
+        start_node.assert_called_once_with(
+            "summit",
+            "summit-checkpoint",
+            startup_timeout=30.0,
+        )
+
+    def test_checkpoint_start_validates_installed_configuration(self) -> None:
+        with (
+            mock.patch.object(checkpoint, "load_inventory"),
+            mock.patch.object(
+                checkpoint, "validate_checkpoint_start_configuration"
+            ) as validate,
+            mock.patch.object(supervisor, "prepare_supervisor"),
+            mock.patch.object(supervisor, "start_node") as start_node,
+        ):
+            validator.start_validator(self.start_args("checkpoint"))
+        validate.assert_called_once_with("validator")
+        start_node.assert_called_once_with(
+            "summit-checkpoint",
+            "summit",
+            startup_timeout=30.0,
+        )
+
+
 class ObserverTests(unittest.TestCase):
     def test_normal_start_ignores_installed_checkpoint_config(self) -> None:
         args = SimpleNamespace(
