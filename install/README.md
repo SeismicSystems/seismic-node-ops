@@ -246,7 +246,7 @@ Stage the snapshot archive, its matching `manifest.json`, and an independently
 obtained weak-subjectivity TOML under root-owned, non-writable paths. Then run:
 
 ```bash
-sudo ./tools/checkpoint-start/install-checkpoint.py install \
+sudo ./tools/seismic-node.py checkpoint install \
   --role validator \
   --archive /root/seismic-checkpoint/epoch_12.tar.gz \
   --manifest /root/seismic-checkpoint/manifest.json \
@@ -262,9 +262,20 @@ derived from the configured data paths. It writes
 `/etc/seismic/validator-checkpoint-start.toml` and leaves every service stopped.
 
 The tool prints the root-only rollback directory as soon as it is created and
-again in its final summary, together with the exact rollback command. Do not
-remove that directory until checkpoint startup and the transition back to normal
-Summit startup have both been verified.
+again in its final summary, together with the exact rollback command. It can
+also download a snapshot and obtain weak subjectivity from an independent Summit
+RPC; run `sudo ./tools/seismic-node.py checkpoint install --help` for those
+options. Independent providers are recommended. If both remote sources share a
+normalized URL origin, the tool prints a strong warning and requires interactive
+confirmation or `--allow-same-origin-weak-subjectivity` for non-interactive use.
+This URL-origin comparison cannot prove that different DNS names have
+independent operators. Do not remove the rollback directory until checkpoint
+startup and the transition back to normal Summit startup have both been
+verified. When rollback is no longer needed, remove it explicitly with:
+
+```bash
+sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
+```
 
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
@@ -324,9 +335,38 @@ credential.
 
 ## First validator startup
 
-Do not start the full validator until the deposit-signature file has been
-created and Seismic operations has confirmed that the staking transaction was
-successful.
+Use the node tool to generate the fixed deposit-signature request:
+
+```bash
+sudo ./tools/seismic-node.py validator deposit-signature \
+  --output /root/deposit-signature.json
+```
+
+Send that file to Seismic operations through a secure channel. After operations
+submits the deposit, the following command can download and install a
+checkpoint, obtain weak subjectivity from an independent Summit RPC, and
+coordinate startup:
+
+```bash
+sudo ./tools/seismic-node.py validator onboard \
+  --deposit-signature /root/deposit-signature.json \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --snapshot-api-url https://snapshot.example/checkpointer \
+  --snapshot-bearer-token-file /root/snapshot-token \
+  --weak-subjectivity-rpc-url https://independent-validator.example/summit
+```
+
+For unattended installation, pin `--checkpoint-epoch`, use
+`--checkpoint-policy exact`, and provide matching `--confirm-hostname` and
+`--confirm-epoch` values. This avoids a dynamically selected epoch differing
+from the value authorized by automation.
+
+Checkpoint installation may complete before the validator becomes `Joining`.
+When the account is not yet `Joining`, interactive mode asks whether to wait,
+start with a warning, or leave the verified checkpoint installed with every
+service stopped. Non-interactive use requires `--pre-joining-policy`.
+
+The detailed manual sequence below remains useful for troubleshooting.
 
 ### 1. Load the Supervisor configuration
 
@@ -429,13 +469,15 @@ Do **not** send validator private-key files, a wallet private key, seed phrases,
 or JWT secrets. Do not publish the signature file in a public issue or source
 repository.
 
-Seismic operations will submit the staking transaction on your behalf. Wait for
-the transaction hash and confirmation that its receipt has status `0x1` before
-starting the full validator.
+Seismic operations will submit the staking transaction on your behalf. Record
+the transaction hash and confirmation. Starting before the account becomes
+`Joining` is possible but may not allow Summit to connect or synchronize yet.
 
-### 7. Start the validator after staking confirmation
+### 7. Manual normal-state startup
 
-Start only the components enabled during installation, in this order:
+For checkpoint onboarding, use `validator onboard` as shown above. To start from
+an existing normal state manually, start only the components enabled during
+installation, in this order:
 
 ```bash
 # Run this first only when Custodian was configured.

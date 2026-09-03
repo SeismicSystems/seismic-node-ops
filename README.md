@@ -31,11 +31,16 @@ Generate bearer tokens for OpenResty-protected endpoints with:
 tools/generate-openresty-jwt.sh
 ```
 
-Install or roll back a verified validator or observer checkpoint with:
+Install checkpoints, create validator deposit signatures, and start validator or
+observer nodes with:
 
 ```text
-tools/checkpoint-start/install-checkpoint.py
+tools/seismic-node.py
 ```
+
+Its main commands are `checkpoint install`, `checkpoint rollback`,
+`checkpoint delete-backup`, `validator deposit-signature`, `validator onboard`,
+and `observer start`.
 
 The Summit internal-testnet genesis file is provided at:
 
@@ -49,7 +54,9 @@ GitHub Actions checks shell scripts and Markdown through
 [`.github/workflows/checks.yml`](.github/workflows/checks.yml).
 
 Run the same checks locally from the repository root. ShellCheck must be
-installed; Go and Node.js with `npx` are also required.
+installed; Go, Node.js with `npx`, Python 3.12, and `uvx` are also required.
+`uvx` runs the pinned Ruff version only for development checks and is not
+installed on node hosts.
 
 ```bash
 go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install tools
@@ -62,10 +69,21 @@ go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install tools
     ../tools/generate-openresty-jwt.sh
 )
 
-python3 -m py_compile \
-  tools/checkpoint-start/install-checkpoint.py \
+uvx --from ruff==0.16.5 ruff check --target-version py312 \
+  tools/seismic-node.py \
+  tools/seismic_node \
+  tools/checkpoint-start/summit-checkpoint-runner.py \
+  tests
+uvx --from ruff==0.16.5 ruff format --check --target-version py312 \
+  tools/seismic-node.py \
+  tools/seismic_node \
+  tools/checkpoint-start/summit-checkpoint-runner.py \
+  tests
+python3.12 -m py_compile \
+  tools/seismic-node.py \
+  tools/seismic_node/*.py \
   tools/checkpoint-start/summit-checkpoint-runner.py
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+python3.12 -m unittest discover -s tests -p 'test_*.py' -v
 
 npx --yes prettier@3.6.2 --check '**/*.md'
 npx --yes markdownlint-cli2@0.21.0 './**/*.md' '#./.git/**'

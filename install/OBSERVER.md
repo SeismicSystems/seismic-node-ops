@@ -341,7 +341,7 @@ Stage the snapshot archive, its matching `manifest.json`, and an independently
 obtained weak-subjectivity TOML under root-owned, non-writable paths. Then run:
 
 ```bash
-sudo ./tools/checkpoint-start/install-checkpoint.py install \
+sudo ./tools/seismic-node.py checkpoint install \
   --role observer \
   --archive /root/seismic-checkpoint/epoch_12.tar.gz \
   --manifest /root/seismic-checkpoint/manifest.json \
@@ -355,9 +355,40 @@ mutable store. Reth, Summit, the checkpoint destination, and the rollback
 directory must share a filesystem so state moves remain atomic. It writes
 `/etc/seismic/observer-checkpoint-start.toml` and leaves every service stopped.
 
-The tool prints the root-only rollback directory and exact rollback command. Do
-not remove the backup until checkpoint startup and the transition back to normal
-observer startup have both been verified.
+The tool prints the root-only rollback directory and exact rollback command. It
+can also download the snapshot and obtain weak subjectivity from an independent
+Summit RPC. Independent providers are recommended. If both remote sources share
+a normalized URL origin, the tool prints a strong warning and requires
+interactive confirmation or `--allow-same-origin-weak-subjectivity` for
+non-interactive use. This comparison cannot prove that different DNS names have
+independent operators. Do not remove the backup until checkpoint startup and the
+transition back to normal observer startup have both been verified.
+
+To download, install, and start in one command, run:
+
+```bash
+sudo ./tools/seismic-node.py observer start \
+  --mode checkpoint \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --snapshot-api-url https://snapshot.example/checkpointer \
+  --snapshot-bearer-token-file /root/snapshot-token \
+  --weak-subjectivity-rpc-url https://independent-validator.example/summit
+```
+
+For unattended installation, pin `--checkpoint-epoch`, use
+`--checkpoint-policy exact`, and provide matching `--confirm-hostname` and
+`--confirm-epoch` values. This avoids a dynamically selected epoch differing
+from the value authorized by automation.
+
+To start from an already installed checkpoint, omit the snapshot and
+weak-subjectivity source options. Normal startup uses `--mode normal`, including
+a later restart without checkpoint arguments. The checkpoint Supervisor program
+must be stopped first; the CLI refuses to run the normal and checkpoint programs
+together. When rollback is no longer needed, remove it explicitly with:
+
+```bash
+sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
+```
 
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:

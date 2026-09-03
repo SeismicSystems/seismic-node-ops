@@ -79,11 +79,17 @@ print_observer_manual_start_instructions() {
     _out "  sudo supervisorctl reread"
     _out "  sudo supervisorctl update"
     _out ""
+    _out "Use the Python node tool for coordinated startup:"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer start --mode normal"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer start --mode checkpoint --help"
+    _out ""
+    _out "For manual troubleshooting:"
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
         _out "Start the observer Custodian first. It will fetch or verify its root key"
         _out "through the parent Custodian at $PARENT_CUSTODIAN:"
         _out "  sudo supervisorctl start custodian"
     fi
+    _out "Start Reth before Summit:"
     _out "  sudo supervisorctl start reth"
     _out "  sudo supervisorctl start summit-observer"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then

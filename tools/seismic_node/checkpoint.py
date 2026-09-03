@@ -1,6 +1,11 @@
-#!/usr/bin/python3
+"""Transactional checkpoint installation, rollback, and backup deletion.
 
-"""Safely install or roll back a matching Reth and Summit checkpoint."""
+The installer treats Reth and Summit state as one atomic unit. Before replacing
+anything it validates paths and artifacts, acquires Summit's process lock, moves
+all mutable state into a receipt-backed rollback directory, and leaves every
+service stopped. Recovery relies on same-filesystem ``rename(2)`` operations;
+copying live databases is intentionally avoided.
+"""
 
 from __future__ import annotations
 
@@ -15,17 +20,19 @@ import re
 import shlex
 import shutil
 import stat
-import subprocess
 import sys
 import tarfile
 import tempfile
 import tomllib
 from pathlib import Path, PurePosixPath
-from typing import Any, NoReturn
+from typing import Any
+
+from . import supervisor as supervisor_control
 
 INVENTORY_VERSION = 1
 MANIFEST_VERSION = 1
 WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS = 5
+DEFAULT_INSTALLED_WEAK_SUBJECTIVITY_PATH = Path("/etc/seismic/weak-subjectivity.toml")
 CHECKPOINT_CONFIG_PATHS = {
     "validator": Path("/etc/seismic/validator-checkpoint-start.toml"),
     "observer": Path("/etc/seismic/observer-checkpoint-start.toml"),
@@ -72,45 +79,19 @@ class CheckpointError(Exception):
     """An operator-actionable checkpoint installation error."""
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Install or roll back a verified Seismic node checkpoint.",
-        allow_abbrev=False,
-    )
-    subparsers = parser.add_subparsers(dest="action", required=True)
-
-    install_parser = subparsers.add_parser("install", allow_abbrev=False)
-    install_parser.add_argument(
-        "--role", choices=("validator", "observer"), required=True
-    )
-    install_parser.add_argument("--inventory", type=Path)
-    install_parser.add_argument("--archive", type=Path, required=True)
-    install_parser.add_argument("--manifest", type=Path, required=True)
-    install_parser.add_argument("--weak-subjectivity-path", type=Path, required=True)
-    install_parser.add_argument("--checkpoint-path", type=Path)
-    install_parser.add_argument(
-        "--installed-weak-subjectivity-path",
-        type=Path,
-        default=Path("/etc/seismic/weak-subjectivity.toml"),
-    )
-    install_parser.add_argument("--backup-root", type=Path)
-    install_parser.add_argument("--confirm-hostname")
-    install_parser.add_argument("--confirm-epoch", type=int)
-
-    rollback_parser = subparsers.add_parser("rollback", allow_abbrev=False)
-    rollback_parser.add_argument("--backup", type=Path, required=True)
-    rollback_parser.add_argument("--confirm-hostname")
-    rollback_parser.add_argument("--confirm-backup-name")
-
-    return parser.parse_args()
+# ---------------------------------------------------------------------------
+# Path, ownership, and input-file validation
+# ---------------------------------------------------------------------------
 
 
 def require_root() -> None:
+    """Require root because node state and receipts are root-managed."""
     if os.geteuid() != 0:
         raise CheckpointError("This command must be run as root (use sudo).")
 
 
 def require_absolute(path: Path, description: str) -> None:
+    """Reject relative, root, non-normalized, and symlink-traversing paths."""
     if not path.is_absolute() or path == Path("/"):
         raise CheckpointError(
             f"{description} must be an absolute non-root path: {path}"
@@ -122,6 +103,7 @@ def require_absolute(path: Path, description: str) -> None:
 
 
 def lstat_path(path: Path, description: str) -> os.stat_result:
+    """Inspect a path itself rather than following a final symlink."""
     require_absolute(path, description)
     try:
         return path.lstat()
@@ -134,6 +116,7 @@ def lstat_path(path: Path, description: str) -> os.stat_result:
 
 
 def require_directory(path: Path, description: str) -> os.stat_result:
+    """Require an existing, non-symlinked directory."""
     metadata = lstat_path(path, description)
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise CheckpointError(f"{description} is not a safe directory: {path}")
@@ -146,6 +129,7 @@ def require_regular_file(
     *,
     nonempty: bool = True,
 ) -> os.stat_result:
+    """Require an existing, non-symlinked regular file."""
     metadata = lstat_path(path, description)
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise CheckpointError(f"{description} is not a safe regular file: {path}")
@@ -155,6 +139,7 @@ def require_regular_file(
 
 
 def require_secure_root_parent(path: Path, description: str) -> None:
+    """Verify every existing parent is a non-writable root-owned directory."""
     current = path.parent
     while True:
         try:
@@ -178,6 +163,7 @@ def require_secure_root_parent(path: Path, description: str) -> None:
 
 
 def require_root_managed_file(path: Path, description: str) -> os.stat_result:
+    """Require a file and its path chain to be controlled by root."""
     metadata = require_regular_file(path, description)
     if metadata.st_uid != 0 or metadata.st_mode & 0o022:
         raise CheckpointError(
@@ -188,6 +174,7 @@ def require_root_managed_file(path: Path, description: str) -> os.stat_result:
 
 
 def is_relative_to(path: Path, parent: Path) -> bool:
+    """Return whether ``path`` is contained by ``parent`` without raising."""
     try:
         path.relative_to(parent)
     except ValueError:
@@ -196,6 +183,7 @@ def is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def require_separate_paths(paths: dict[str, Path]) -> None:
+    """Ensure state, keys, checkpoints, and backups cannot overlap or nest."""
     resolved = {name: path.resolve(strict=False) for name, path in paths.items()}
     names = list(resolved)
     for index, left_name in enumerate(names):
@@ -214,6 +202,7 @@ def require_separate_paths(paths: dict[str, Path]) -> None:
 
 
 def filesystem_device(path: Path, description: str) -> int:
+    """Return the device ID of a path or its nearest existing ancestor."""
     current = path
     while True:
         try:
@@ -238,6 +227,7 @@ def filesystem_device(path: Path, description: str) -> int:
 
 
 def require_shared_state_filesystem(paths: dict[str, Path]) -> None:
+    """Require one filesystem so all state moves remain atomic."""
     devices = {name: filesystem_device(path, name) for name, path in paths.items()}
     if len(set(devices.values())) == 1:
         return
@@ -248,9 +238,14 @@ def require_shared_state_filesystem(paths: dict[str, Path]) -> None:
     )
 
 
+# Configuration files are parsed with exact schemas below. Unknown fields are
+# rejected so misspelled safety settings cannot be silently ignored.
+
+
 def read_toml(
     path: Path, description: str, *, root_managed: bool = False
 ) -> dict[str, Any]:
+    """Safely read TOML after applying the requested ownership policy."""
     if root_managed:
         require_root_managed_file(path, description)
     else:
@@ -278,6 +273,7 @@ def read_toml(
 def require_exact_keys(
     value: dict[str, Any], expected: set[str], description: str
 ) -> None:
+    """Reject both missing and unexpected fields in a parsed object."""
     actual = set(value)
     if actual == expected:
         return
@@ -292,6 +288,7 @@ def require_exact_keys(
 
 
 def inventory_path_value(inventory: dict[str, Any], key: str) -> Path:
+    """Convert one inventory string into a validated absolute path."""
     value = inventory[key]
     if not isinstance(value, str) or not value:
         raise CheckpointError(
@@ -303,6 +300,7 @@ def inventory_path_value(inventory: dict[str, Any], key: str) -> Path:
 
 
 def load_inventory(role: str, path: Path) -> dict[str, Any]:
+    """Load the installer's minimal inventory and verify on-disk identity."""
     inventory = read_toml(path, "Installation inventory", root_managed=True)
     expected = COMMON_INVENTORY_KEYS | (
         OBSERVER_INVENTORY_KEYS if role == "observer" else set()
@@ -350,6 +348,7 @@ def load_inventory(role: str, path: Path) -> dict[str, Any]:
 
 
 def validate_installed_identity(role: str, inventory: dict[str, Any]) -> None:
+    """Confirm persistent keys and observer assignment match the inventory."""
     require_directory(inventory["reth_data_dir"], "Reth data directory")
     require_regular_file(inventory["reth_p2p_key_path"], "Reth P2P key")
     require_directory(inventory["summit_data_dir"], "Summit data directory")
@@ -380,6 +379,7 @@ def validate_installed_identity(role: str, inventory: dict[str, Any]) -> None:
 def read_json(
     path: Path, description: str, *, root_managed: bool = False
 ) -> dict[str, Any]:
+    """Safely read JSON after applying the requested ownership policy."""
     if root_managed:
         require_root_managed_file(path, description)
     else:
@@ -403,18 +403,26 @@ def read_json(
 
 
 def require_int(value: Any, description: str) -> int:
+    """Require a non-negative JSON/TOML integer, excluding booleans."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise CheckpointError(f"{description} must be a non-negative integer")
     return value
 
 
 def require_digest(value: Any, description: str) -> str:
+    """Require and normalize a 32-byte, 0x-prefixed hexadecimal digest."""
     if not isinstance(value, str) or not HEX_DIGEST.fullmatch(value):
         raise CheckpointError(f"{description} must be a 32-byte 0x-prefixed hex digest")
     return value.lower()
 
 
+# ---------------------------------------------------------------------------
+# Snapshot, archive, and weak-subjectivity validation
+# ---------------------------------------------------------------------------
+
+
 def load_manifest(path: Path) -> dict[str, Any]:
+    """Parse a provider manifest with an exact versioned schema."""
     manifest = read_json(path, "Snapshot manifest", root_managed=True)
     require_exact_keys(
         manifest,
@@ -465,6 +473,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
 
 def hash_file(path: Path) -> str:
+    """Calculate a file's SHA-256 in bounded-memory chunks."""
     digest = hashlib.sha256()
     try:
         with path.open("rb") as file:
@@ -478,6 +487,7 @@ def hash_file(path: Path) -> str:
 
 
 def verify_archive_identity(archive_path: Path, manifest: dict[str, Any]) -> None:
+    """Bind the local archive to the manifest's declared size and SHA-256."""
     metadata = require_root_managed_file(archive_path, "Snapshot archive")
     expected_size = manifest["archive"]["size_bytes"]
     if metadata.st_size != expected_size:
@@ -493,6 +503,7 @@ def verify_archive_identity(archive_path: Path, manifest: dict[str, Any]) -> Non
 
 
 def validate_tar_members(archive: tarfile.TarFile) -> int:
+    """Reject traversal, links, duplicates, and unexpected archive roots."""
     names: set[str] = set()
     total_size = 0
     required_roots = {"db", "static_files", "metadata.json", "summit_checkpoint"}
@@ -526,6 +537,7 @@ def validate_tar_members(archive: tarfile.TarFile) -> int:
 
 
 def extract_archive(archive_path: Path, destination: Path) -> None:
+    """Validate and extract a gzip tar archive into an isolated stage."""
     try:
         with tarfile.open(archive_path, mode="r:gz") as archive:
             total_size = validate_tar_members(archive)
@@ -542,6 +554,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
 
 
 def validate_extracted_snapshot(stage: Path, manifest: dict[str, Any]) -> Path:
+    """Validate the staged Reth/Summit layout and contiguous header history."""
     db = stage / "db"
     static_files = stage / "static_files"
     metadata_path = stage / "metadata.json"
@@ -603,6 +616,7 @@ def validate_extracted_snapshot(stage: Path, manifest: dict[str, Any]) -> Path:
 
 
 def _files_equal(left: Path, right: Path) -> bool:
+    """Compare two artifacts without reading either whole file into memory."""
     if left.stat().st_size != right.stat().st_size:
         return False
     with left.open("rb") as left_file, right.open("rb") as right_file:
@@ -616,6 +630,7 @@ def _files_equal(left: Path, right: Path) -> bool:
 
 
 def load_weak_subjectivity(path: Path, checkpoint_epoch: int) -> dict[str, Any]:
+    """Load a recent trusted anchor accepted for the checkpoint epoch."""
     anchor = read_toml(path, "Weak-subjectivity file", root_managed=True)
     require_exact_keys(anchor, {"epoch", "header_digest"}, "Weak-subjectivity file")
     epoch = require_int(anchor["epoch"], "Weak-subjectivity epoch")
@@ -632,25 +647,24 @@ def load_weak_subjectivity(path: Path, checkpoint_epoch: int) -> dict[str, Any]:
     return {"epoch": epoch, "header_digest": digest}
 
 
+# ---------------------------------------------------------------------------
+# Quiescence, locking, and atomic filesystem primitives
+# ---------------------------------------------------------------------------
+
+
 def supervisor_program_running(program: str) -> bool:
-    command = ["/usr/bin/supervisorctl", "pid", program]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    output = f"{result.stdout}\n{result.stderr}".strip()
-    if result.returncode == 0:
-        value = result.stdout.strip()
-        if value.isdigit():
-            return int(value) > 0
-        raise CheckpointError(
-            f"Could not interpret Supervisor PID for {program}: {value!r}"
-        )
-    if "no such process" in output.lower():
+    """Return whether Supervisor reports a process that may run or resume."""
+    try:
+        value = supervisor_control.status(program)
+    except supervisor_control.SupervisorError as error:
+        raise CheckpointError(str(error)) from error
+    if not value.exists:
         return False
-    raise CheckpointError(f"Could not verify Supervisor program {program}: {output}")
+    return value.state not in supervisor_control.STOPPED_STATES
 
 
 def require_services_stopped(role: str) -> None:
-    if not Path("/usr/bin/supervisorctl").is_file():
-        raise CheckpointError("Supervisor is required at /usr/bin/supervisorctl")
+    """Refuse state mutation while any role-related program may run or resume."""
     running = [
         program
         for program in SERVICE_PROGRAMS[role]
@@ -663,6 +677,7 @@ def require_services_stopped(role: str) -> None:
 
 
 def acquire_summit_lock(summit_data_dir: Path) -> int:
+    """Acquire the same non-blocking kernel lock used by Summit programs."""
     summit_metadata = require_directory(summit_data_dir, "Summit data directory")
     lock_file = summit_data_dir / LOCK_FILE_NAME
     try:
@@ -694,6 +709,7 @@ def acquire_summit_lock(summit_data_dir: Path) -> int:
 
 
 def ensure_root_parent(path: Path, mode: int = 0o755) -> None:
+    """Create missing parents below an already secure root path."""
     require_absolute(path, "Root-managed path")
     parent = path.parent
     existing = parent
@@ -711,6 +727,7 @@ def ensure_root_parent(path: Path, mode: int = 0o755) -> None:
 
 
 def atomic_write(path: Path, data: bytes, mode: int) -> None:
+    """Durably replace a root-owned file without exposing partial contents."""
     ensure_root_parent(path)
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=path.parent
@@ -730,6 +747,7 @@ def atomic_write(path: Path, data: bytes, mode: int) -> None:
 
 
 def move_path(source: Path, destination: Path) -> None:
+    """Move state with rename(2); cross-filesystem copying is not permitted."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() or destination.is_symlink():
         raise CheckpointError(f"Move destination already exists: {destination}")
@@ -742,6 +760,7 @@ def move_path(source: Path, destination: Path) -> None:
 
 
 def remove_path(path: Path) -> None:
+    """Remove a file, symlink, or directory when it exists."""
     if path.is_symlink() or path.is_file():
         path.unlink()
     elif path.is_dir():
@@ -749,6 +768,7 @@ def remove_path(path: Path) -> None:
 
 
 def chown_tree(path: Path, uid: int, gid: int) -> None:
+    """Apply preserved service ownership without following symlinks."""
     os.chown(path, uid, gid, follow_symlinks=False)
     if path.is_dir():
         for root, directories, files in os.walk(path, followlinks=False):
@@ -759,6 +779,7 @@ def chown_tree(path: Path, uid: int, gid: int) -> None:
 
 
 def mode_bits(metadata: os.stat_result) -> int:
+    """Extract permission bits for recording and restoring file modes."""
     return stat.S_IMODE(metadata.st_mode)
 
 
@@ -768,6 +789,7 @@ def validate_existing_replacement_targets(
     checkpoint_config_path: Path,
     weak_subjectivity_path: Path,
 ) -> None:
+    """Validate every existing path that the transaction may replace."""
     reth_data = inventory["reth_data_dir"]
     for name in ("db", "static_files"):
         path = reth_data / name
@@ -785,6 +807,11 @@ def validate_existing_replacement_targets(
         )
 
 
+# ---------------------------------------------------------------------------
+# Rollback transaction and receipt handling
+# ---------------------------------------------------------------------------
+
+
 def create_backup(
     role: str,
     epoch: int,
@@ -794,6 +821,7 @@ def create_backup(
     weak_subjectivity_path: Path,
     backup_root: Path,
 ) -> tuple[Path, dict[str, Any]]:
+    """Create an ``installing`` receipt before any live state is moved."""
     timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = backup_root / f"{role}-epoch-{epoch}-{timestamp}"
     ensure_root_parent(backup_root / "placeholder", mode=0o700)
@@ -858,6 +886,7 @@ def backup_current_state(
     receipt: dict[str, Any],
     inventory: dict[str, Any],
 ) -> None:
+    """Atomically move all replaceable Reth and Summit state into the backup."""
     reth_data = Path(receipt["paths"]["reth_data_dir"])
     for name, key in (("db", "reth_db"), ("static_files", "reth_static_files")):
         source = reth_data / name
@@ -897,6 +926,7 @@ def install_new_state(
     receipt: dict[str, Any],
     anchor_source: Path,
 ) -> None:
+    """Move staged state into place and write root-managed startup inputs."""
     reth_data = Path(receipt["paths"]["reth_data_dir"])
     reth_owner = receipt["ownership"]["reth"]
     for name in ("db", "static_files"):
@@ -929,6 +959,7 @@ def restore_backup(
     *,
     remove_new_summit_state: bool,
 ) -> None:
+    """Restore only receipt-backed state, including interrupted installations."""
     reth_data = Path(receipt["paths"]["reth_data_dir"])
     for name, key in (("db", "reth_db"), ("static_files", "reth_static_files")):
         backup_path = backup / "reth" / name
@@ -986,6 +1017,7 @@ def restore_backup(
 
 
 def update_receipt(backup: Path, receipt: dict[str, Any], state: str) -> None:
+    """Durably advance the rollback receipt's transaction state."""
     receipt["state"] = state
     receipt["updated_at"] = dt.datetime.now(dt.UTC).isoformat()
     atomic_write(
@@ -996,6 +1028,7 @@ def update_receipt(backup: Path, receipt: dict[str, Any], state: str) -> None:
 
 
 def validate_rollback_receipt(receipt: dict[str, Any]) -> str:
+    """Validate every path, ownership record, and prior-state flag in a receipt."""
     require_exact_keys(
         receipt,
         {
@@ -1091,6 +1124,7 @@ def validate_rollback_receipt(receipt: dict[str, Any]) -> str:
 
 
 def print_rollback_paths(backup: Path) -> None:
+    """Show operators the recovery assets that must be preserved."""
     print(f"Rollback backup: {backup}")
     for relative in (
         Path("reth/db"),
@@ -1107,6 +1141,7 @@ def print_rollback_paths(backup: Path) -> None:
 
 
 def confirm_install(hostname: str, epoch: int, args: argparse.Namespace) -> None:
+    """Require host-and-epoch confirmation before replacing live state."""
     if args.confirm_hostname is not None or args.confirm_epoch is not None:
         if args.confirm_hostname != hostname or args.confirm_epoch != epoch:
             raise CheckpointError(
@@ -1129,6 +1164,7 @@ def confirm_install(hostname: str, epoch: int, args: argparse.Namespace) -> None
 
 
 def confirm_rollback(hostname: str, backup: Path, args: argparse.Namespace) -> None:
+    """Require host-and-backup confirmation before restoring state."""
     if args.confirm_hostname is not None or args.confirm_backup_name is not None:
         if args.confirm_hostname != hostname or args.confirm_backup_name != backup.name:
             raise CheckpointError(
@@ -1149,7 +1185,14 @@ def confirm_rollback(hostname: str, backup: Path, args: argparse.Namespace) -> N
         raise CheckpointError("Checkpoint rollback was not confirmed")
 
 
-def install_checkpoint(args: argparse.Namespace) -> None:
+# ---------------------------------------------------------------------------
+# Public checkpoint operations called by the unified CLI
+# ---------------------------------------------------------------------------
+
+
+def install_checkpoint(args: argparse.Namespace) -> Path:
+    """Verify, back up, and atomically install matching Reth/Summit state."""
+    require_root()
     role = args.role
     inventory_path = args.inventory or DEFAULT_INVENTORY_PATHS[role]
     require_absolute(inventory_path, "Installation inventory path")
@@ -1221,6 +1264,9 @@ def install_checkpoint(args: argparse.Namespace) -> None:
         print(f"Summit checkpoint target: {checkpoint_path}")
         confirm_install(os.uname().nodename, manifest["epoch"], args)
 
+        # Check both before and after taking the shared Summit lock. This closes
+        # the window in which a process could start between the first status check
+        # and the maintenance transaction.
         require_services_stopped(role)
         lock_file_descriptor = acquire_summit_lock(inventory["summit_data_dir"])
         require_services_stopped(role)
@@ -1271,17 +1317,20 @@ def install_checkpoint(args: argparse.Namespace) -> None:
     print(f"Installed epoch {manifest['epoch']} checkpoint. Services remain stopped.")
     print_rollback_paths(backup)
     print("Rollback command:")
-    installer = Path(__file__)
+    cli = Path(__file__).resolve().parents[1] / "seismic-node.py"
     print(
-        f"  sudo {shlex.quote(str(installer))} rollback "
+        f"  sudo {shlex.quote(str(cli))} checkpoint rollback "
         f"--backup {shlex.quote(str(backup))}"
     )
     print(
         "Start the role-specific services only after reviewing Supervisor configuration."
     )
+    return backup
 
 
 def rollback_checkpoint(args: argparse.Namespace) -> None:
+    """Restore a matching receipt-backed backup while services are stopped."""
+    require_root()
     backup = args.backup
     require_absolute(backup, "Rollback backup")
     require_directory(backup, "Rollback backup")
@@ -1331,19 +1380,181 @@ def rollback_checkpoint(args: argparse.Namespace) -> None:
     print(f"Rollback receipt: {receipt_path}")
 
 
-def main() -> NoReturn:
-    args = parse_args()
+def validate_checkpoint_start_configuration(role: str) -> tuple[Path, Path]:
+    """Revalidate installed checkpoint and anchor files immediately before start."""
+    config_path = CHECKPOINT_CONFIG_PATHS[role]
+    config = read_toml(config_path, "Checkpoint-start configuration", root_managed=True)
+    require_exact_keys(
+        config,
+        {"checkpoint_path", "weak_subjectivity_path"},
+        "Checkpoint-start configuration",
+    )
+    paths: list[Path] = []
+    for key in ("checkpoint_path", "weak_subjectivity_path"):
+        value = config[key]
+        if not isinstance(value, str) or not value:
+            raise CheckpointError(
+                f"Checkpoint-start configuration {key} must be a non-empty string"
+            )
+        path = Path(value)
+        require_absolute(path, f"Checkpoint-start configuration {key}")
+        paths.append(path)
+    checkpoint_path, weak_subjectivity_path = paths
+    require_directory(checkpoint_path, "Installed Summit checkpoint directory")
+    for name in ("checkpoint", "last_block", "finalized_header"):
+        require_regular_file(
+            checkpoint_path / name,
+            f"Installed Summit checkpoint artifact {name}",
+        )
+    headers = checkpoint_path / "finalized_headers"
+    require_directory(headers, "Installed finalized-header directory")
+    epochs: list[int] = []
+    for entry in headers.iterdir():
+        require_regular_file(entry, "Installed finalized-header artifact")
+        if not entry.name.isdigit() or str(int(entry.name)) != entry.name:
+            raise CheckpointError(
+                f"Unexpected installed finalized-header filename: {entry.name}"
+            )
+        epochs.append(int(entry.name))
+    epochs.sort()
+    if not epochs or any(actual != expected for expected, actual in enumerate(epochs)):
+        raise CheckpointError(
+            "Installed finalized-header history must be contiguous from epoch 0"
+        )
+    terminal_epoch = epochs[-1]
+    if not _files_equal(
+        checkpoint_path / "finalized_header",
+        headers / str(terminal_epoch),
+    ):
+        raise CheckpointError(
+            "Installed finalized_header does not match its terminal history entry"
+        )
+    load_weak_subjectivity(weak_subjectivity_path, terminal_epoch)
+    return checkpoint_path, weak_subjectivity_path
+
+
+def directory_size(path: Path) -> int:
+    """Measure a backup without following links outside its directory tree."""
+    total = 0
+    for root, directories, files in os.walk(path, followlinks=False):
+        for name in directories:
+            entry = Path(root) / name
+            if entry.is_symlink():
+                total += entry.lstat().st_size
+        for name in files:
+            total += (Path(root) / name).lstat().st_size
+    return total
+
+
+def human_size(value: int) -> str:
+    """Format a byte count for an operator confirmation message."""
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(value)
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{value} B"
+
+
+def confirm_delete_backup(
+    backup: Path,
+    hostname: str,
+    args: argparse.Namespace,
+) -> None:
+    """Require explicit host, backup name, and deletion confirmation."""
+    supplied = any(
+        (
+            args.confirm_hostname is not None,
+            args.confirm_backup_name is not None,
+            args.confirm_delete,
+        )
+    )
+    if supplied:
+        if (
+            args.confirm_hostname != hostname
+            or args.confirm_backup_name != backup.name
+            or not args.confirm_delete
+        ):
+            raise CheckpointError(
+                "Non-interactive deletion requires the exact --confirm-hostname, "
+                "--confirm-backup-name, and --confirm-delete options"
+            )
+        return
+    if not sys.stdin.isatty():
+        raise CheckpointError(
+            "Interactive deletion confirmation is unavailable; provide all "
+            "non-interactive deletion confirmation options"
+        )
+    expected = f"{hostname} DELETE {backup.name}"
+    response = input(f"Type '{expected}' to permanently delete the backup: ")
+    if response != expected:
+        raise CheckpointError("Rollback-backup deletion was not confirmed")
+
+
+def delete_backup(args: argparse.Namespace) -> None:
+    """Permanently delete an explicitly confirmed, valid rollback backup."""
     require_root()
-    if args.action == "install":
-        install_checkpoint(args)
-    else:
-        rollback_checkpoint(args)
-    raise SystemExit(0)
-
-
-if __name__ == "__main__":
+    backup = args.backup
+    require_absolute(backup, "Rollback backup")
+    backup_metadata = require_directory(backup, "Rollback backup")
+    if backup_metadata.st_uid != 0 or backup_metadata.st_mode & 0o077:
+        raise CheckpointError(
+            f"Rollback backup must be root-owned with no group or world permissions: {backup}"
+        )
+    receipt_path = backup / RECEIPT_FILE_NAME
+    receipt = read_json(receipt_path, "Rollback manifest", root_managed=True)
+    validate_rollback_receipt(receipt)
+    if receipt["state"] == "installing":
+        raise CheckpointError(
+            "Refusing to delete an interrupted-install backup; it may be the only recovery copy"
+        )
+    if receipt["state"] not in {
+        "installed",
+        "rolled-back",
+        "automatically-rolled-back",
+    }:
+        raise CheckpointError(
+            f"Rollback backup has an unsupported deletion state: {receipt['state']!r}"
+        )
+    hostname = os.uname().nodename
+    if receipt["hostname"] != hostname:
+        raise CheckpointError(
+            f"Rollback backup belongs to host {receipt['hostname']!r}, not {hostname!r}"
+        )
+    live_paths = {
+        name: Path(value)
+        for name, value in receipt["paths"].items()
+        if name
+        in {
+            "reth_data_dir",
+            "summit_data_dir",
+            "summit_keys_dir",
+            "checkpoint_path",
+        }
+    }
+    require_separate_paths({"Rollback backup": backup, **live_paths})
+    size = directory_size(backup)
+    print(f"Rollback backup: {backup}")
+    print(f"Receipt state: {receipt['state']}")
+    print(f"Backup size: {human_size(size)}")
+    if receipt["state"] == "installed":
+        print(
+            "Warning: deleting this backup permanently removes the ability to roll "
+            "back to the pre-checkpoint node state.",
+            file=sys.stderr,
+        )
+    confirm_delete_backup(backup, hostname, args)
+    deleting = backup.parent / f".{backup.name}.deleting-{os.getpid()}"
+    if deleting.exists() or deleting.is_symlink():
+        raise CheckpointError(f"Temporary deletion path already exists: {deleting}")
+    # Rename first so an interrupted recursive deletion cannot leave a directory
+    # that still appears to be a complete, usable rollback backup.
+    os.rename(backup, deleting)
     try:
-        main()
-    except (CheckpointError, OSError, shutil.Error) as error:
-        print(f"install-checkpoint: {error}", file=sys.stderr)
-        raise SystemExit(1) from error
+        shutil.rmtree(deleting)
+    except OSError as error:
+        raise CheckpointError(
+            f"Backup deletion was incomplete; remaining data is at {deleting}: {error}"
+        ) from error
+    print(f"Deleted rollback backup: {backup}")

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -13,11 +13,9 @@ from pathlib import Path
 from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-INSTALLER_PATH = REPOSITORY_ROOT / "tools/checkpoint-start/install-checkpoint.py"
-SPEC = importlib.util.spec_from_file_location("checkpoint_installer", INSTALLER_PATH)
-assert SPEC is not None and SPEC.loader is not None
-installer = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(installer)
+sys.path.insert(0, str(REPOSITORY_ROOT / "tools"))
+
+from seismic_node import checkpoint as installer
 
 
 class CheckpointInstallerTests(unittest.TestCase):
