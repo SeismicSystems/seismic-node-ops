@@ -8,7 +8,6 @@ exact response and asks a trusted Summit RPC whether startup is safe.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from dataclasses import dataclass
@@ -316,10 +315,12 @@ def choose_pre_joining_action(status: str, policy: str | None) -> str:
         if response in {"1", "wait", "w"}:
             return "wait"
         if response in {"2", "start", "s"}:
-            hostname = os.uname().nodename
-            expected = f"{hostname} START BEFORE JOINING"
-            confirmation = prompt_operator(f"Type '{expected}' to continue: ")
-            if confirmation != expected:
+            confirmation = (
+                prompt_operator("Start the validator before Joining? [y/N] ")
+                .strip()
+                .lower()
+            )
+            if confirmation not in {"y", "yes"}:
                 raise checkpoint.CheckpointError(
                     "Pre-Joining validator startup was not confirmed"
                 )

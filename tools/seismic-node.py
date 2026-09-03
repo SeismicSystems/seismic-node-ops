@@ -71,13 +71,17 @@ def add_checkpoint_destination_arguments(parser: argparse.ArgumentParser) -> Non
         default=checkpoint.DEFAULT_INSTALLED_WEAK_SUBJECTIVITY_PATH,
     )
     parser.add_argument("--backup-root", type=Path)
-    parser.add_argument("--confirm-hostname")
+    add_yes_argument(parser)
+
+
+def add_yes_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--confirm-epoch",
-        type=int,
+        "--yes",
+        action="store_true",
         help=(
-            "exact selected epoch for non-interactive installation; unattended "
-            "workflows should pin --checkpoint-epoch with --checkpoint-policy exact"
+            "confirm the destructive operation without an interactive prompt; "
+            "unattended installs should also pin --checkpoint-epoch with "
+            "--checkpoint-policy exact"
         ),
     )
 
@@ -108,16 +112,13 @@ def parse_args() -> argparse.Namespace:
 
     checkpoint_rollback = checkpoint_commands.add_parser("rollback", allow_abbrev=False)
     checkpoint_rollback.add_argument("--backup", type=Path, required=True)
-    checkpoint_rollback.add_argument("--confirm-hostname")
-    checkpoint_rollback.add_argument("--confirm-backup-name")
+    add_yes_argument(checkpoint_rollback)
 
     checkpoint_delete = checkpoint_commands.add_parser(
         "delete-backup", allow_abbrev=False
     )
     checkpoint_delete.add_argument("--backup", type=Path, required=True)
-    checkpoint_delete.add_argument("--confirm-hostname")
-    checkpoint_delete.add_argument("--confirm-backup-name")
-    checkpoint_delete.add_argument("--confirm-delete", action="store_true")
+    add_yes_argument(checkpoint_delete)
 
     validator_parser = commands.add_parser("validator", allow_abbrev=False)
     validator_commands = validator_parser.add_subparsers(
@@ -258,10 +259,9 @@ def checkpoint_install_options_requested(args: argparse.Namespace) -> bool:
                 args.weak_subjectivity_bearer_token_file,
                 args.checkpoint_path,
                 args.backup_root,
-                args.confirm_hostname,
-                args.confirm_epoch,
             )
         )
+        or args.yes
         or args.allow_same_origin_weak_subjectivity
         or args.checkpoint_policy != "ask"
         or args.installed_weak_subjectivity_path

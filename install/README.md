@@ -367,10 +367,9 @@ sudo supervisorctl update
 It then starts Custodian when configured, Reth, `summit-checkpoint`, and
 summit-checkpointer when configured. It does not start or reload OpenResty.
 
-For unattended installation, pin `--checkpoint-epoch`, use
-`--checkpoint-policy exact`, and provide matching `--confirm-hostname` and
-`--confirm-epoch` values. This avoids a dynamically selected epoch differing
-from the value authorized by automation.
+For unattended installation, pass `--yes` to skip the interactive confirmation,
+and pin `--checkpoint-epoch` with `--checkpoint-policy exact` so a dynamically
+selected epoch cannot differ from the one authorized by automation.
 
 Checkpoint installation may complete before the validator becomes `Joining`.
 When the account is not yet `Joining`, interactive mode asks whether to wait,

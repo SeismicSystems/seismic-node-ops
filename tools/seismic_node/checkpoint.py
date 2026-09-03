@@ -1140,49 +1140,42 @@ def print_rollback_paths(backup: Path) -> None:
             print(f"  {path}")
 
 
-def confirm_install(hostname: str, epoch: int, args: argparse.Namespace) -> None:
-    """Require host-and-epoch confirmation before replacing live state."""
-    if args.confirm_hostname is not None or args.confirm_epoch is not None:
-        if args.confirm_hostname != hostname or args.confirm_epoch != epoch:
-            raise CheckpointError(
-                "Non-interactive confirmation must provide the exact --confirm-hostname "
-                "and --confirm-epoch values"
-            )
+def confirm_action(question: str, args: argparse.Namespace, refusal: str) -> None:
+    """Ask one yes/no question; non-interactive use requires ``--yes``."""
+    if args.yes:
         return
-
-    expected = f"{hostname} epoch {epoch}"
-    print("This will replace the configured Reth and Summit mutable state.")
+    if not sys.stdin.isatty():
+        raise CheckpointError(
+            "Interactive confirmation is unavailable; pass --yes to confirm"
+        )
     try:
-        response = input(f"Type '{expected}' to continue: ")
+        response = input(f"{question} [y/N] ").strip().lower()
     except EOFError as error:
         raise CheckpointError(
-            "Interactive confirmation is unavailable; provide both non-interactive "
-            "confirmation options"
+            "Interactive confirmation is unavailable; pass --yes to confirm"
         ) from error
-    if response != expected:
-        raise CheckpointError("Checkpoint installation was not confirmed")
+    if response not in {"y", "yes"}:
+        raise CheckpointError(refusal)
+
+
+def confirm_install(hostname: str, epoch: int, args: argparse.Namespace) -> None:
+    """Confirm state replacement on this host before it begins."""
+    print("This will replace the configured Reth and Summit mutable state.")
+    confirm_action(
+        f"Install the epoch {epoch} checkpoint on {hostname}?",
+        args,
+        "Checkpoint installation was not confirmed",
+    )
 
 
 def confirm_rollback(hostname: str, backup: Path, args: argparse.Namespace) -> None:
-    """Require host-and-backup confirmation before restoring state."""
-    if args.confirm_hostname is not None or args.confirm_backup_name is not None:
-        if args.confirm_hostname != hostname or args.confirm_backup_name != backup.name:
-            raise CheckpointError(
-                "Non-interactive rollback confirmation must provide the exact "
-                "--confirm-hostname and --confirm-backup-name values"
-            )
-        return
-
-    expected = f"{hostname} rollback {backup.name}"
-    try:
-        response = input(f"Type '{expected}' to continue: ")
-    except EOFError as error:
-        raise CheckpointError(
-            "Interactive confirmation is unavailable; provide both non-interactive "
-            "rollback confirmation options"
-        ) from error
-    if response != expected:
-        raise CheckpointError("Checkpoint rollback was not confirmed")
+    """Confirm state restoration on this host before it begins."""
+    print("This will restore the backed-up Reth and Summit mutable state.")
+    confirm_action(
+        f"Roll back {backup.name} on {hostname}?",
+        args,
+        "Checkpoint rollback was not confirmed",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1462,34 +1455,12 @@ def confirm_delete_backup(
     hostname: str,
     args: argparse.Namespace,
 ) -> None:
-    """Require explicit host, backup name, and deletion confirmation."""
-    supplied = any(
-        (
-            args.confirm_hostname is not None,
-            args.confirm_backup_name is not None,
-            args.confirm_delete,
-        )
+    """Confirm permanent rollback-backup deletion before it begins."""
+    confirm_action(
+        f"Permanently delete {backup.name} on {hostname}?",
+        args,
+        "Rollback-backup deletion was not confirmed",
     )
-    if supplied:
-        if (
-            args.confirm_hostname != hostname
-            or args.confirm_backup_name != backup.name
-            or not args.confirm_delete
-        ):
-            raise CheckpointError(
-                "Non-interactive deletion requires the exact --confirm-hostname, "
-                "--confirm-backup-name, and --confirm-delete options"
-            )
-        return
-    if not sys.stdin.isatty():
-        raise CheckpointError(
-            "Interactive deletion confirmation is unavailable; provide all "
-            "non-interactive deletion confirmation options"
-        )
-    expected = f"{hostname} DELETE {backup.name}"
-    response = input(f"Type '{expected}' to permanently delete the backup: ")
-    if response != expected:
-        raise CheckpointError("Rollback-backup deletion was not confirmed")
 
 
 def delete_backup(args: argparse.Namespace) -> None:

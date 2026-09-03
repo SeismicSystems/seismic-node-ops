@@ -13,6 +13,8 @@ import json
 import os
 import shutil
 import stat
+import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,6 +23,7 @@ from typing import Any
 
 MAX_JSON_BYTES = 1024 * 1024
 MAX_ANCHOR_BYTES = 16 * 1024
+PROGRESS_REFRESH_SECONDS = 0.5
 
 
 class NetworkError(Exception):
@@ -43,6 +46,65 @@ class JsonRpcError(NetworkError):
         super().__init__(f"JSON-RPC error {code}: {message}")
         self.code = code
         self.message = message
+
+
+def human_size(value: int) -> str:
+    """Format a byte count for operator-facing progress output."""
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    amount = float(value)
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{value} B"
+
+
+class DownloadProgress:
+    """Render download progress without external dependencies.
+
+    On a terminal the same line is redrawn with percentage, size, and rate.
+    Without a terminal (logs, CI) one line is printed per ten-percent step.
+    """
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.started_at = time.monotonic()
+        self.last_render = 0.0
+        self.interactive = sys.stdout.isatty()
+        self.next_milestone = 10
+        self.line_open = False
+
+    def render_line(self, written: int) -> str:
+        percent = 100 * written // self.total if self.total else 100
+        elapsed = time.monotonic() - self.started_at
+        rate = written / elapsed if elapsed > 0 else 0.0
+        return (
+            f"  {percent:3d}%  {human_size(written)} / {human_size(self.total)}"
+            f"  ({human_size(int(rate))}/s)"
+        )
+
+    def update(self, written: int) -> None:
+        if self.interactive:
+            now = time.monotonic()
+            if (
+                now - self.last_render < PROGRESS_REFRESH_SECONDS
+                and written < self.total
+            ):
+                return
+            self.last_render = now
+            print(f"\r{self.render_line(written):<70}", end="", flush=True)
+            self.line_open = True
+            return
+        percent = 100 * written // self.total if self.total else 100
+        if percent >= self.next_milestone:
+            print(f" {self.render_line(written)}")
+            self.next_milestone = percent + 10
+
+    def finish(self) -> None:
+        """Terminate an in-place progress line so later output starts cleanly."""
+        if self.interactive and self.line_open:
+            print(flush=True)
+            self.line_open = False
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -223,6 +285,7 @@ def download_verified_archive(
     written = 0
     destination_created = False
     descriptor: int | None = None
+    progress = DownloadProgress(expected_size)
     try:
         # O_EXCL and O_NOFOLLOW prevent replacement or symlink tricks at the
         # root-managed destination while the untrusted response is streamed.
@@ -252,14 +315,17 @@ def download_verified_archive(
                     raise NetworkError("Snapshot download exceeded the manifest size")
                 digest.update(chunk)
                 output.write(chunk)
+                progress.update(written)
             output.flush()
             os.fsync(output.fileno())
     except Exception:
+        progress.finish()
         if descriptor is not None:
             os.close(descriptor)
         if destination_created:
             destination.unlink(missing_ok=True)
         raise
+    progress.finish()
     actual_sha256 = f"0x{digest.hexdigest()}"
     if written != expected_size:
         destination.unlink(missing_ok=True)

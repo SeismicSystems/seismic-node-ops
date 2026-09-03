@@ -350,13 +350,13 @@ class CliTests(unittest.TestCase):
                 checkpoint.DEFAULT_INSTALLED_WEAK_SUBJECTIVITY_PATH
             ),
             backup_root=None,
-            confirm_hostname=None,
-            confirm_epoch=None,
+            yes=False,
         )
 
     def test_install_modifiers_without_source_get_direct_error(self) -> None:
         for attribute, value in (
             ("checkpoint_policy", "exact"),
+            ("yes", True),
             ("allow_same_origin_weak_subjectivity", True),
             (
                 "installed_weak_subjectivity_path",

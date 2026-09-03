@@ -49,10 +49,9 @@ non-destructive part of onboarding:
    afterward.
 
 Local archive and manifest paths remain supported. Network acquisition does not
-modify Reth or Summit state. Unattended workflows should pin
-`--checkpoint-epoch`, use `--checkpoint-policy exact`, and provide the same
-value through `--confirm-epoch`; this keeps dynamic discovery from changing the
-epoch authorized by automation.
+modify Reth or Summit state. Unattended workflows confirm destructive steps with
+`--yes` and should pin `--checkpoint-epoch` with `--checkpoint-policy exact`,
+keeping dynamic discovery from changing the epoch authorized by automation.
 
 ### Checkpoint transaction
 

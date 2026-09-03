@@ -375,10 +375,9 @@ sudo ./tools/seismic-node.py observer start \
   --weak-subjectivity-rpc-url https://independent-validator.example/summit
 ```
 
-For unattended installation, pin `--checkpoint-epoch`, use
-`--checkpoint-policy exact`, and provide matching `--confirm-hostname` and
-`--confirm-epoch` values. This avoids a dynamically selected epoch differing
-from the value authorized by automation.
+For unattended installation, pass `--yes` to skip the interactive confirmation,
+and pin `--checkpoint-epoch` with `--checkpoint-policy exact` so a dynamically
+selected epoch cannot differ from the one authorized by automation.
 
 To start from an already installed checkpoint, omit the snapshot and
 weak-subjectivity source options. Normal startup uses `--mode normal`, including

@@ -536,7 +536,11 @@ def resolve_checkpoint_inputs(
             or str(args.weak_subjectivity_path)
         )
         print(f"Weak-subjectivity source: {weak_source}")
-        print(f"Downloading checkpoint archive for epoch {selected}...")
+        archive_size = manifest["archive"]["size_bytes"]
+        print(
+            f"Downloading checkpoint archive for epoch {selected} "
+            f"({rpc.human_size(archive_size)})..."
+        )
         archive_path = work_dir / f"epoch_{selected}.tar.gz"
         try:
             rpc.download_verified_archive(
