@@ -306,16 +306,13 @@ def choose_pre_joining_action(status: str, policy: str | None) -> str:
         "Starting before Joining may not allow Summit to connect or synchronize yet. "
         "Because autorestart=false, rerunning this command may be necessary."
     )
+    print("Choose how to proceed:")
+    print("  [1] wait for Joining (default)")
+    print("  [2] start when preparation completes")
+    print("  [3] continue without starting services")
     while True:
-        response = (
-            prompt_operator(
-                "Choose [1] wait for Joining, [2] start when preparation completes, "
-                "or [3] continue without starting services: "
-            )
-            .strip()
-            .lower()
-        )
-        if response in {"1", "wait", "w"}:
+        response = prompt_operator("Select [1/2/3], default 1: ").strip().lower()
+        if response in {"", "1", "wait", "w"}:
             return "wait"
         if response in {"2", "start", "s"}:
             confirmation = (

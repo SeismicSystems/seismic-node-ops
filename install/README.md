@@ -143,7 +143,7 @@ corresponding services are started. A prebuilt or already-present deferred
 summit-checkpointer must support `--bind-address`; the generated Supervisor
 program uses it to keep the checkpointer RPC on loopback.
 
-## Persistent layout
+### Persistent layout
 
 The default persistent paths are:
 
@@ -166,7 +166,7 @@ Important files derived from those paths include:
 Back up the validator keys securely. Do not copy them into tickets, chat
 messages, source control, or the deposit-signature file described below.
 
-### Reth MDBX database
+#### Reth MDBX database
 
 seismic-reth stores its MDBX execution database under:
 
@@ -189,7 +189,7 @@ the checkpointer until a compatible executable is installed at:
 /usr/local/bin/mdbx_copy
 ```
 
-## Generated services and configuration
+### Generated services and configuration
 
 The installer writes the Supervisor configuration to:
 
@@ -239,43 +239,6 @@ paths; it contains no key material or other secrets. If it already exists when
 the installer starts, the installer asks for permission to overwrite it after a
 successful installation. It does not read or reuse the existing contents.
 Declining the overwrite cancels the installation before configuration begins.
-
-## Install a validator checkpoint
-
-Stage the snapshot archive, its matching `manifest.json`, and an independently
-obtained weak-subjectivity TOML under root-owned, non-writable paths. Then run:
-
-```bash
-sudo ./tools/seismic-node.py checkpoint install \
-  --role validator \
-  --archive /root/seismic-checkpoint/epoch_12.tar.gz \
-  --manifest /root/seismic-checkpoint/manifest.json \
-  --weak-subjectivity-path /root/seismic-trust/weak_subjectivity.toml
-```
-
-The tool verifies the manifest and archive, checks that related Supervisor
-programs are stopped, preserves node keys, backs up and replaces the matching
-Reth state, and backs up and empties the Summit mutable store. Reth, Summit, the
-checkpoint destination, and the rollback directory must share a filesystem so
-state moves remain atomic. The default checkpoint and rollback locations are
-derived from the configured data paths. It writes
-`/etc/seismic/validator-checkpoint-start.toml` and leaves every service stopped.
-
-The tool prints the root-only rollback directory as soon as it is created and
-again in its final summary, together with the exact rollback command. It can
-also download a snapshot and obtain weak subjectivity from an independent Summit
-RPC; run `sudo ./tools/seismic-node.py checkpoint install --help` for those
-options. Independent providers are recommended. If both remote sources share a
-normalized URL origin, the tool prints a strong warning and requires interactive
-confirmation or `--allow-same-origin-weak-subjectivity` for non-interactive use.
-This URL-origin comparison cannot prove that different DNS names have
-independent operators. Do not remove the rollback directory until checkpoint
-startup and the transition back to normal Summit startup have both been
-verified. When rollback is no longer needed, remove it explicitly with:
-
-```bash
-sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
-```
 
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
@@ -510,6 +473,47 @@ sudo supervisorctl status
 
 Because `autostart=false` and `autorestart=false`, these programs must be
 started manually again after a server or Supervisor restart.
+
+## Install a validator checkpoint manually
+
+`validator onboard` downloads and installs a checkpoint automatically. Use this
+standalone command when the snapshot archive, its matching `manifest.json`, and
+an independently obtained weak-subjectivity TOML were staged locally under
+root-owned, non-writable paths — for example on hosts without direct access to
+the snapshot provider. Complete the deposit-signature handoff first so the
+validator can be started once its account reaches `Joining`.
+
+```bash
+sudo ./tools/seismic-node.py checkpoint install \
+  --role validator \
+  --archive /root/seismic-checkpoint/epoch_12.tar.gz \
+  --manifest /root/seismic-checkpoint/manifest.json \
+  --weak-subjectivity-path /root/seismic-trust/weak_subjectivity.toml
+```
+
+The tool verifies the manifest and archive, checks that related Supervisor
+programs are stopped, preserves node keys, backs up and replaces the matching
+Reth state, and backs up and empties the Summit mutable store. Reth, Summit, the
+checkpoint destination, and the rollback directory must share a filesystem so
+state moves remain atomic. The default checkpoint and rollback locations are
+derived from the configured data paths. It writes
+`/etc/seismic/validator-checkpoint-start.toml` and leaves every service stopped.
+
+The tool prints the root-only rollback directory as soon as it is created and
+again in its final summary, together with the exact rollback command. It can
+also download a snapshot and obtain weak subjectivity from an independent Summit
+RPC; run `sudo ./tools/seismic-node.py checkpoint install --help` for those
+options. Independent providers are recommended. If both remote sources share a
+normalized URL origin, the tool prints a strong warning and requires interactive
+confirmation or `--allow-same-origin-weak-subjectivity` for non-interactive use.
+This URL-origin comparison cannot prove that different DNS names have
+independent operators. Do not remove the rollback directory until checkpoint
+startup and the transition back to normal Summit startup have both been
+verified. When rollback is no longer needed, remove it explicitly with:
+
+```bash
+sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
+```
 
 ## Stop the validator
 
