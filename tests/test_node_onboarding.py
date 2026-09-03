@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -42,13 +43,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(self.archive)
             return
-        if self.path == "/checkpointer/snapshots/13/manifest":
+        if self.path == "/api/checkpoints/13/manifest":
             self.send_response(200)
             self.send_header("Content-Length", str(len(self.manifest)))
             self.end_headers()
             self.wfile.write(self.manifest)
             return
-        if self.path == "/checkpointer/snapshots/13":
+        if self.path == "/api/checkpoints/13/snapshot":
             self.send_response(200)
             self.send_header("Content-Length", str(len(self.archive)))
             self.end_headers()
@@ -150,7 +151,8 @@ class NetworkTests(unittest.TestCase):
             14,
         )
 
-    def test_remote_checkpoint_and_rpc_anchor_are_resolved(self) -> None:
+    @staticmethod
+    def publish_fixture_manifest() -> None:
         archive_hash = "0x" + hashlib.sha256(FixtureHandler.archive).hexdigest()
         FixtureHandler.manifest = json.dumps(
             {
@@ -169,10 +171,13 @@ class NetworkTests(unittest.TestCase):
                 "created_at": "2026-01-01T00:00:00Z",
             }
         ).encode()
+
+    def test_remote_checkpoint_and_rpc_anchor_are_resolved(self) -> None:
+        self.publish_fixture_manifest()
         args = SimpleNamespace(
             archive=None,
             manifest=None,
-            snapshot_api_url=f"{self.base_url}/checkpointer",
+            snapshot_api_url=f"{self.base_url}/api",
             snapshot_bearer_token_file=None,
             checkpoint_epoch=None,
             checkpoint_policy="ask",
@@ -208,6 +213,49 @@ class NetworkTests(unittest.TestCase):
                 self.assertEqual(resolved.epoch, 13)
                 self.assertEqual(resolved.archive.read_bytes(), FixtureHandler.archive)
                 self.assertIn("epoch = 13", resolved.weak_subjectivity.read_text())
+
+    def test_waiting_manifest_hint_mentions_previous_epoch_once(self) -> None:
+        not_found = rpc.HttpStatusError(404, "https://snap.example/manifest")
+        responses = iter((not_found, not_found, b"{}"))
+
+        def fake_request(*arguments: object, **options: object) -> bytes:
+            value = next(responses)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        output = io.StringIO()
+        with (
+            tempfile.TemporaryDirectory() as temporary_directory,
+            mock.patch.object(rpc, "request_bytes", side_effect=fake_request),
+            mock.patch.object(checkpoint, "load_manifest", return_value={"epoch": 189}),
+            mock.patch.object(download.time, "sleep"),
+            contextlib.redirect_stdout(output),
+        ):
+            manifest = download.fetch_manifest_when_available(
+                "https://snap.example/checkpoints/189/manifest",
+                Path(temporary_directory) / "manifest.json",
+                None,
+                interval=0.01,
+                deadline=None,
+                timeout=1.0,
+                unavailable_hint="Rerun with --checkpoint-epoch 188.",
+            )
+        self.assertEqual(manifest, {"epoch": 189})
+        self.assertEqual(
+            output.getvalue().count("Rerun with --checkpoint-epoch 188."), 1
+        )
+
+    def test_snapshot_urls_use_checkpoint_app_shape(self) -> None:
+        manifest_url, archive_url = download.snapshot_urls(
+            "https://checkpoint.example/api", 190
+        )
+        self.assertEqual(
+            manifest_url, "https://checkpoint.example/api/checkpoints/190/manifest"
+        )
+        self.assertEqual(
+            archive_url, "https://checkpoint.example/api/checkpoints/190/snapshot"
+        )
 
     def test_checkpoint_policy_never_silently_changes_explicit_epoch(self) -> None:
         self.assertEqual(download.choose_newer_checkpoint(12, 13, "exact"), 12)

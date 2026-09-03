@@ -35,14 +35,17 @@ class ResolvedCheckpointInputs:
 
 
 def snapshot_urls(base_url: str, epoch: int) -> tuple[str, str]:
-    """Build the manifest and archive endpoints for a completed epoch."""
+    """Build the checkpoint-app manifest and archive endpoints for an epoch."""
     parsed = rpc.validate_url(base_url, "Snapshot API URL")
     if parsed.query:
         raise checkpoint.CheckpointError(
             "Snapshot API URL must not contain a query string"
         )
     base = base_url.rstrip("/")
-    return f"{base}/snapshots/{epoch}/manifest", f"{base}/snapshots/{epoch}"
+    return (
+        f"{base}/checkpoints/{epoch}/manifest",
+        f"{base}/checkpoints/{epoch}/snapshot",
+    )
 
 
 def require_nonnegative_integer(value: Any, description: str) -> int:
@@ -91,27 +94,19 @@ def fetch_manifest_when_available(
     interval: float,
     deadline: float | None,
     timeout: float,
+    unavailable_hint: str | None = None,
 ) -> dict[str, Any]:
     """Poll a manifest endpoint; only a 404 is considered a retryable state."""
+    hint_pending = unavailable_hint
     while True:
-        try:
-            data = rpc.request_bytes(
-                url,
-                token=token,
-                timeout=timeout,
-                maximum_size=rpc.MAX_JSON_BYTES,
-                description="Snapshot manifest",
-            )
-            destination.write_bytes(data)
-            os.chmod(destination, 0o600)
-            return checkpoint.load_manifest(destination)
-        except rpc.HttpStatusError as error:
-            if error.status != 404:
-                raise checkpoint.CheckpointError(str(error)) from error
-            print(f"Snapshot manifest is not available yet: {url}; waiting...")
-            sleep_until_retry(interval, deadline, "waiting for the snapshot manifest")
-        except rpc.NetworkError as error:
-            raise checkpoint.CheckpointError(str(error)) from error
+        manifest = try_fetch_manifest(url, destination, token, timeout)
+        if manifest is not None:
+            return manifest
+        print(f"Snapshot manifest is not available yet: {url}; waiting...")
+        if hint_pending is not None:
+            print(hint_pending)
+            hint_pending = None
+        sleep_until_retry(interval, deadline, "waiting for the snapshot manifest")
 
 
 def try_fetch_manifest(
@@ -204,6 +199,15 @@ def select_epoch(
     if manifest is None:
         manifest_path = work_dir / f"manifest-{selected}.json"
         manifest_url, _ = snapshot_urls(args.snapshot_api_url, selected)
+        # The newest completed epoch may still be processing at the provider.
+        # Tell the operator how to use the previous snapshot instead of waiting.
+        unavailable_hint = None
+        if requested is None and selected > 0:
+            unavailable_hint = (
+                f"The provider may still be processing epoch {selected}. To use "
+                f"the previous snapshot instead, rerun this command with "
+                f"--checkpoint-epoch {selected - 1}."
+            )
         manifest = fetch_manifest_when_available(
             manifest_url,
             manifest_path,
@@ -211,6 +215,7 @@ def select_epoch(
             interval=args.snapshot_poll_interval,
             deadline=deadline,
             timeout=args.http_timeout,
+            unavailable_hint=unavailable_hint,
         )
         if manifest["epoch"] != selected:
             raise checkpoint.CheckpointError(

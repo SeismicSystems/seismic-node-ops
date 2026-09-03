@@ -35,7 +35,9 @@ non-destructive part of onboarding:
 1. Require exactly one local or remote checkpoint source.
 2. Select a completed epoch without silently replacing an explicitly requested
    epoch.
-3. Validate the snapshot manifest.
+3. Validate the snapshot manifest, fetched from the checkpoint-app provider
+   endpoints `<base>/checkpoints/<epoch>/manifest` and
+   `<base>/checkpoints/<epoch>/snapshot`.
 4. Obtain a weak-subjectivity anchor from exactly one configured source.
 5. Prefer an independently hosted anchor. If the remote anchor and snapshot
    provider have the same normalized URL origin, emit a strong warning and
