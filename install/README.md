@@ -574,6 +574,9 @@ verified. When rollback is no longer needed, remove it explicitly with:
 sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
 ```
 
+Like `checkpoint rollback`, omitting `--backup` in interactive use lists the
+available backups for selection by number.
+
 ## Stop the validator
 
 Stop deposit-signature, normal, or checkpoint validator programs and their
