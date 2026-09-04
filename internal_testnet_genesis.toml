@@ -13,6 +13,7 @@ max_deposits_per_epoch = 3
 max_withdrawals_per_epoch = 16
 observers_per_validator = 5
 minimum_validator_count = 3
+max_pending_withdrawals_per_validator = 5
 
 [[validators]]
 node_public_key = "1101bf2d0916162dd61ffd434f7560265b56ba81af6a251e7a9cdc863153a456"
