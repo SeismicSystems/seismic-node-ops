@@ -132,7 +132,7 @@ supported installation modes are:
 The current source-build defaults are:
 
 ```text
-Summit:       m/metrics
+Summit:       main
 seismic-reth: feat/purpose-key-rotation-reth
 Checkpointer: main
 Custodian:    d/centralized-custodian

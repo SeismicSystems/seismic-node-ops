@@ -154,7 +154,7 @@ Summit, seismic-reth, summit-checkpointer, and Centralized Custodian support:
 The current source-build defaults are:
 
 ```text
-Summit:       m/metrics
+Summit:       main
 seismic-reth: feat/purpose-key-rotation-reth
 Checkpointer: main
 Custodian:    d/centralized-custodian

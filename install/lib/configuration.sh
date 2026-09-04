@@ -454,7 +454,7 @@ configure_node_software() {
 
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
-    SUMMIT_SOURCE_REF="m/metrics"
+    SUMMIT_SOURCE_REF="main"
     RETH_SOURCE_REF="feat/purpose-key-rotation-reth"
     SUMMIT_INSTALL_METHOD=""
     RETH_INSTALL_METHOD=""
@@ -760,7 +760,7 @@ configure_custodian() {
     COUNCIL_ADDRESS=""
     CUSTODIAN_CHAIN_ID=""
     PARENT_CUSTODIAN=""
-    CUSTODIAN_REQUIRED_SUMMIT_REF="m/metrics"
+    CUSTODIAN_REQUIRED_SUMMIT_REF="main"
     CUSTODIAN_REQUIRED_RETH_REF="feat/purpose-key-rotation-reth"
     CUSTODIAN_SOURCE_REF="d/centralized-custodian"
 
