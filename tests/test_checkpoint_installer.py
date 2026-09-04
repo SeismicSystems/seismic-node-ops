@@ -191,7 +191,7 @@ class CheckpointInstallerTests(unittest.TestCase):
                 mock.patch("builtins.input", return_value="2"),
                 contextlib.redirect_stdout(io.StringIO()) as output,
             ):
-                selected = installer.select_rollback_backup(args)
+                selected = installer.select_backup(args, "roll back")
             self.assertEqual(selected, older)
             listing = output.getvalue()
             self.assertIn("[1] observer-epoch-5-20260904T191237Z", listing)
@@ -202,7 +202,7 @@ class CheckpointInstallerTests(unittest.TestCase):
         with mock.patch.object(installer.sys.stdin, "isatty", return_value=False):
             self.assert_checkpoint_error(
                 "requires --backup",
-                lambda: installer.select_rollback_backup(args),
+                lambda: installer.select_backup(args, "delete"),
             )
 
 

@@ -450,6 +450,9 @@ together. When rollback is no longer needed, remove it explicitly with:
 sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
 ```
 
+Like `checkpoint rollback`, omitting `--backup` in interactive use lists the
+available backups for selection by number.
+
 ## Observer Custodian
 
 The parent validator Custodian council endpoint and the observer's local council

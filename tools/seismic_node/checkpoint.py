@@ -1352,12 +1352,12 @@ def describe_backup(backup: Path) -> str:
         return f"{backup.name}  (unreadable receipt: {error})"
 
 
-def select_rollback_backup(args: argparse.Namespace) -> Path:
+def select_backup(args: argparse.Namespace, action: str) -> Path:
     """Return the requested backup or ask the operator to choose one."""
     if args.backup is not None:
         return args.backup
     if not sys.stdin.isatty():
-        raise CheckpointError("Non-interactive rollback requires --backup")
+        raise CheckpointError(f"Non-interactive {action} requires --backup")
 
     candidates: list[Path] = []
     for root in discover_backup_roots():
@@ -1381,7 +1381,7 @@ def select_rollback_backup(args: argparse.Namespace) -> Path:
     while True:
         try:
             response = input(
-                f"Select a backup to roll back [1-{len(candidates)}], "
+                f"Select a backup to {action} [1-{len(candidates)}], "
                 "or press Enter to abort: "
             ).strip()
         except EOFError as error:
@@ -1389,7 +1389,7 @@ def select_rollback_backup(args: argparse.Namespace) -> Path:
                 "Interactive selection is unavailable; provide --backup"
             ) from error
         if not response:
-            raise CheckpointError("Rollback aborted; no backup was selected")
+            raise CheckpointError(f"Backup {action} aborted; no backup was selected")
         if response.isdigit() and 1 <= int(response) <= len(candidates):
             return candidates[int(response) - 1]
         print(f"Enter a number from 1 to {len(candidates)}, or press Enter to abort.")
@@ -1398,7 +1398,7 @@ def select_rollback_backup(args: argparse.Namespace) -> Path:
 def rollback_checkpoint(args: argparse.Namespace) -> None:
     """Restore a matching receipt-backed backup while services are stopped."""
     require_root()
-    backup = select_rollback_backup(args)
+    backup = select_backup(args, "roll back")
     require_absolute(backup, "Rollback backup")
     require_directory(backup, "Rollback backup")
     receipt_path = backup / RECEIPT_FILE_NAME
@@ -1540,7 +1540,7 @@ def confirm_delete_backup(
 def delete_backup(args: argparse.Namespace) -> None:
     """Permanently delete an explicitly confirmed, valid rollback backup."""
     require_root()
-    backup = args.backup
+    backup = select_backup(args, "delete")
     require_absolute(backup, "Rollback backup")
     backup_metadata = require_directory(backup, "Rollback backup")
     if backup_metadata.st_uid != 0 or backup_metadata.st_mode & 0o077:
