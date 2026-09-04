@@ -557,11 +557,13 @@ derived from the configured data paths. It writes
 `/etc/seismic/validator-checkpoint-start.toml` and leaves every service stopped.
 
 The tool prints the root-only rollback directory as soon as it is created and
-again in its final summary, together with the exact rollback command. It can
-also download a snapshot and obtain weak subjectivity from an independent Summit
-RPC; run `sudo ./tools/seismic-node.py checkpoint install --help` for those
-options. Independent providers are recommended. If both remote sources share a
-normalized URL origin, the tool prints a strong warning and requires interactive
+again in its final summary, together with the exact rollback command. Running
+`sudo ./tools/seismic-node.py checkpoint rollback` without `--backup` lists the
+available backups interactively for selection by number. It can also download a
+snapshot and obtain weak subjectivity from an independent Summit RPC; run
+`sudo ./tools/seismic-node.py checkpoint install --help` for those options.
+Independent providers are recommended. If both remote sources share a normalized
+URL origin, the tool prints a strong warning and requires interactive
 confirmation or `--allow-same-origin-weak-subjectivity` for non-interactive use.
 This URL-origin comparison cannot prove that different DNS names have
 independent operators. Do not remove the rollback directory until checkpoint

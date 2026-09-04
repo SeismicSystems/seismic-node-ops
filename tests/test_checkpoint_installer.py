@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import sys
@@ -10,6 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -163,6 +165,45 @@ class CheckpointInstallerTests(unittest.TestCase):
             self.assertTrue((checkpoint / "original").exists())
             self.assertEqual(config.read_bytes(), b"leave-config")
             self.assertEqual(weak_subjectivity.read_bytes(), b"leave-anchor")
+
+    def test_interactive_rollback_selection_lists_backups(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            newer = root / "observer-epoch-5-20260904T191237Z"
+            older = root / "observer-epoch-2-20260904T182043Z"
+            for backup in (newer, older):
+                backup.mkdir()
+                (backup / installer.RECEIPT_FILE_NAME).write_text("{}")
+
+            args = SimpleNamespace(backup=None)
+            receipt = {
+                "role": "observer",
+                "epoch": 5,
+                "state": "installed",
+                "created_at": "2026-09-04T19:12:37Z",
+            }
+            with (
+                mock.patch.object(
+                    installer, "discover_backup_roots", return_value=[root]
+                ),
+                mock.patch.object(installer, "read_json", return_value=receipt),
+                mock.patch.object(installer.sys.stdin, "isatty", return_value=True),
+                mock.patch("builtins.input", return_value="2"),
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                selected = installer.select_rollback_backup(args)
+            self.assertEqual(selected, older)
+            listing = output.getvalue()
+            self.assertIn("[1] observer-epoch-5-20260904T191237Z", listing)
+            self.assertIn("[2] observer-epoch-2-20260904T182043Z", listing)
+
+    def test_noninteractive_rollback_requires_backup_option(self) -> None:
+        args = SimpleNamespace(backup=None)
+        with mock.patch.object(installer.sys.stdin, "isatty", return_value=False):
+            self.assert_checkpoint_error(
+                "requires --backup",
+                lambda: installer.select_rollback_backup(args),
+            )
 
 
 if __name__ == "__main__":

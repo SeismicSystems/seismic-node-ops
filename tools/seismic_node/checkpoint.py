@@ -1321,10 +1321,84 @@ def install_checkpoint(args: argparse.Namespace) -> Path:
     return backup
 
 
+def discover_backup_roots() -> list[Path]:
+    """Derive the default rollback roots from the installed inventories."""
+    roots: list[Path] = []
+    for role, inventory_path in DEFAULT_INVENTORY_PATHS.items():
+        try:
+            inventory = load_inventory(role, inventory_path)
+        except CheckpointError:
+            continue
+        root = inventory["reth_data_dir"].parent / "checkpoint-rollback"
+        if root not in roots and root.is_dir() and not root.is_symlink():
+            roots.append(root)
+    return roots
+
+
+def describe_backup(backup: Path) -> str:
+    """Summarize one backup for interactive selection, tolerating bad receipts."""
+    try:
+        receipt = read_json(
+            backup / RECEIPT_FILE_NAME, "Rollback manifest", root_managed=True
+        )
+        role = receipt.get("role", "?")
+        epoch = receipt.get("epoch", "?")
+        state = receipt.get("state", "?")
+        created = receipt.get("created_at", "?")
+        return (
+            f"{backup.name}  role={role} epoch={epoch} state={state} created={created}"
+        )
+    except CheckpointError as error:
+        return f"{backup.name}  (unreadable receipt: {error})"
+
+
+def select_rollback_backup(args: argparse.Namespace) -> Path:
+    """Return the requested backup or ask the operator to choose one."""
+    if args.backup is not None:
+        return args.backup
+    if not sys.stdin.isatty():
+        raise CheckpointError("Non-interactive rollback requires --backup")
+
+    candidates: list[Path] = []
+    for root in discover_backup_roots():
+        for entry in root.iterdir():
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            if not (entry / RECEIPT_FILE_NAME).is_file():
+                continue
+            candidates.append(entry)
+    if not candidates:
+        raise CheckpointError(
+            "No rollback backups were found under the default rollback roots; "
+            "provide --backup"
+        )
+    # The timestamp suffix makes name order chronological; newest first.
+    candidates.sort(key=lambda path: path.name, reverse=True)
+
+    print("Available rollback backups (newest first):")
+    for index, candidate in enumerate(candidates, start=1):
+        print(f"  [{index}] {describe_backup(candidate)}")
+    while True:
+        try:
+            response = input(
+                f"Select a backup to roll back [1-{len(candidates)}], "
+                "or press Enter to abort: "
+            ).strip()
+        except EOFError as error:
+            raise CheckpointError(
+                "Interactive selection is unavailable; provide --backup"
+            ) from error
+        if not response:
+            raise CheckpointError("Rollback aborted; no backup was selected")
+        if response.isdigit() and 1 <= int(response) <= len(candidates):
+            return candidates[int(response) - 1]
+        print(f"Enter a number from 1 to {len(candidates)}, or press Enter to abort.")
+
+
 def rollback_checkpoint(args: argparse.Namespace) -> None:
     """Restore a matching receipt-backed backup while services are stopped."""
     require_root()
-    backup = args.backup
+    backup = select_rollback_backup(args)
     require_absolute(backup, "Rollback backup")
     require_directory(backup, "Rollback backup")
     receipt_path = backup / RECEIPT_FILE_NAME

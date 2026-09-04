@@ -78,6 +78,13 @@ If installation fails after the rollback receipt exists, the code attempts a
 conservative restoration. It does not delete state for which no corresponding
 backup move was recorded.
 
+`checkpoint rollback` accepts an explicit `--backup` directory. When the option
+is omitted in interactive use, the command lists the backups found under the
+default rollback roots (derived from the installed inventories) newest first,
+with each receipt's role, epoch, and state, and asks for a selection by number;
+nothing is ever selected automatically, and non-interactive use requires
+`--backup`.
+
 ### Validator onboarding
 
 The validator flow uses the node public key from a strictly validated
