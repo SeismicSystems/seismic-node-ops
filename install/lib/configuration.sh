@@ -632,6 +632,37 @@ configure_network_bootstrap() {
         success "Bootnode RPC selected and verified: $BOOTNODE_RPC"
         break
     done
+
+    # Optional Summit peers used when the genesis validator addresses are
+    # outdated. When blank, Summit derives its peers from the genesis file.
+    SUMMIT_BOOTSTRAPPERS_SOURCE=""
+    local selected
+    while true; do
+        prompt selected "Summit bootstrappers TOML path (blank for none)" ""
+        if [[ -z "$selected" ]]; then
+            break
+        fi
+        if [[ "$selected" != /* ]]; then
+            error "Summit bootstrappers TOML path must be absolute."
+            continue
+        fi
+        if contains_unsafe_path_characters "$selected"; then
+            error "Summit bootstrappers TOML path contains unsupported whitespace or shell characters."
+            continue
+        fi
+        if [[ -L "$selected" || ! -s "$selected" ]]; then
+            error "Summit bootstrappers TOML must be a non-empty regular file and not a symbolic link."
+            continue
+        fi
+        selected=$(realpath -- "$selected")
+        if ! run_as_service_user test -r "$selected"; then
+            error "Service user $SERVICE_USER cannot read the Summit bootstrappers TOML: $selected"
+            continue
+        fi
+        SUMMIT_BOOTSTRAPPERS_SOURCE="$selected"
+        break
+    done
+    _out "Summit bootstrappers: ${SUMMIT_BOOTSTRAPPERS_SOURCE:-none}"
 }
 
 configure_mdbx_reth_source() {
@@ -900,6 +931,7 @@ configure_directories() {
 
     RETH_P2P_KEY_PATH="$VALIDATOR_KEYS_DIR/reth/p2p-key"
     SUMMIT_KEYS_DIR="$VALIDATOR_KEYS_DIR/summit"
+    SUMMIT_BOOTSTRAPPERS_FILE="$SUMMIT_KEYS_DIR/bootstrappers.toml"
 }
 
 print_configuration_summary() {
@@ -945,6 +977,7 @@ print_configuration_summary() {
         _out "  Bootnode RPC: none"
         _out "  Reth enode:   none"
     fi
+    _out "  Summit bootstrappers: ${SUMMIT_BOOTSTRAPPERS_SOURCE:-none}"
 
     _out "Validator software:"
     print_component_installation \

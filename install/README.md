@@ -143,6 +143,31 @@ corresponding services are started. A prebuilt or already-present deferred
 summit-checkpointer must support `--bind-address`; the generated Supervisor
 program uses it to keep the checkpointer RPC on loopback.
 
+### Optional Summit bootstrappers file
+
+Summit derives its initial consensus peers from the genesis file's validator
+addresses. When those addresses are outdated, provide a bootstrappers file with
+one or more known Summit peers:
+
+```toml
+[[bootstrappers]]
+node_public_key = "32-byte Summit node public key"
+address = "203.0.113.10:18551"
+
+[[bootstrappers]]
+node_public_key = "another 32-byte Summit node public key"
+address = "198.51.100.20:18551"
+```
+
+The selected source path must be absolute and point to a non-empty,
+non-symbolic-link file readable by the service user. The installer copies it to
+the configured Summit key directory as `bootstrappers.toml`; Supervisor
+references that stable copy in the normal and checkpoint Summit programs. When
+provided, it replaces the genesis-derived peer list.
+
+This file configures Summit consensus peers. It is separate from the optional
+Reth bootnode RPC used to discover an execution-layer enode.
+
 ### Persistent layout
 
 The default persistent paths are:

@@ -139,8 +139,14 @@ render_summit_validator_supervisor_config() {
     local template="$TEMPLATES_DIR/supervisor/summit-validator.conf"
     local conf
     local summit_bind="127.0.0.1"
+    local bootstrappers_argument=""
+
+    if [[ -n "$SUMMIT_BOOTSTRAPPERS_SOURCE" ]]; then
+        bootstrappers_argument="    --bootstrappers $SUMMIT_BOOTSTRAPPERS_FILE"
+    fi
 
     conf=$(<"$template")
+    conf=${conf//BOOTSTRAPPERS_ARGUMENT_PLACEHOLDER/$bootstrappers_argument}
     conf=${conf//SUMMIT_BINARY_PLACEHOLDER/$SUMMIT_TARGET_BIN}
     conf=${conf//GENESIS_PATH_PLACEHOLDER/$GENESIS_PATH}
     conf=${conf//SUMMIT_KEYS_DIR_PLACEHOLDER/$SUMMIT_KEYS_DIR}
@@ -156,8 +162,14 @@ render_summit_validator_checkpoint_supervisor_config() {
     local template="$TEMPLATES_DIR/supervisor/summit-validator-checkpoint.conf"
     local conf
     local summit_bind="127.0.0.1"
+    local bootstrappers_argument=""
+
+    if [[ -n "$SUMMIT_BOOTSTRAPPERS_SOURCE" ]]; then
+        bootstrappers_argument="    --bootstrappers $SUMMIT_BOOTSTRAPPERS_FILE"
+    fi
 
     conf=$(<"$template")
+    conf=${conf//BOOTSTRAPPERS_ARGUMENT_PLACEHOLDER/$bootstrappers_argument}
     conf=${conf//SUMMIT_CHECKPOINT_RUNNER_PLACEHOLDER/$SUMMIT_CHECKPOINT_RUNNER_PATH}
     conf=${conf//CHECKPOINT_START_CONFIG_PLACEHOLDER/$CHECKPOINT_START_CONFIG_PATH}
     conf=${conf//SUMMIT_BINARY_PLACEHOLDER/$SUMMIT_TARGET_BIN}
