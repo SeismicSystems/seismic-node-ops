@@ -120,9 +120,41 @@ setup_summit_validator_keys() {
     success "Summit validator keys generated: $SUMMIT_KEYS_DIR"
 }
 
+configure_validator_bootstrapper_file() {
+    local staging
+
+    if [[ -z "$SUMMIT_BOOTSTRAPPERS_SOURCE" ]]; then
+        if [[ -L "$SUMMIT_BOOTSTRAPPERS_FILE" ]]; then
+            die "Summit bootstrapper configuration must not be a symbolic link: $SUMMIT_BOOTSTRAPPERS_FILE"
+        fi
+        rm -f -- "$SUMMIT_BOOTSTRAPPERS_FILE"
+        return
+    fi
+
+    [[ ! -L "$SUMMIT_BOOTSTRAPPERS_SOURCE" &&
+        -s "$SUMMIT_BOOTSTRAPPERS_SOURCE" ]] \
+        || die "Summit bootstrappers source became invalid: $SUMMIT_BOOTSTRAPPERS_SOURCE"
+    run_as_service_user test -r "$SUMMIT_BOOTSTRAPPERS_SOURCE" \
+        || die "Service user cannot read the Summit bootstrappers source: $SUMMIT_BOOTSTRAPPERS_SOURCE"
+    if [[ -L "$SUMMIT_BOOTSTRAPPERS_FILE" ]]; then
+        die "Summit bootstrapper configuration must not be a symbolic link: $SUMMIT_BOOTSTRAPPERS_FILE"
+    fi
+
+    staging=$(mktemp "$SUMMIT_KEYS_DIR/.bootstrappers.toml.XXXXXX")
+    if ! cp -- "$SUMMIT_BOOTSTRAPPERS_SOURCE" "$staging"; then
+        rm -f -- "$staging"
+        die "Could not install the Summit bootstrappers TOML."
+    fi
+    chown "$SERVICE_USER:$SERVICE_GROUP" "$staging"
+    chmod 0640 "$staging"
+    mv -- "$staging" "$SUMMIT_BOOTSTRAPPERS_FILE"
+    success "Summit bootstrappers TOML installed: $SUMMIT_BOOTSTRAPPERS_FILE"
+}
+
 setup_validator_keys() {
     section "Setting up validator keys"
     setup_reth_p2p_key
     setup_summit_validator_keys
+    configure_validator_bootstrapper_file
     success "Validator key phase complete."
 }

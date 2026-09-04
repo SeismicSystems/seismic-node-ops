@@ -143,6 +143,31 @@ corresponding services are started. A prebuilt or already-present deferred
 summit-checkpointer must support `--bind-address`; the generated Supervisor
 program uses it to keep the checkpointer RPC on loopback.
 
+### Optional Summit bootstrappers file
+
+Summit derives its initial consensus peers from the genesis file's validator
+addresses. When those addresses are outdated, provide a bootstrappers file with
+one or more known Summit peers:
+
+```toml
+[[bootstrappers]]
+node_public_key = "32-byte Summit node public key"
+address = "203.0.113.10:18551"
+
+[[bootstrappers]]
+node_public_key = "another 32-byte Summit node public key"
+address = "198.51.100.20:18551"
+```
+
+The selected source path must be absolute and point to a non-empty,
+non-symbolic-link file readable by the service user. The installer copies it to
+the configured Summit key directory as `bootstrappers.toml`; Supervisor
+references that stable copy in the normal and checkpoint Summit programs. When
+provided, it replaces the genesis-derived peer list.
+
+This file configures Summit consensus peers. It is separate from the optional
+Reth bootnode RPC used to discover an execution-layer enode.
+
 ### Persistent layout
 
 The default persistent paths are:
@@ -298,6 +323,30 @@ credential.
 
 ## First validator startup
 
+How the validator starts for the first time depends on whether its keys are
+already listed in the genesis file.
+
+### Option A: genesis validator
+
+When this node's public keys appear in a `[[validators]]` entry of the
+configured genesis file, no deposit is required. Start directly from genesis:
+
+```bash
+sudo ./tools/seismic-node.py validator start --mode normal
+```
+
+The command loads the Supervisor program definitions and starts Custodian when
+configured, Reth, `summit`, and summit-checkpointer when configured. Every host
+in the network must use an identical genesis file because the config digest
+gates P2P authentication. Verify with:
+
+```bash
+sudo supervisorctl status
+sudo tail -f /var/log/seismic-validator/summit.err
+```
+
+### Option B: join a running network by deposit
+
 Use the node tool to generate the fixed deposit-signature request. It loads the
 installed Supervisor program definitions itself, so no manual `supervisorctl`
 steps are required first:
@@ -341,7 +390,8 @@ When the account is not yet `Joining`, interactive mode asks whether to wait,
 start with a warning, or leave the verified checkpoint installed with every
 service stopped. Non-interactive use requires `--pre-joining-policy`.
 
-The detailed manual sequence below remains useful for troubleshooting.
+The detailed manual sequence below remains useful for troubleshooting the
+deposit workflow.
 
 ### 1. Load the Supervisor configuration
 
@@ -448,10 +498,9 @@ Seismic operations will submit the staking transaction on your behalf. Record
 the transaction hash and confirmation. Starting before the account becomes
 `Joining` is possible but may not allow Summit to connect or synchronize yet.
 
-### 7. Restart an onboarded validator
+### 7. Restart a validator
 
-For first-time, lifecycle-gated startup, use `validator onboard` as shown above.
-Restart an already onboarded validator from its existing state with:
+Restart a genesis or onboarded validator from its existing state with:
 
 ```bash
 sudo ./tools/seismic-node.py validator start --mode normal
