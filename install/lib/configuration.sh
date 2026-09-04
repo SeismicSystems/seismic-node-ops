@@ -35,6 +35,56 @@ confirm() {
     done
 }
 
+confirm_installation_inventory_overwrite() {
+    local path=$1
+
+    [[ -e "$path" || -L "$path" ]] || return 0
+
+    warn "An installation inventory already exists: $path"
+    warn "The installer will not read or reuse its contents."
+    if ! confirm "Overwrite it after a successful installation?"; then
+        info "Installation cancelled; the existing inventory was not changed."
+        exit 0
+    fi
+}
+
+install_installation_inventory() {
+    local path=$1
+    local parent
+    local resolved_parent
+    local name
+    local staging
+
+    parent=$(dirname -- "$path")
+    resolved_parent=$(realpath -m -- "$parent")
+    [[ "$resolved_parent" == "$parent" ]] \
+        || die "Installation inventory parent must not contain symbolic links: $parent"
+
+    if [[ ! -e "$parent" ]]; then
+        install -d -o root -g root -m 0755 -- "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" ]] \
+        || die "Installation inventory parent is not a safe directory: $parent"
+
+    name=${path##*/}
+    staging=$(mktemp "$parent/.${name}.XXXXXX") \
+        || die "Could not create the installation inventory staging file."
+    if ! cat >"$staging"; then
+        rm -f -- "$staging"
+        die "Could not render the installation inventory."
+    fi
+    if ! chown root:root "$staging" || ! chmod 0644 "$staging"; then
+        rm -f -- "$staging"
+        die "Could not secure the installation inventory staging file."
+    fi
+    if ! mv -fT -- "$staging" "$path"; then
+        rm -f -- "$staging"
+        die "Could not install the installation inventory: $path"
+    fi
+
+    success "Installation inventory written: $path"
+}
+
 configure_service_user() {
     local default_user=${SUDO_USER:-ubuntu}
 
@@ -93,6 +143,7 @@ print_available_disk_space() {
         info "Directory does not exist yet; using nearest existing parent: $probe"
     fi
 
+    _out ""
     _out "Available disk space for $path:"
     df -h --output=source,size,used,avail,pcent,target -- "$probe"
 }
@@ -144,6 +195,7 @@ configure_directory() {
 
     _out "$description:"
     _out "  $contents"
+    _out ""
 
     while true; do
         prompt "$variable_name" "$description" "$default"
@@ -176,6 +228,7 @@ configure_directory() {
     printf -v "$variable_name" '%s' "$selected"
     success "$description selected: $selected"
     print_available_disk_space "$selected"
+    _out ""
 }
 
 configure_file_path() {
@@ -401,7 +454,7 @@ configure_node_software() {
 
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
-    SUMMIT_SOURCE_REF="m/metrics"
+    SUMMIT_SOURCE_REF="main"
     RETH_SOURCE_REF="feat/purpose-key-rotation-reth"
     SUMMIT_INSTALL_METHOD=""
     RETH_INSTALL_METHOD=""
@@ -707,7 +760,7 @@ configure_custodian() {
     COUNCIL_ADDRESS=""
     CUSTODIAN_CHAIN_ID=""
     PARENT_CUSTODIAN=""
-    CUSTODIAN_REQUIRED_SUMMIT_REF="m/metrics"
+    CUSTODIAN_REQUIRED_SUMMIT_REF="main"
     CUSTODIAN_REQUIRED_RETH_REF="feat/purpose-key-rotation-reth"
     CUSTODIAN_SOURCE_REF="d/centralized-custodian"
 

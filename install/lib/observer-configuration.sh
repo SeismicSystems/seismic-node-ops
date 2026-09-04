@@ -5,7 +5,7 @@
 validate_observer_socket_address() {
     local value=$1
 
-    python3 - "$value" <<'PY' >/dev/null 2>&1
+    /usr/bin/python3 - "$value" <<'PY' >/dev/null 2>&1
 import ipaddress
 import sys
 

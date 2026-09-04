@@ -36,7 +36,7 @@ Review the complete interactive configuration summary before accepting it.
 
 ## Requirements
 
-- Ubuntu with `apt-get`. Other Linux distributions are not supported.
+- Ubuntu 24.04 LTS (Noble) with `apt-get`.
 - Root access through `sudo`.
 - An existing non-root Linux user that will run the observer services.
 - Python 3 for public Summit socket-address validation.
@@ -112,6 +112,10 @@ Keep this file in place after installation. The generated Supervisor program
 references the selected path directly, and the configured service user must be
 able to read it.
 
+The installer requires Ubuntu's system Python at `/usr/bin/python3`, version
+3.12 or newer, with the standard-library `tomllib` module. It validates this
+before collecting configuration and includes `python3` in the package plan.
+
 ## Run the installer
 
 Run the installer from the repository root:
@@ -150,7 +154,7 @@ Summit, seismic-reth, summit-checkpointer, and Centralized Custodian support:
 The current source-build defaults are:
 
 ```text
-Summit:       m/metrics
+Summit:       main
 seismic-reth: feat/purpose-key-rotation-reth
 Checkpointer: main
 Custodian:    d/centralized-custodian
@@ -194,7 +198,7 @@ references that stable copy.
 This file configures Summit consensus peers. It is separate from the optional
 Reth bootnode RPC used to discover an execution-layer enode.
 
-## Persistent layout
+### Persistent layout
 
 The default persistent paths are:
 
@@ -220,7 +224,7 @@ Important files derived from those paths include:
 Every persistent directory is configurable. Changing a directory on a later
 installer run does not migrate existing state; it selects a separate store.
 
-### Observer assignment and keys
+#### Observer assignment and keys
 
 The observer assignment is represented as:
 
@@ -253,7 +257,7 @@ Summit derives the observer's secondary P2P identity from the parent node key
 and observer index. The observer's separate consensus key does not make it a
 voting or proposing validator.
 
-### Reth MDBX database
+#### Reth MDBX database
 
 seismic-reth stores its MDBX execution database under:
 
@@ -276,7 +280,7 @@ the checkpointer until a compatible executable is installed at:
 /usr/local/bin/mdbx_copy
 ```
 
-## Generated services and configuration
+### Generated services and configuration
 
 The observer installer writes the Supervisor configuration to:
 
@@ -288,20 +292,48 @@ It always defines:
 
 - `reth`
 - `summit-observer`
+- `summit-observer-checkpoint`
 
 It also defines `checkpointer` and `custodian` when those components are
 enabled. It does not define `summit-deposit-rpc`; observers do not create
 validator deposit signatures.
 
-The installer also does not create a checkpoint-start Supervisor program.
-Starting a validator or observer from a checkpoint is handled by the dedicated
-checkpoint-start CLI.
+`summit-observer-checkpoint` is manual-only and reads its checkpoint and
+weak-subjectivity paths from:
+
+```text
+/etc/seismic/observer-checkpoint-start.toml
+```
+
+The installer does not create this runtime file or download a checkpoint. It
+installs the checkpoint runner at:
+
+```text
+/usr/local/libexec/seismic/summit-checkpoint-runner
+```
+
+The checkpoint program fails if the file or required artifacts are missing. The
+normal and checkpoint observer programs use the same process lock and cannot run
+simultaneously.
 
 Supervisor logs are written under:
 
 ```text
 /var/log/seismic-observer/
 ```
+
+After a successful installation, the installer atomically writes the runtime
+paths and observer assignment needed by post-install checkpoint tools to:
+
+```text
+/etc/seismic/observer-installation.toml
+```
+
+The root-owned file contains no private keys or other secrets. If it already
+exists when the installer starts, the installer asks for permission to overwrite
+it after a successful installation. It does not read or reuse the existing
+contents. Declining the overwrite cancels the installation before configuration
+begins.
 
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
@@ -362,6 +394,60 @@ credential.
 Reth HTTP, WebSocket, Ops, and metrics endpoints and Summit RPC, admin RPC, and
 metrics endpoints bind to loopback whether or not OpenResty is enabled.
 
+## Install an observer checkpoint
+
+Stage the snapshot archive, its matching `manifest.json`, and an independently
+obtained weak-subjectivity TOML under root-owned, non-writable paths. Then run:
+
+```bash
+sudo ./tools/seismic-node.py checkpoint install \
+  --role observer \
+  --archive /root/seismic-checkpoint/epoch_12.tar.gz \
+  --manifest /root/seismic-checkpoint/manifest.json \
+  --weak-subjectivity-path /root/seismic-trust/weak_subjectivity.toml
+```
+
+The tool reads `/etc/seismic/observer-installation.toml`, verifies the observer
+assignment and preserved node keys, checks that related Supervisor programs are
+stopped, restores matching Reth state, and backs up and empties the Summit
+mutable store. Reth, Summit, the checkpoint destination, and the rollback
+directory must share a filesystem so state moves remain atomic. It writes
+`/etc/seismic/observer-checkpoint-start.toml` and leaves every service stopped.
+
+The tool prints the root-only rollback directory and exact rollback command. It
+can also download the snapshot and obtain weak subjectivity from an independent
+Summit RPC. Independent providers are recommended. If both remote sources share
+a normalized URL origin, the tool prints a strong warning and requires
+interactive confirmation or `--allow-same-origin-weak-subjectivity` for
+non-interactive use. This comparison cannot prove that different DNS names have
+independent operators. Do not remove the backup until checkpoint startup and the
+transition back to normal observer startup have both been verified.
+
+To download, install, and start in one command, run:
+
+```bash
+sudo ./tools/seismic-node.py observer start \
+  --mode checkpoint \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --snapshot-api-url https://snapshot.example/checkpointer \
+  --snapshot-bearer-token-file /root/snapshot-token \
+  --weak-subjectivity-rpc-url https://independent-validator.example/summit
+```
+
+For unattended installation, pass `--yes` to skip the interactive confirmation,
+and pin `--checkpoint-epoch` with `--checkpoint-policy exact` so a dynamically
+selected epoch cannot differ from the one authorized by automation.
+
+To start from an already installed checkpoint, omit the snapshot and
+weak-subjectivity source options. Normal startup uses `--mode normal`, including
+a later restart without checkpoint arguments. The checkpoint Supervisor program
+must be stopped first; the CLI refuses to run the normal and checkpoint programs
+together. When rollback is no longer needed, remove it explicitly with:
+
+```bash
+sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
+```
+
 ## Observer Custodian
 
 The parent validator Custodian council endpoint and the observer's local council
@@ -388,28 +474,55 @@ do not replace an existing observer root key.
 The parent validator Custodian must be running with its own `--summit-key-dir`
 argument so it can authenticate and serve observer requests.
 
-## First observer startup
+## Start the observer
 
 Do not start Custodian or Summit until the parent validator's private
 `node_key.pem` exists at the configured observer Summit key path.
 
-### 1. Load the Supervisor configuration
+### Coordinated start
+
+Use the node tool for normal startup:
+
+```bash
+sudo ./tools/seismic-node.py observer start --mode normal
+```
+
+The command validates the observer installation inventory and then runs:
 
 ```bash
 sudo systemctl enable --now supervisor
 sudo supervisorctl reread
 sudo supervisorctl update
+```
+
+It starts configured Supervisor programs in dependency order: Custodian when
+enabled, Reth, `summit-observer`, and summit-checkpointer when enabled. If a
+program started by the command fails, it stops only the programs that invocation
+started, in reverse order.
+
+The command does not start or reload OpenResty. Start OpenResty separately as
+described under [OpenResty public endpoint](#openresty-public-endpoint).
+
+### Manual start and troubleshooting
+
+The complete manual normal-mode equivalent is:
+
+```bash
+sudo systemctl enable --now supervisor
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl start custodian       # when configured
+sudo supervisorctl start reth
+sudo supervisorctl start summit-observer
+sudo supervisorctl start checkpointer    # when configured
 sudo supervisorctl status
 ```
 
-All observer programs should still be stopped because they use:
+For checkpoint mode, start `summit-observer-checkpoint` instead of
+`summit-observer`. The normal and checkpoint programs must not run together. The
+following sections provide individual checks and troubleshooting commands.
 
-```ini
-autostart=false
-autorestart=false
-```
-
-### 2. Start Custodian when enabled
+#### Start Custodian when enabled
 
 Custodian must start before Reth because Reth connects to its Unix socket during
 startup:
@@ -435,7 +548,7 @@ sudo tail -n 100 /var/log/seismic-observer/custodian.log
 
 Skip this step when Custodian was not enabled.
 
-### 3. Start Reth
+#### Start Reth
 
 ```bash
 sudo supervisorctl start reth
@@ -452,7 +565,7 @@ sudo tail -n 100 /var/log/seismic-observer/reth.log
 Reth must be running before Summit because Summit connects through the Engine
 API IPC socket.
 
-### 4. Start Summit observer
+#### Start Summit observer
 
 ```bash
 sudo supervisorctl start summit-observer
@@ -474,7 +587,7 @@ custodian -> reth -> summit-observer
 
 When Custodian is disabled, start only Reth and Summit observer in that order.
 
-### 5. Start summit-checkpointer when enabled
+#### Start summit-checkpointer when enabled
 
 ```bash
 sudo supervisorctl start checkpointer
@@ -494,6 +607,38 @@ checkpoint-start CLI.
 
 Because `autostart=false` and `autorestart=false`, all enabled programs must be
 started manually again after a server or Supervisor restart.
+
+## Stop the observer
+
+Use the node tool to stop both possible Summit observer modes and all configured
+dependencies in reverse order:
+
+```bash
+sudo ./tools/seismic-node.py observer stop
+sudo supervisorctl status
+```
+
+The command validates the observer installation inventory, then stops
+summit-checkpointer when configured, `summit-observer`,
+`summit-observer-checkpoint`, Reth, and Custodian when configured. It stops
+lower-level dependencies only after the programs that depend on them have
+stopped successfully.
+
+Supervisor and OpenResty remain running. Stop OpenResty separately only when the
+public endpoint should also be taken offline.
+
+### Manual stop
+
+The complete manual equivalent is:
+
+```bash
+sudo supervisorctl stop checkpointer                 # when configured
+sudo supervisorctl stop summit-observer
+sudo supervisorctl stop summit-observer-checkpoint
+sudo supervisorctl stop reth
+sudo supervisorctl stop custodian                    # when configured
+sudo supervisorctl status
+```
 
 ## OpenResty public endpoint
 

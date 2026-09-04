@@ -32,7 +32,7 @@ Review the complete interactive configuration summary before accepting it.
 
 ## Requirements
 
-- Ubuntu with `apt-get`. Other Linux distributions are not supported.
+- Ubuntu 24.04 LTS (Noble) with `apt-get`.
 - Root access through `sudo`.
 - An existing non-root Linux user that will run the validator services.
 - The Summit internal-testnet genesis TOML supplied in this repository at
@@ -87,6 +87,10 @@ Keep this file in place after installation. The generated Supervisor programs
 reference the selected path directly, and the configured service user must be
 able to read it.
 
+The installer requires Ubuntu's system Python at `/usr/bin/python3`, version
+3.12 or newer, with the standard-library `tomllib` module. It validates this
+before collecting configuration and includes `python3` in the package plan.
+
 ## Run the installer
 
 Run the installer from the repository root:
@@ -128,7 +132,7 @@ supported installation modes are:
 The current source-build defaults are:
 
 ```text
-Summit:       m/metrics
+Summit:       main
 seismic-reth: feat/purpose-key-rotation-reth
 Checkpointer: main
 Custodian:    d/centralized-custodian
@@ -139,7 +143,7 @@ corresponding services are started. A prebuilt or already-present deferred
 summit-checkpointer must support `--bind-address`; the generated Supervisor
 program uses it to keep the checkpointer RPC on loopback.
 
-## Persistent layout
+### Persistent layout
 
 The default persistent paths are:
 
@@ -162,7 +166,7 @@ Important files derived from those paths include:
 Back up the validator keys securely. Do not copy them into tickets, chat
 messages, source control, or the deposit-signature file described below.
 
-### Reth MDBX database
+#### Reth MDBX database
 
 seismic-reth stores its MDBX execution database under:
 
@@ -185,7 +189,7 @@ the checkpointer until a compatible executable is installed at:
 /usr/local/bin/mdbx_copy
 ```
 
-## Generated services and configuration
+### Generated services and configuration
 
 The installer writes the Supervisor configuration to:
 
@@ -198,13 +202,43 @@ It always defines:
 - `summit-deposit-rpc`
 - `reth`
 - `summit`
+- `summit-checkpoint`
 
 It also defines `checkpointer` and `custodian` when those components are
-enabled. Supervisor logs are written under:
+enabled. `summit-checkpoint` is manual-only and reads its checkpoint and
+weak-subjectivity paths from:
+
+```text
+/etc/seismic/validator-checkpoint-start.toml
+```
+
+The installer does not create this runtime file or download a checkpoint. It
+installs the checkpoint runner at:
+
+```text
+/usr/local/libexec/seismic/summit-checkpoint-runner
+```
+
+The checkpoint program fails if the file or required artifacts are missing. The
+normal and checkpoint Summit programs use the same process lock and cannot run
+simultaneously. Supervisor logs are written under:
 
 ```text
 /var/log/seismic-validator/
 ```
+
+After a successful installation, the installer atomically writes the runtime
+paths needed by post-install checkpoint tools to:
+
+```text
+/etc/seismic/validator-installation.toml
+```
+
+The root-owned file contains only the configured Reth and Summit data and key
+paths; it contains no key material or other secrets. If it already exists when
+the installer starts, the installer asks for permission to overwrite it after a
+successful installation. It does not read or reuse the existing contents.
+Declining the overwrite cancels the installation before configuration begins.
 
 When summit-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
@@ -264,9 +298,50 @@ credential.
 
 ## First validator startup
 
-Do not start the full validator until the deposit-signature file has been
-created and Seismic operations has confirmed that the staking transaction was
-successful.
+Use the node tool to generate the fixed deposit-signature request. It loads the
+installed Supervisor program definitions itself, so no manual `supervisorctl`
+steps are required first:
+
+```bash
+sudo ./tools/seismic-node.py validator deposit-signature \
+  --output /root/deposit-signature.json
+```
+
+Send that file to Seismic operations through a secure channel. After operations
+submits the deposit, the following command can download and install a
+checkpoint, obtain weak subjectivity from an independent Summit RPC, and
+coordinate startup:
+
+```bash
+sudo ./tools/seismic-node.py validator onboard \
+  --deposit-signature /root/deposit-signature.json \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --snapshot-api-url https://snapshot.example/checkpointer \
+  --snapshot-bearer-token-file /root/snapshot-token \
+  --weak-subjectivity-rpc-url https://independent-validator.example/summit
+```
+
+When startup is authorized, `validator onboard` automatically runs:
+
+```bash
+sudo systemctl enable --now supervisor
+sudo supervisorctl reread
+sudo supervisorctl update
+```
+
+It then starts Custodian when configured, Reth, `summit-checkpoint`, and
+summit-checkpointer when configured. It does not start or reload OpenResty.
+
+For unattended installation, pass `--yes` to skip the interactive confirmation,
+and pin `--checkpoint-epoch` with `--checkpoint-policy exact` so a dynamically
+selected epoch cannot differ from the one authorized by automation.
+
+Checkpoint installation may complete before the validator becomes `Joining`.
+When the account is not yet `Joining`, interactive mode asks whether to wait,
+start with a warning, or leave the verified checkpoint installed with every
+service stopped. Non-interactive use requires `--pre-joining-policy`.
+
+The detailed manual sequence below remains useful for troubleshooting.
 
 ### 1. Load the Supervisor configuration
 
@@ -369,22 +444,36 @@ Do **not** send validator private-key files, a wallet private key, seed phrases,
 or JWT secrets. Do not publish the signature file in a public issue or source
 repository.
 
-Seismic operations will submit the staking transaction on your behalf. Wait for
-the transaction hash and confirmation that its receipt has status `0x1` before
-starting the full validator.
+Seismic operations will submit the staking transaction on your behalf. Record
+the transaction hash and confirmation. Starting before the account becomes
+`Joining` is possible but may not allow Summit to connect or synchronize yet.
 
-### 7. Start the validator after staking confirmation
+### 7. Restart an onboarded validator
 
-Start only the components enabled during installation, in this order:
+For first-time, lifecycle-gated startup, use `validator onboard` as shown above.
+Restart an already onboarded validator from its existing state with:
 
 ```bash
-# Run this first only when Custodian was configured.
+sudo ./tools/seismic-node.py validator start --mode normal
+```
+
+Use `--mode checkpoint` to restart from the installed checkpoint inputs instead.
+The normal and checkpoint Summit programs cannot run at the same time. The
+manual normal-mode equivalent starts only the components enabled during
+installation, in this order:
+
+```bash
+sudo systemctl enable --now supervisor
+sudo supervisorctl reread
+sudo supervisorctl update
+
+# Run this only when Custodian was configured.
 sudo supervisorctl start custodian
 
 sudo supervisorctl start reth
 sudo supervisorctl start summit
 
-# Optional: Run this only when summit-checkpointer was enabled.
+# Run this only when summit-checkpointer was enabled.
 sudo supervisorctl start checkpointer
 
 sudo supervisorctl status
@@ -392,6 +481,72 @@ sudo supervisorctl status
 
 Because `autostart=false` and `autorestart=false`, these programs must be
 started manually again after a server or Supervisor restart.
+
+## Install a validator checkpoint manually
+
+`validator onboard` downloads and installs a checkpoint automatically. Use this
+standalone command when the snapshot archive, its matching `manifest.json`, and
+an independently obtained weak-subjectivity TOML were staged locally under
+root-owned, non-writable paths — for example on hosts without direct access to
+the snapshot provider. Complete the deposit-signature handoff first so the
+validator can be started once its account reaches `Joining`.
+
+```bash
+sudo ./tools/seismic-node.py checkpoint install \
+  --role validator \
+  --archive /root/seismic-checkpoint/epoch_12.tar.gz \
+  --manifest /root/seismic-checkpoint/manifest.json \
+  --weak-subjectivity-path /root/seismic-trust/weak_subjectivity.toml
+```
+
+The tool verifies the manifest and archive, checks that related Supervisor
+programs are stopped, preserves node keys, backs up and replaces the matching
+Reth state, and backs up and empties the Summit mutable store. Reth, Summit, the
+checkpoint destination, and the rollback directory must share a filesystem so
+state moves remain atomic. The default checkpoint and rollback locations are
+derived from the configured data paths. It writes
+`/etc/seismic/validator-checkpoint-start.toml` and leaves every service stopped.
+
+The tool prints the root-only rollback directory as soon as it is created and
+again in its final summary, together with the exact rollback command. It can
+also download a snapshot and obtain weak subjectivity from an independent Summit
+RPC; run `sudo ./tools/seismic-node.py checkpoint install --help` for those
+options. Independent providers are recommended. If both remote sources share a
+normalized URL origin, the tool prints a strong warning and requires interactive
+confirmation or `--allow-same-origin-weak-subjectivity` for non-interactive use.
+This URL-origin comparison cannot prove that different DNS names have
+independent operators. Do not remove the rollback directory until checkpoint
+startup and the transition back to normal Summit startup have both been
+verified. When rollback is no longer needed, remove it explicitly with:
+
+```bash
+sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
+```
+
+## Stop the validator
+
+Stop deposit-signature, normal, or checkpoint validator programs and their
+dependencies in reverse order with:
+
+```bash
+sudo ./tools/seismic-node.py validator stop
+sudo supervisorctl status
+```
+
+The command validates the validator installation inventory before stopping
+services. Supervisor and OpenResty remain running.
+
+The complete manual equivalent is:
+
+```bash
+sudo supervisorctl stop checkpointer       # when configured
+sudo supervisorctl stop summit-deposit-rpc
+sudo supervisorctl stop summit
+sudo supervisorctl stop summit-checkpoint
+sudo supervisorctl stop reth
+sudo supervisorctl stop custodian          # when configured
+sudo supervisorctl status
+```
 
 ## OpenResty public endpoint
 

@@ -11,6 +11,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
 LOG_FILE="${LOG_FILE:-/var/log/seismic-validator-install.log}"
+INSTALLATION_INVENTORY_PATH="/etc/seismic/validator-installation.toml"
 
 # shellcheck source=lib/common.sh
 source "$SCRIPT_DIR/lib/common.sh"
@@ -38,9 +39,22 @@ source "$SCRIPT_DIR/lib/instructions.sh"
 # shellcheck source=lib/configuration.sh
 source "$SCRIPT_DIR/lib/configuration.sh"
 
+write_validator_installation_inventory() {
+    install_installation_inventory "$INSTALLATION_INVENTORY_PATH" <<EOF
+schema_version = 1
+
+reth_data_dir = "$RETH_DATA_DIR"
+reth_p2p_key_path = "$RETH_P2P_KEY_PATH"
+
+summit_data_dir = "$SUMMIT_DATA_DIR"
+summit_keys_dir = "$SUMMIT_KEYS_DIR"
+EOF
+}
+
 main() {
     info "Seismic validator installer"
     preflight
+    confirm_installation_inventory_overwrite "$INSTALLATION_INVENTORY_PATH"
     configure
     install_system_packages
     install_openresty
@@ -51,6 +65,7 @@ main() {
     setup_validator_keys
     deploy_openresty_configuration
     deploy_supervisor_configuration
+    write_validator_installation_inventory
     print_manual_start_instructions
     success "Validator installation complete; services were not started."
 }

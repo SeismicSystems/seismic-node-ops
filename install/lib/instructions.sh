@@ -13,10 +13,16 @@ print_missing_service_prerequisites() {
     if ! security_error=$(check_service_executable_security "$SUMMIT_TARGET_BIN"); then
         warn "Summit cannot start until its executable is secured at $SUMMIT_TARGET_BIN: $security_error."
         missing=true
-    elif ! run_as_service_user "$SUMMIT_TARGET_BIN" deposit-rpc --help \
-        >/dev/null 2>&1; then
-        warn "Summit cannot complete validator registration because it does not support the deposit-rpc subcommand: $SUMMIT_TARGET_BIN."
-        missing=true
+    else
+        if ! run_as_service_user "$SUMMIT_TARGET_BIN" deposit-rpc --help \
+            >/dev/null 2>&1; then
+            warn "Summit cannot complete validator registration because it does not support the deposit-rpc subcommand: $SUMMIT_TARGET_BIN."
+            missing=true
+        fi
+        if ! check_summit_checkpoint_cli_support; then
+            warn "Summit cannot start from a checkpoint because it does not support --checkpoint-path and --weak-subjectivity-path: $SUMMIT_TARGET_BIN."
+            missing=true
+        fi
     fi
     if [[ ! -f "$RETH_P2P_KEY_PATH" ]]; then
         warn "seismic-reth cannot start until its P2P key exists at $RETH_P2P_KEY_PATH."
@@ -66,7 +72,14 @@ print_manual_start_instructions() {
     _out "  sudo supervisorctl reread"
     _out "  sudo supervisorctl update"
     _out ""
-    _out "Before the validator's first full startup, start Summit's localhost-only"
+    _out "Use the Python node tool for the deposit-signature and checkpoint-onboarding flow:"
+    _out ""
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py validator deposit-signature --output /root/deposit-signature.json"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py validator onboard --help"
+    _out "When onboarding authorizes full startup, it enables and starts Supervisor,"
+    _out "then runs supervisorctl reread and supervisorctl update."
+    _out ""
+    _out "For manual troubleshooting, start Summit's localhost-only"
     _out "deposit-signature RPC program:"
     _out ""
     _out "  sudo supervisorctl start summit-deposit-rpc"
@@ -98,12 +111,30 @@ print_manual_start_instructions() {
         _out "  sudo supervisorctl start checkpointer"
     fi
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
+        _out ""
+        _out "Start or reload OpenResty separately:"
         _out "  sudo systemctl enable openresty"
         _out "  if sudo systemctl is-active --quiet openresty; then"
         _out "      sudo systemctl reload openresty"
         _out "  else"
         _out "      sudo systemctl start openresty"
         _out "  fi"
+    fi
+    _out ""
+    _out "Stop all validator node programs in reverse dependency order with:"
+    _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py validator stop"
+    _out "Supervisor and OpenResty remain running."
+    _out ""
+    _out "Manual stop commands:"
+    if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
+        _out "  sudo supervisorctl stop checkpointer"
+    fi
+    _out "  sudo supervisorctl stop summit-deposit-rpc"
+    _out "  sudo supervisorctl stop summit"
+    _out "  sudo supervisorctl stop summit-checkpoint"
+    _out "  sudo supervisorctl stop reth"
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        _out "  sudo supervisorctl stop custodian"
     fi
 
     _out ""
@@ -115,4 +146,6 @@ print_manual_start_instructions() {
     _out ""
     warn "Supervisor programs use autostart=false and autorestart=false."
     warn "Start them manually again after a server or Supervisor restart."
+    warn "Do not start summit-checkpoint until a verified checkpoint-start configuration has been installed."
+    warn "The summit and summit-checkpoint programs are mutually exclusive."
 }

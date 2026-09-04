@@ -3,6 +3,7 @@
 # Observer Supervisor rendering without service activation.
 
 SUPERVISOR_CONFIG_PATH="/etc/supervisor/conf.d/seismic-observer.conf"
+CHECKPOINT_START_CONFIG_PATH="/etc/seismic/observer-checkpoint-start.toml"
 SUPERVISOR_LOG_DIR="/var/log/seismic-observer"
 
 validate_observer_supervisor_templates() {
@@ -10,6 +11,7 @@ validate_observer_supervisor_templates() {
     local required=(
         "$template_root/reth.conf"
         "$template_root/observer.conf"
+        "$template_root/observer-checkpoint.conf"
         "$template_root/observer-custodian.conf"
         "$template_root/checkpointer.conf"
         "$template_root/checkpointer.toml"
@@ -19,6 +21,8 @@ validate_observer_supervisor_templates() {
     for path in "${required[@]}"; do
         [[ -f "$path" ]] || die "Required observer Supervisor template not found: $path"
     done
+    [[ -f "$SUMMIT_CHECKPOINT_RUNNER_SOURCE" ]] \
+        || die "Summit checkpoint runner not found: $SUMMIT_CHECKPOINT_RUNNER_SOURCE"
 }
 
 validate_observer_supervisor_runtime_inputs() {
@@ -57,6 +61,32 @@ render_observer_supervisor_program() {
     printf '%s\n' "$conf"
 }
 
+render_observer_checkpoint_supervisor_program() {
+    local template="$TEMPLATES_DIR/supervisor/observer-checkpoint.conf"
+    local conf
+    local bootstrappers_argument=""
+
+    if [[ -n "$OBSERVER_BOOTSTRAPPERS_SOURCE" ]]; then
+        bootstrappers_argument="    --bootstrappers $OBSERVER_BOOTSTRAPPERS_FILE"
+    fi
+
+    conf=$(<"$template")
+    conf=${conf//SUMMIT_CHECKPOINT_RUNNER_PLACEHOLDER/$SUMMIT_CHECKPOINT_RUNNER_PATH}
+    conf=${conf//CHECKPOINT_START_CONFIG_PLACEHOLDER/$CHECKPOINT_START_CONFIG_PATH}
+    conf=${conf//SUMMIT_BINARY_PLACEHOLDER/$SUMMIT_TARGET_BIN}
+    conf=${conf//OBSERVER_INDEX_PLACEHOLDER/$OBSERVER_INDEX}
+    conf=${conf//OBSERVER_PUBLIC_ADDRESS_PLACEHOLDER/$OBSERVER_PUBLIC_ADDRESS}
+    conf=${conf//OBSERVER_P2P_PORT_PLACEHOLDER/$OBSERVER_P2P_PORT}
+    conf=${conf//GENESIS_PATH_PLACEHOLDER/$GENESIS_PATH}
+    conf=${conf//SUMMIT_KEYS_DIR_PLACEHOLDER/$SUMMIT_KEYS_DIR}
+    conf=${conf//OBSERVER_STORE_DIR_PLACEHOLDER/$OBSERVER_STORE_DIR}
+    conf=${conf//BOOTSTRAPPERS_ARGUMENT_PLACEHOLDER/$bootstrappers_argument}
+    conf=${conf//OBSERVER_CRITICAL_LOG_DIR_PLACEHOLDER/$OBSERVER_CRITICAL_LOG_DIR}
+    conf=${conf//SERVICE_USER_PLACEHOLDER/$SERVICE_USER}
+    conf=${conf//SUPERVISOR_LOG_DIR_PLACEHOLDER/$SUPERVISOR_LOG_DIR}
+    printf '%s\n' "$conf"
+}
+
 render_observer_custodian_supervisor_config() {
     local template="$TEMPLATES_DIR/supervisor/observer-custodian.conf"
     local conf
@@ -78,7 +108,7 @@ render_observer_custodian_supervisor_config() {
 }
 
 prepare_observer_supervisor_logs() {
-    local names=(reth summit-observer)
+    local names=(reth summit-observer summit-observer-checkpoint)
     local name
 
     [[ "$INSTALL_CHECKPOINTER" != true ]] || names+=(checkpointer)
@@ -110,6 +140,7 @@ deploy_observer_supervisor_configuration() {
     fi
 
     replace_conflicting_supervisor_config
+    deploy_summit_checkpoint_runner
     [[ ! -L "$SUPERVISOR_CONFIG_PATH" ]] \
         || die "Supervisor target must not be a symbolic link: $SUPERVISOR_CONFIG_PATH"
     [[ ! -L "$CHECKPOINTER_CONFIG_PATH" ]] \
@@ -119,6 +150,8 @@ deploy_observer_supervisor_configuration() {
     render_reth_supervisor_config >"$staging/seismic-observer.conf"
     render_observer_supervisor_program \
         "summit-observer" "$OBSERVER_STORE_DIR" \
+        >>"$staging/seismic-observer.conf"
+    render_observer_checkpoint_supervisor_program \
         >>"$staging/seismic-observer.conf"
 
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
