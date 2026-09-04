@@ -111,7 +111,14 @@ def parse_args() -> argparse.Namespace:
     add_checkpoint_destination_arguments(checkpoint_install)
 
     checkpoint_rollback = checkpoint_commands.add_parser("rollback", allow_abbrev=False)
-    checkpoint_rollback.add_argument("--backup", type=Path, required=True)
+    checkpoint_rollback.add_argument(
+        "--backup",
+        type=Path,
+        help=(
+            "rollback backup directory; when omitted, interactive use lists the "
+            "available backups for selection"
+        ),
+    )
     add_yes_argument(checkpoint_rollback)
 
     checkpoint_delete = checkpoint_commands.add_parser(

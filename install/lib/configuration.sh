@@ -881,6 +881,7 @@ configure_custodian() {
         fi
         error "Custodian chain ID must be a positive integer."
     done
+    _out ""
 
     configure_component_installation \
         CUSTODIAN_INSTALL_METHOD \

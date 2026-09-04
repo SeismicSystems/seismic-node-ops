@@ -414,14 +414,16 @@ mutable store. Reth, Summit, the checkpoint destination, and the rollback
 directory must share a filesystem so state moves remain atomic. It writes
 `/etc/seismic/observer-checkpoint-start.toml` and leaves every service stopped.
 
-The tool prints the root-only rollback directory and exact rollback command. It
-can also download the snapshot and obtain weak subjectivity from an independent
-Summit RPC. Independent providers are recommended. If both remote sources share
-a normalized URL origin, the tool prints a strong warning and requires
-interactive confirmation or `--allow-same-origin-weak-subjectivity` for
-non-interactive use. This comparison cannot prove that different DNS names have
-independent operators. Do not remove the backup until checkpoint startup and the
-transition back to normal observer startup have both been verified.
+The tool prints the root-only rollback directory and exact rollback command.
+Running `sudo ./tools/seismic-node.py checkpoint rollback` without `--backup`
+lists the available backups interactively for selection by number. It can also
+download the snapshot and obtain weak subjectivity from an independent Summit
+RPC. Independent providers are recommended. If both remote sources share a
+normalized URL origin, the tool prints a strong warning and requires interactive
+confirmation or `--allow-same-origin-weak-subjectivity` for non-interactive use.
+This comparison cannot prove that different DNS names have independent
+operators. Do not remove the backup until checkpoint startup and the transition
+back to normal observer startup have both been verified.
 
 To download, install, and start in one command, run:
 
