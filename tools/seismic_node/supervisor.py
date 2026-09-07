@@ -236,7 +236,7 @@ def start_node(
             ):
                 print(f"Started Supervisor program: {name}")
         return started
-    except Exception:
+    except BaseException:
         # Preserve programs that were already running before this command; only
         # unwind start requests recorded in ``started``.
         cleanup_errors: list[str] = []
