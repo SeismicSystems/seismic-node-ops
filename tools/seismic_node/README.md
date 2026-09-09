@@ -87,8 +87,20 @@ automatically, and non-interactive use requires `--backup`.
 
 ### Validator onboarding
 
-The validator flow uses the node public key from a strictly validated
-`deposit-signature.json` response to call `getValidatorAccount`.
+The validator flow reads `summit_keys_dir` from the validated installation
+inventory, then invokes `/usr/local/bin/summit keys show --key-store-path DIR`
+to derive the installed node public key. Only that public key is sent to
+`getValidatorAccount`; private keys remain local and no deposit RPC is started.
+The command is read-only, has a bounded runtime, and its raw output is never
+included in errors. The parsed identity must be exactly one 32-byte ed25519
+public key.
+
+`--deposit-signature` is optional. When supplied, the response is strictly
+validated and its node public key must match the installed identity before any
+lifecycle polling or checkpoint installation. The installed identity is derived
+again before startup and must still match the public key whose lifecycle was
+checked. `--inventory` overrides the default
+`/etc/seismic/validator-installation.toml` without requiring a signature file.
 
 - `Joining` starts normally.
 - `Active` starts with a late-onboarding warning.
@@ -108,7 +120,6 @@ For lifecycle-gated normal startup:
 ```bash
 sudo ./tools/seismic-node.py validator onboard \
   --mode normal \
-  --deposit-signature /root/deposit-signature.json \
   --summit-rpc-url https://trusted-validator.example/summit \
   --pre-joining-policy wait
 ```

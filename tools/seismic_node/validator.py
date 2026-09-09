@@ -1,13 +1,15 @@
 """Validator deposit-signature generation, lifecycle-gated startup, and shutdown.
 
 Deposit signing is intentionally isolated behind the temporary loopback-only
-Summit deposit RPC.  Onboarding then derives the validator identity from that
-exact response and asks a trusted Summit RPC whether startup is safe.
+Summit deposit RPC. Onboarding derives identity from the installed keys via
+Summit's read-only keys command and asks a trusted RPC whether startup is safe.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from . import checkpoint, rpc, supervisor
 DEPOSIT_AMOUNT_GWEI = 32_000_000_000
 WITHDRAWAL_ADDRESS = "0xd412c5ecd343e264381ff15afc0ad78a67b79f35"
 DEPOSIT_RPC_URL = "http://127.0.0.1:3031"
+SUMMIT = Path("/usr/local/bin/summit")
 PRE_JOINING_STATUSES = {"NotFound", "Inactive"}
 REFUSED_STATUSES = {"SubmittedExitRequest", "FullPayoutPending"}
 
@@ -107,6 +110,41 @@ def load_deposit_response(path: Path) -> tuple[dict[str, Any], str]:
         path, "Deposit-signature response", root_managed=True
     )
     return response, validate_deposit_response(response)
+
+
+def installed_node_public_key(inventory: dict[str, Any]) -> str:
+    """Read public identity using Summit's read-only command, never print secrets."""
+    keys_dir = inventory["summit_keys_dir"]
+    checkpoint.require_directory(keys_dir, "Summit keys directory")
+    for name in ("node_key.pem", "consensus_key.pem"):
+        checkpoint.require_regular_file(keys_dir / name, f"Summit {name}")
+    try:
+        result = subprocess.run(
+            [str(SUMMIT), "keys", "show", "--key-store-path", str(keys_dir)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=True,
+            timeout=30.0,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        # Do not surface subprocess output: key-decoding failures could include
+        # sensitive input. Only the validated public key may leave this helper.
+        raise checkpoint.CheckpointError(
+            f"Could not read installed validator identity with {SUMMIT} keys show; "
+            "check the Summit executable and installed key files"
+        ) from None
+    public_keys = re.findall(
+        r"^[ \t]*Node Public Key \(ed25519\):[ \t]*(?:0[xX])?([0-9a-fA-F]{64})[ \t]*$",
+        result.stdout,
+        re.MULTILINE,
+    )
+    if len(public_keys) != 1:
+        raise checkpoint.CheckpointError(
+            "Summit keys show did not return exactly one valid ed25519 node public key"
+        )
+    return public_keys[0].lower()
 
 
 def prompt_operator(message: str) -> str:
@@ -421,10 +459,10 @@ def start_onboarded_validator(
         else:
             print("All validator services remain stopped. No checkpoint was installed.")
         return
-    start_validator(args)
+    start_validator(args, expected_node_public_key=node_public_key)
 
 
-def start_validator(args: Any) -> None:
+def start_validator(args: Any, *, expected_node_public_key: str | None = None) -> None:
     """Start validator services without lifecycle checks or checkpoint downloads.
 
     ``validator onboard`` remains the lifecycle-gated entry point; this command
@@ -432,7 +470,15 @@ def start_validator(args: Any) -> None:
     from the installed checkpoint inputs.
     """
     inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
-    checkpoint.load_inventory("validator", inventory_path)
+    inventory = checkpoint.load_inventory("validator", inventory_path)
+    if (
+        expected_node_public_key is not None
+        and installed_node_public_key(inventory) != expected_node_public_key
+    ):
+        raise checkpoint.CheckpointError(
+            "Installed validator node public key changed during onboarding; "
+            "refusing to start"
+        )
     if args.mode == "checkpoint":
         checkpoint.validate_checkpoint_start_configuration("validator")
         summit_program = "summit-checkpoint"

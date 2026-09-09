@@ -626,6 +626,9 @@ class ValidatorTests(unittest.TestCase):
             mock.patch.object(checkpoint, "validate_checkpoint_start_configuration"),
             mock.patch.object(checkpoint, "load_inventory"),
             mock.patch.object(
+                validator, "installed_node_public_key", return_value="11" * 32
+            ),
+            mock.patch.object(
                 supervisor,
                 "prepare_supervisor",
                 side_effect=lambda: events.append("prepare"),
@@ -671,6 +674,119 @@ class ValidatorTests(unittest.TestCase):
         self.assertIsNone(args.inventory)
 
 
+class InstalledValidatorIdentityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.keys_dir = Path(temporary.name)
+        for name in ("node_key.pem", "consensus_key.pem"):
+            (self.keys_dir / name).write_text("fixture-only-not-a-real-key")
+        self.inventory = {"summit_keys_dir": self.keys_dir}
+
+    def test_read_only_summit_command_returns_normalized_public_key(self) -> None:
+        for prefix in ("", "0x"):
+            with self.subTest(prefix=prefix):
+                output = (
+                    f"Node Public Key (ed25519): {prefix}{'AB' * 32}\n"
+                    f"Consensus Public Key (BLS): {'CD' * 48}\n"
+                )
+                with mock.patch.object(
+                    validator.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout=output),
+                ) as run:
+                    public_key = validator.installed_node_public_key(self.inventory)
+                self.assertEqual(public_key, "ab" * 32)
+                run.assert_called_once_with(
+                    [
+                        str(validator.SUMMIT),
+                        "keys",
+                        "show",
+                        "--key-store-path",
+                        str(self.keys_dir),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=True,
+                    timeout=30.0,
+                )
+
+    def test_invalid_or_ambiguous_public_output_is_rejected(self) -> None:
+        valid = f"Node Public Key (ed25519): {'ab' * 32}\n"
+        for output in (
+            "",
+            "Consensus Public Key (BLS): " + "ab" * 48,
+            "Node Public Key (ed25519): " + "ab" * 31,
+            "Node Public Key (ed25519): " + "zz" * 32,
+            valid + valid,
+            valid.rstrip() + " extra",
+            "secret-fixture-not-a-public-key",
+        ):
+            with (
+                self.subTest(output=output),
+                mock.patch.object(
+                    validator.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout=output),
+                ),
+                self.assertRaisesRegex(
+                    checkpoint.CheckpointError, "exactly one valid"
+                ) as raised,
+            ):
+                validator.installed_node_public_key(self.inventory)
+            self.assertNotIn("secret-fixture", str(raised.exception))
+
+    def test_command_failures_do_not_expose_output(self) -> None:
+        secret = "secret-fixture-never-print"
+        for error in (
+            FileNotFoundError(secret),
+            subprocess.CalledProcessError(1, ["summit"], output=secret, stderr=secret),
+            subprocess.TimeoutExpired(["summit"], 30, output=secret, stderr=secret),
+            UnicodeError(secret),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                mock.patch.object(validator.subprocess, "run", side_effect=error),
+                self.assertRaisesRegex(
+                    checkpoint.CheckpointError, "Could not read"
+                ) as raised,
+            ):
+                validator.installed_node_public_key(self.inventory)
+            self.assertNotIn(secret, str(raised.exception))
+
+    def test_symlinked_key_directory_is_rejected(self) -> None:
+        link = self.keys_dir / "symlink"
+        link.symlink_to(self.keys_dir, target_is_directory=True)
+        with (
+            mock.patch.object(validator.subprocess, "run") as run,
+            self.assertRaises(checkpoint.CheckpointError),
+        ):
+            validator.installed_node_public_key({"summit_keys_dir": link})
+        run.assert_not_called()
+
+    def test_missing_empty_and_symlinked_key_files_are_rejected(self) -> None:
+        for name in ("node_key.pem", "consensus_key.pem"):
+            path = self.keys_dir / name
+            for kind in ("missing", "empty", "symlink"):
+                with self.subTest(name=name, kind=kind):
+                    path.unlink()
+                    if kind == "empty":
+                        path.touch()
+                    elif kind == "symlink":
+                        path.symlink_to(self.keys_dir / "missing")
+                    with (
+                        mock.patch.object(validator.subprocess, "run") as run,
+                        self.assertRaises(checkpoint.CheckpointError),
+                    ):
+                        validator.installed_node_public_key(self.inventory)
+                    run.assert_not_called()
+                    if path.is_symlink() or path.exists():
+                        path.unlink()
+                    path.write_text("fixture-only-not-a-real-key")
+
+
 class ValidatorOnboardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.stack = contextlib.ExitStack()
@@ -678,7 +794,12 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.output = io.StringIO()
         self.stack.enter_context(contextlib.redirect_stdout(self.output))
         self.inventory = self.patch(checkpoint, "load_inventory")
-        self.patch(validator, "load_deposit_response", return_value=({}, "11" * 32))
+        self.identity = self.patch(
+            validator, "installed_node_public_key", return_value="11" * 32
+        )
+        self.deposit = self.patch(
+            validator, "load_deposit_response", return_value=({}, "11" * 32)
+        )
         self.validate_checkpoint = self.patch(
             checkpoint, "validate_checkpoint_start_configuration"
         )
@@ -706,8 +827,6 @@ class ValidatorOnboardTests(unittest.TestCase):
                 "seismic-node.py",
                 "validator",
                 "onboard",
-                "--deposit-signature",
-                "/root/deposit-signature.json",
                 "--summit-rpc-url",
                 "https://network.example/summit",
                 "--pre-joining-policy",
@@ -751,6 +870,73 @@ class ValidatorOnboardTests(unittest.TestCase):
         )
         self.validate_checkpoint.assert_not_called()
         self.install.assert_not_called()
+
+    def test_both_modes_use_installed_identity_without_deposit_file(self) -> None:
+        for mode in ("normal", "checkpoint"):
+            with self.subTest(mode=mode):
+                args = self.args("--mode", mode)
+                self.assertIsNone(args.deposit_signature)
+                self.account.reset_mock()
+                self.identity.reset_mock()
+                node_cli.handle_validator(args)
+                self.assertEqual(self.account.call_count, 2)
+                for call in self.account.call_args_list:
+                    self.assertEqual(call.args[1], "11" * 32)
+                self.assertEqual(self.identity.call_count, 2)
+                self.identity.assert_called_with(self.inventory.return_value)
+        self.deposit.assert_not_called()
+
+    def test_optional_deposit_response_is_checked_against_installed_identity(
+        self,
+    ) -> None:
+        path = Path("/root/deposit-signature.json")
+        node_cli.handle_validator(
+            self.args("--mode", "normal", "--deposit-signature", str(path))
+        )
+        self.deposit.assert_called_once_with(path)
+        self.start.assert_called_once()
+
+    def test_invalid_optional_deposit_response_is_not_ignored(self) -> None:
+        self.deposit.side_effect = checkpoint.CheckpointError(
+            "Invalid deposit response"
+        )
+        with self.assertRaisesRegex(
+            checkpoint.CheckpointError, "Invalid deposit response"
+        ):
+            node_cli.handle_validator(
+                self.args("--deposit-signature", "/root/deposit-signature.json")
+            )
+        self.account.assert_not_called()
+        self.install.assert_not_called()
+        self.assert_no_start()
+
+    def test_mismatched_deposit_identity_fails_before_polling_or_install(self) -> None:
+        self.deposit.return_value = ({}, "22" * 32)
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "does not match"):
+            node_cli.handle_validator(
+                self.args("--deposit-signature", "/root/deposit-signature.json")
+            )
+        self.account.assert_not_called()
+        self.install.assert_not_called()
+        self.assert_no_start()
+
+    def test_identity_read_failure_fails_before_polling_or_install(self) -> None:
+        self.identity.side_effect = checkpoint.CheckpointError("Cannot read identity")
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "Cannot read identity"):
+            node_cli.handle_validator(self.args("--mode", "normal"))
+        self.account.assert_not_called()
+        self.install.assert_not_called()
+        self.assert_no_start()
+
+    def test_key_change_while_waiting_refuses_start_in_both_modes(self) -> None:
+        for mode in ("normal", "checkpoint"):
+            with self.subTest(mode=mode):
+                self.identity.side_effect = ["11" * 32, "22" * 32]
+                with self.assertRaisesRegex(
+                    checkpoint.CheckpointError, "changed during"
+                ):
+                    node_cli.handle_validator(self.args("--mode", mode))
+                self.assert_no_start()
 
     def test_checkpoint_remains_default_and_uses_existing_inputs(self) -> None:
         args = self.args()

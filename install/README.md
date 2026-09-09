@@ -363,12 +363,25 @@ coordinate startup:
 
 ```bash
 sudo ./tools/seismic-node.py validator onboard \
-  --deposit-signature /root/deposit-signature.json \
   --summit-rpc-url https://trusted-validator.example/summit \
   --snapshot-api-url https://snapshot.example/checkpointer \
   --snapshot-bearer-token-file /root/snapshot-token \
   --weak-subjectivity-rpc-url https://independent-validator.example/summit
 ```
+
+Onboarding reads `summit_keys_dir` from the installation inventory and uses
+`/usr/local/bin/summit keys show` to derive the installed node public key
+locally. The default inventory is `/etc/seismic/validator-installation.toml`;
+select a custom file with `--inventory /absolute/path/to/installation.toml`.
+Only the public key is sent to the trusted Summit RPC. No signing endpoint is
+started.
+
+The deposit-signature file is not required for onboarding. Existing commands may
+still pass `--deposit-signature /root/deposit-signature.json` as an optional
+identity cross-check; a mismatch with the installed node key is rejected before
+polling or checkpoint installation. The installed public key is checked again
+before startup so a key change during the wait cannot start a different
+identity. Generating and submitting the deposit remains a separate prerequisite.
 
 #### Onboard without a checkpoint
 
@@ -378,7 +391,6 @@ requiring a checkpoint:
 ```bash
 sudo ./tools/seismic-node.py validator onboard \
   --mode normal \
-  --deposit-signature /root/deposit-signature.json \
   --summit-rpc-url https://trusted-validator.example/summit \
   --pre-joining-policy wait
 ```

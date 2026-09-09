@@ -173,7 +173,11 @@ def parse_args() -> argparse.Namespace:
         help="startup mode (default: checkpoint); normal skips checkpoint installation",
     )
     add_inventory_argument(validator_onboard)
-    validator_onboard.add_argument("--deposit-signature", type=Path, required=True)
+    validator_onboard.add_argument(
+        "--deposit-signature",
+        type=Path,
+        help="optional deposit response to cross-check against the installed node identity",
+    )
     validator_onboard.add_argument(
         "--pre-joining-policy",
         choices=("wait", "start", "leave-stopped"),
@@ -416,7 +420,6 @@ def handle_validator(args: argparse.Namespace) -> None:
         return
     if args.summit_rpc_url is None:
         raise checkpoint.CheckpointError("validator onboard requires --summit-rpc-url")
-    _, node_public_key = validator.load_deposit_response(args.deposit_signature)
     source_requested = checkpoint_source_requested(args)
     if args.mode == "normal" and (
         source_requested or checkpoint_install_options_requested(args)
@@ -427,7 +430,14 @@ def handle_validator(args: argparse.Namespace) -> None:
         )
     require_checkpoint_source_for_install_options(args, source_requested)
     inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
-    checkpoint.load_inventory("validator", inventory_path)
+    inventory = checkpoint.load_inventory("validator", inventory_path)
+    node_public_key = validator.installed_node_public_key(inventory)
+    if args.deposit_signature is not None:
+        _, deposit_public_key = validator.load_deposit_response(args.deposit_signature)
+        if deposit_public_key != node_public_key:
+            raise checkpoint.CheckpointError(
+                "Deposit-signature node public key does not match the installed validator"
+            )
     if args.mode == "checkpoint" and not source_requested:
         checkpoint.validate_checkpoint_start_configuration("validator")
     # Use one deadline across both lifecycle checks so installation cannot reset
