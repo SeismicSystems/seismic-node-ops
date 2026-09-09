@@ -370,6 +370,37 @@ sudo ./tools/seismic-node.py validator onboard \
   --weak-subjectivity-rpc-url https://independent-validator.example/summit
 ```
 
+#### Onboard without a checkpoint
+
+To wait for `Joining` and then start from local state without installing or
+requiring a checkpoint:
+
+```bash
+sudo ./tools/seismic-node.py validator onboard \
+  --mode normal \
+  --deposit-signature /root/deposit-signature.json \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --pre-joining-policy wait
+```
+
+This can be run after submitting the deposit transaction. It waits while the
+account is `NotFound` or `Inactive`, starts when it reaches `Joining`, and also
+allows `Active` with a warning. By default it waits indefinitely; use
+`--validator-wait-timeout SECONDS` to bound the wait. Status is checked again
+immediately before startup, using the same wait deadline.
+
+Normal mode starts `summit` instead of `summit-checkpoint` and does not read
+checkpoint-start configuration or replace local state. It rejects checkpoint
+source and installation options, including `--yes`. It does not guarantee that a
+freshly reset node can synchronize with the running network from genesis. Unlike
+`validator start --mode normal`, it applies the onboarding lifecycle checks.
+
+Checkpoint mode remains the default (`--mode checkpoint`). In that mode,
+omitting source options uses an already-installed checkpoint; it does not switch
+to normal startup.
+
+#### Startup behavior
+
 When startup is authorized, `validator onboard` automatically runs:
 
 ```bash
@@ -378,7 +409,8 @@ sudo supervisorctl reread
 sudo supervisorctl update
 ```
 
-It then starts Custodian when configured, Reth, `summit-checkpoint`, and
+It then starts Custodian when configured, Reth, the selected Summit program
+(`summit` in normal mode or `summit-checkpoint` in checkpoint mode), and
 summit-checkpointer when configured. It does not start or reload OpenResty.
 
 For unattended installation, pass `--yes` to skip the interactive confirmation,

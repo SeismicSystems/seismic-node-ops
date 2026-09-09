@@ -19,7 +19,7 @@ boundary can be reviewed and tested independently.
 | `download.py`   | Selects a completed checkpoint epoch, polls remote manifests, downloads verified archives, and resolves local, URL, or Summit-RPC weak-subjectivity anchors.                                                       |
 | `rpc.py`        | Provides strict standard-library HTTP and JSON-RPC helpers with URL, redirect, response-size, token-file, archive-size, and SHA-256 checks.                                                                        |
 | `supervisor.py` | Starts selected Supervisor programs in dependency order and reverses only the start requests made by the current command after a partial failure.                                                                  |
-| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before checkpoint startup, and coordinates lifecycle-free validator restarts and shutdown.                                      |
+| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before normal or checkpoint startup, and coordinates lifecycle-free validator restarts and shutdown.                            |
 | `observer.py`   | Selects normal or checkpoint observer startup and coordinates observer shutdown without applying validator lifecycle rules.                                                                                        |
 
 `__init__.py` only identifies the internal package. It intentionally performs no
@@ -97,9 +97,29 @@ The validator flow uses the node public key from a strictly validated
 - `SubmittedExitRequest`, `FullPayoutPending`, malformed responses, and unknown
   statuses are refused.
 
-The lifecycle state is checked before preparation and again immediately before
-startup. A confirmed early-start decision is carried across the second check so
-an interactive operator is not prompted twice.
+`validator onboard --mode checkpoint` is the default: it installs a selected
+checkpoint or validates existing checkpoint-start inputs before startup.
+`validator onboard --mode normal` instead starts from local state without
+installing or requiring a checkpoint. Normal mode rejects checkpoint sources and
+installation modifiers, including `--yes`.
+
+For lifecycle-gated normal startup:
+
+```bash
+sudo ./tools/seismic-node.py validator onboard \
+  --mode normal \
+  --deposit-signature /root/deposit-signature.json \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --pre-joining-policy wait
+```
+
+Both modes validate the installation inventory and apply the same lifecycle
+policy. The lifecycle state is checked before preparation and again immediately
+before startup. A confirmed early-start decision is carried across the second
+check so an interactive operator is not prompted twice. One wait deadline spans
+both checks; `--validator-wait-timeout 0` (the default) waits indefinitely.
+Normal startup does not guarantee synchronization from empty state.
+`validator start --mode normal` remains the lifecycle-free startup command.
 
 ### Supervisor startup
 

@@ -150,7 +150,7 @@ def parse_args() -> argparse.Namespace:
     validator_onboard = validator_commands.add_parser(
         "onboard",
         allow_abbrev=False,
-        help="install or validate a checkpoint and start validator services",
+        help="wait for validator lifecycle authorization and start services",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Manual checkpoint-start equivalent after lifecycle authorization:\n"
@@ -160,8 +160,17 @@ def parse_args() -> argparse.Namespace:
             "  sudo supervisorctl start custodian          # when configured\n"
             "  sudo supervisorctl start reth\n"
             "  sudo supervisorctl start summit-checkpoint\n"
-            "  sudo supervisorctl start checkpointer       # when configured"
+            "  sudo supervisorctl start checkpointer       # when configured\n"
+            "For --mode normal, start summit instead of summit-checkpoint.\n"
+            "Normal mode waits for lifecycle authorization without installing "
+            "or requiring a checkpoint."
         ),
+    )
+    validator_onboard.add_argument(
+        "--mode",
+        choices=("normal", "checkpoint"),
+        default="checkpoint",
+        help="startup mode (default: checkpoint); normal skips checkpoint installation",
     )
     add_inventory_argument(validator_onboard)
     validator_onboard.add_argument("--deposit-signature", type=Path, required=True)
@@ -409,8 +418,17 @@ def handle_validator(args: argparse.Namespace) -> None:
         raise checkpoint.CheckpointError("validator onboard requires --summit-rpc-url")
     _, node_public_key = validator.load_deposit_response(args.deposit_signature)
     source_requested = checkpoint_source_requested(args)
+    if args.mode == "normal" and (
+        source_requested or checkpoint_install_options_requested(args)
+    ):
+        raise checkpoint.CheckpointError(
+            "Checkpoint source and installation options cannot be used with "
+            "validator onboard --mode normal"
+        )
     require_checkpoint_source_for_install_options(args, source_requested)
-    if not source_requested:
+    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
+    checkpoint.load_inventory("validator", inventory_path)
+    if args.mode == "checkpoint" and not source_requested:
         checkpoint.validate_checkpoint_start_configuration("validator")
     # Use one deadline across both lifecycle checks so installation cannot reset
     # the operator's total wait budget.
@@ -438,16 +456,18 @@ def handle_validator(args: argparse.Namespace) -> None:
     if not start_decision.start:
         if source_requested:
             print("Checkpoint was installed. All validator services remain stopped.")
-        else:
+        elif args.mode == "checkpoint":
             print(
                 "Existing checkpoint remains installed. "
                 "All validator services remain stopped."
             )
+        else:
+            print("All validator services remain stopped. No checkpoint was installed.")
         return
     try:
-        # Recheck status after installation because lifecycle state may have
-        # changed while a large checkpoint was downloaded and installed.
-        validator.start_checkpoint_validator(
+        # Recheck immediately before startup, including after any checkpoint
+        # download and installation that may have taken a long time.
+        validator.start_onboarded_validator(
             args,
             node_public_key,
             allow_pre_joining_start=start_decision.pre_joining,

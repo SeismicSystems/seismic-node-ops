@@ -377,8 +377,8 @@ def wait_for_start_authorization(
                 f"Refusing unknown validator lifecycle state {current_status!r}"
             )
 
-        # A second status check occurs after checkpoint installation. Preserve a
-        # previously confirmed early-start choice instead of prompting twice.
+        # A second status check occurs before startup in either mode. Preserve
+        # a previously confirmed early-start choice instead of prompting twice.
         if allow_pre_joining_start:
             action = "start"
         else:
@@ -399,7 +399,7 @@ def wait_for_start_authorization(
         time.sleep(args.validator_poll_interval)
 
 
-def start_checkpoint_validator(
+def start_onboarded_validator(
     args: Any,
     node_public_key: str,
     *,
@@ -414,16 +414,14 @@ def start_checkpoint_validator(
         wait_deadline=wait_deadline,
     )
     if not decision.start:
-        print("Checkpoint remains installed. All validator services remain stopped.")
+        if args.mode == "checkpoint":
+            print(
+                "Checkpoint remains installed. All validator services remain stopped."
+            )
+        else:
+            print("All validator services remain stopped. No checkpoint was installed.")
         return
-    checkpoint.validate_checkpoint_start_configuration("validator")
-    supervisor.prepare_supervisor()
-    supervisor.start_node(
-        "summit-checkpoint",
-        "summit",
-        startup_timeout=args.startup_timeout,
-    )
-    print("Validator checkpoint startup requested successfully.")
+    start_validator(args)
 
 
 def start_validator(args: Any) -> None:
