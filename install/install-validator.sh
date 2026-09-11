@@ -38,8 +38,12 @@ source "$SCRIPT_DIR/lib/supervisor.sh"
 source "$SCRIPT_DIR/lib/instructions.sh"
 # shellcheck source=lib/configuration.sh
 source "$SCRIPT_DIR/lib/configuration.sh"
+# shellcheck source=lib/prometheus-agent.sh
+source "$SCRIPT_DIR/lib/prometheus-agent.sh"
 
 write_validator_installation_inventory() {
+    local monitoring
+    monitoring=$(write_prometheus_agent_inventory) || die "Could not record agent configuration."
     install_installation_inventory "$INSTALLATION_INVENTORY_PATH" <<EOF
 schema_version = 1
 
@@ -48,6 +52,7 @@ reth_p2p_key_path = "$RETH_P2P_KEY_PATH"
 
 summit_data_dir = "$SUMMIT_DATA_DIR"
 summit_keys_dir = "$SUMMIT_KEYS_DIR"
+$monitoring
 EOF
 }
 
@@ -56,6 +61,7 @@ main() {
     preflight
     confirm_installation_inventory_overwrite "$INSTALLATION_INVENTORY_PATH"
     configure
+    validate_prometheus_agent_plan
     install_system_packages
     install_openresty
     setup_runtime_directories
@@ -65,8 +71,10 @@ main() {
     setup_validator_keys
     deploy_openresty_configuration
     deploy_supervisor_configuration
+    install_prometheus_agent
     write_validator_installation_inventory
     print_manual_start_instructions
+    print_prometheus_agent_instructions
     success "Validator installation complete; services were not started."
 }
 

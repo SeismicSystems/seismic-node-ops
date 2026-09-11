@@ -25,6 +25,28 @@ boundary can be reviewed and tested independently.
 `__init__.py` only identifies the internal package. It intentionally performs no
 startup work or global configuration.
 
+## Optional monitoring
+
+`monitoring.py` manages the independent Prometheus Agent configured by the
+[installers](../../install/PROMETHEUS_AGENT.md). A shared best-effort helper
+runs only after successful validator/observer startup; onboarding authorization,
+identity checks, checkpoint validation, and node-start rollback are unchanged.
+Old inventories without `[monitoring]` remain supported. Invalid agent metadata
+or agent startup failure warns without rolling back successful node startup.
+
+Node stop and rollback never stop the agent. Explicit commands:
+
+```bash
+sudo ./tools/seismic-node.py monitoring start --role validator
+sudo ./tools/seismic-node.py monitoring status --role validator
+sudo ./tools/seismic-node.py monitoring stop --role validator
+```
+
+Use `--role observer` or `--inventory /absolute/path.toml` as appropriate.
+Explicit monitoring start updates only the agent Supervisor group, not node
+groups. Status and stop do not reload Supervisor. Monitoring commands read the
+protected inventory without requiring usable node databases or keys.
+
 ## Workflow boundaries
 
 ### Checkpoint acquisition

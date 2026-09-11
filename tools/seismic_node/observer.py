@@ -8,13 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import checkpoint, supervisor
+from . import checkpoint, monitoring, supervisor
 
 
 def start_observer(args: Any) -> None:
     """Validate the selected mode and delegate ordered startup to Supervisor."""
     inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["observer"]
-    checkpoint.load_inventory("observer", inventory_path)
+    inventory = checkpoint.load_inventory("observer", inventory_path)
     if args.mode == "checkpoint":
         checkpoint.validate_checkpoint_start_configuration("observer")
         summit_program = "summit-observer-checkpoint"
@@ -30,6 +30,7 @@ def start_observer(args: Any) -> None:
         conflicting_program,
         startup_timeout=args.startup_timeout,
     )
+    monitoring.ensure_running(inventory, "observer", args.startup_timeout)
     print(f"Observer {args.mode} startup requested successfully.")
 
 
@@ -39,4 +40,4 @@ def stop_observer(args: Any) -> None:
     checkpoint.load_inventory("observer", inventory_path)
     supervisor.stop_node(("summit-observer", "summit-observer-checkpoint"))
     print("Observer services stopped successfully.")
-    print("Supervisor and OpenResty remain running.")
+    print("Supervisor, OpenResty and any running Prometheus Agent remain running.")

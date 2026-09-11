@@ -17,7 +17,15 @@ import time
 from pathlib import Path
 from typing import NoReturn
 
-from seismic_node import checkpoint, download, observer, rpc, supervisor, validator
+from seismic_node import (
+    checkpoint,
+    download,
+    monitoring,
+    observer,
+    rpc,
+    supervisor,
+    validator,
+)
 
 
 def add_inventory_argument(parser: argparse.ArgumentParser) -> None:
@@ -281,6 +289,17 @@ def parse_args() -> argparse.Namespace:
     )
     add_inventory_argument(observer_stop)
 
+    monitoring_parser = commands.add_parser("monitoring", allow_abbrev=False)
+    monitoring_commands = monitoring_parser.add_subparsers(
+        dest="monitoring_command", required=True
+    )
+    for action in ("start", "stop", "status"):
+        command = monitoring_commands.add_parser(action, allow_abbrev=False)
+        command.add_argument("--role", choices=("validator", "observer"), required=True)
+        add_inventory_argument(command)
+        if action == "start":
+            add_startup_argument(command)
+
     return parser.parse_args()
 
 
@@ -526,6 +545,8 @@ def main() -> NoReturn:
         handle_checkpoint(args)
     elif args.command == "validator":
         handle_validator(args)
+    elif args.command == "monitoring":
+        monitoring.handle(args)
     else:
         handle_observer(args)
     raise SystemExit(0)

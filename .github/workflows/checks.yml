@@ -52,19 +52,33 @@ jobs:
         run: |
           python3 -m pip install ruff==0.16.5
           ruff check --target-version py312 \
+            install/lib/prometheus_agent.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
             tests
           ruff format --check --target-version py312 \
+            install/lib/prometheus_agent.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
             tests
 
+      - name: Fetch checksum-pinned Prometheus for isolated agent tests
+        run: |
+          read -r version checksum < <(python3 -c 'import runpy; m = runpy.run_path("install/lib/prometheus_agent.py"); print(m["VERSION"], m["CHECKSUMS"]["amd64"])')
+          archive="$RUNNER_TEMP/prometheus.tar.gz"
+          curl -fsSL --max-time 120 "https://github.com/prometheus/prometheus/releases/download/v$version/prometheus-$version.linux-amd64.tar.gz" -o "$archive"
+          printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" "prometheus-$version.linux-amd64/prometheus" "prometheus-$version.linux-amd64/promtool"
+          echo "PROMETHEUS_AGENT_BIN=$RUNNER_TEMP/prometheus-$version.linux-amd64/prometheus" >> "$GITHUB_ENV"
+          echo "PROMETHEUS_AGENT_PROMTOOL=$RUNNER_TEMP/prometheus-$version.linux-amd64/promtool" >> "$GITHUB_ENV"
+          python3 -m pip install supervisor==4.2.5 setuptools==80.9.0
+
       - name: Check Python compilation and tests
         run: |
           python3 -m py_compile \
+            install/lib/prometheus_agent.py \
             tools/seismic-node.py \
             tools/seismic_node/*.py \
             tools/checkpoint-start/summit-checkpoint-runner.py

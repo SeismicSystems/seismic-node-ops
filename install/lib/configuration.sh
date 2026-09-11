@@ -1035,6 +1035,7 @@ print_configuration_summary() {
         _out "  Enabled: false"
     fi
 
+    print_prometheus_agent_plan
     print_system_package_plan
 }
 
@@ -1054,6 +1055,7 @@ review_configuration() {
         _out "  7) Edit Centralized Custodian"
         _out "  8) Accept configuration"
         _out "  9) Cancel"
+        _out " 10) Edit Prometheus Agent"
         prompt selection "Select an action" "8"
 
         case "$selection" in
@@ -1079,7 +1081,8 @@ review_configuration() {
                 info "Configuration cancelled; no installation changes were made."
                 exit 0
                 ;;
-            *) error "Select a number from 1 through 9." ;;
+            10) configure_prometheus_agent ;;
+            *) error "Select a number from 1 through 10." ;;
         esac
     done
 }
@@ -1094,5 +1097,6 @@ configure() {
     configure_validator_software
     configure_checkpointer
     configure_custodian
+    configure_prometheus_agent
     review_configuration
 }

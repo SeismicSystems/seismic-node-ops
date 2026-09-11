@@ -14,6 +14,11 @@ after installation.
 For an observer node, use `install/install-observer.sh` and follow the separate
 **[Observer Installer and First-Start Guide](OBSERVER.md)**.
 
+Optional authenticated push monitoring is shared with the observer installer:
+see [Prometheus Agent](PROMETHEUS_AGENT.md). When configured, `seismic-node`
+starts the agent after successful node startup and leaves it running on node
+stop.
+
 ## Safety model
 
 The installer is designed to avoid replacing persistent validator state:
@@ -24,7 +29,8 @@ The installer is designed to avoid replacing persistent validator state:
 - An incomplete Summit key pair causes the installer to stop rather than
   regenerate either key.
 - Service binaries are installed as root-owned, non-writable executables.
-- Supervisor programs use `autostart=false` and `autorestart=false`.
+- Node Supervisor programs use `autostart=false` and `autorestart=false`. The
+  optional independent Prometheus Agent uses `autorestart=true` once started.
 - The installer does not start, enable, reread, update, reload, or restart
   validator services.
 

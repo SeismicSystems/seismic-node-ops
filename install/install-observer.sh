@@ -42,12 +42,16 @@ source "$SCRIPT_DIR/lib/supervisor.sh"
 source "$SCRIPT_DIR/lib/observer-supervisor.sh"
 # shellcheck source=lib/configuration.sh
 source "$SCRIPT_DIR/lib/configuration.sh"
+# shellcheck source=lib/prometheus-agent.sh
+source "$SCRIPT_DIR/lib/prometheus-agent.sh"
 # shellcheck source=lib/observer-configuration.sh
 source "$SCRIPT_DIR/lib/observer-configuration.sh"
 # shellcheck source=lib/observer-instructions.sh
 source "$SCRIPT_DIR/lib/observer-instructions.sh"
 
 write_observer_installation_inventory() {
+    local monitoring
+    monitoring=$(write_prometheus_agent_inventory) || die "Could not record agent configuration."
     install_installation_inventory "$INSTALLATION_INVENTORY_PATH" <<EOF
 schema_version = 1
 
@@ -59,6 +63,7 @@ summit_keys_dir = "$SUMMIT_KEYS_DIR"
 
 observer_parent_node_public_key = "$OBSERVER_PARENT_NODE_PUBLIC_KEY"
 observer_index = $OBSERVER_INDEX
+$monitoring
 EOF
 }
 
@@ -67,6 +72,7 @@ main() {
     preflight
     confirm_installation_inventory_overwrite "$INSTALLATION_INVENTORY_PATH"
     configure_observer
+    validate_prometheus_agent_plan
     install_system_packages
     install_openresty
     setup_observer_runtime_directories
@@ -76,8 +82,10 @@ main() {
     setup_observer_keys
     deploy_openresty_configuration
     deploy_observer_supervisor_configuration
+    install_prometheus_agent
     write_observer_installation_inventory
     print_observer_manual_start_instructions
+    print_prometheus_agent_instructions
     success "Observer installation complete; services were not started."
 }
 

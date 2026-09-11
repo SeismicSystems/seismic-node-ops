@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import checkpoint, rpc, supervisor
+from . import checkpoint, monitoring, rpc, supervisor
 
 DEPOSIT_AMOUNT_GWEI = 32_000_000_000
 WITHDRAWAL_ADDRESS = "0xd412c5ecd343e264381ff15afc0ad78a67b79f35"
@@ -494,6 +494,7 @@ def start_validator(args: Any, *, expected_node_public_key: str | None = None) -
         conflicting_program,
         startup_timeout=args.startup_timeout,
     )
+    monitoring.ensure_running(inventory, "validator", args.startup_timeout)
     print(f"Validator {args.mode} startup requested successfully.")
 
 
@@ -503,4 +504,4 @@ def stop_validator(args: Any) -> None:
     checkpoint.load_inventory("validator", inventory_path)
     supervisor.stop_node(("summit-deposit-rpc", "summit", "summit-checkpoint"))
     print("Validator services stopped successfully.")
-    print("Supervisor and OpenResty remain running.")
+    print("Supervisor, OpenResty and any running Prometheus Agent remain running.")

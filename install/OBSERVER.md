@@ -14,6 +14,11 @@ after installation.
 For a validator node, use `install/install-validator.sh` and follow the separate
 **[Validator Installer and First-Start Guide](README.md)**.
 
+Optional authenticated push monitoring is shared with the validator installer:
+see [Prometheus Agent](PROMETHEUS_AGENT.md). Register observer push nodes with
+role `observer` on the monitoring server so they do not affect validator quorum
+alerts.
+
 ## Safety model
 
 The installer is designed to avoid replacing persistent observer state:
@@ -28,7 +33,8 @@ The installer is designed to avoid replacing persistent observer state:
 - Existing observer Custodian root keys are preserved for verification against
   the parent Custodian.
 - Service binaries are installed as root-owned, non-writable executables.
-- Supervisor programs use `autostart=false` and `autorestart=false`.
+- Node Supervisor programs use `autostart=false` and `autorestart=false`. The
+  optional independent Prometheus Agent uses `autorestart=true` once started.
 - The installer does not start, enable, reread, update, reload, or restart
   observer services.
 
