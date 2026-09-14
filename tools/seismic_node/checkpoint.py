@@ -305,6 +305,11 @@ def load_inventory(role: str, path: Path) -> dict[str, Any]:
     expected = COMMON_INVENTORY_KEYS | (
         OBSERVER_INVENTORY_KEYS if role == "observer" else set()
     )
+    # Optional telemetry metadata must not make old inventories incompatible.
+    # Its validation is deferred to best-effort monitoring startup so a broken
+    # agent configuration cannot prevent otherwise valid node startup.
+    if "monitoring" in inventory:
+        expected = expected | {"monitoring"}
     require_exact_keys(inventory, expected, "Installation inventory")
     if inventory["schema_version"] != INVENTORY_VERSION:
         raise CheckpointError(

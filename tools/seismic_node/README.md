@@ -19,11 +19,33 @@ boundary can be reviewed and tested independently.
 | `download.py`   | Selects a completed checkpoint epoch, polls remote manifests, downloads verified archives, and resolves local, URL, or Summit-RPC weak-subjectivity anchors.                                                       |
 | `rpc.py`        | Provides strict standard-library HTTP and JSON-RPC helpers with URL, redirect, response-size, token-file, archive-size, and SHA-256 checks.                                                                        |
 | `supervisor.py` | Starts selected Supervisor programs in dependency order and reverses only the start requests made by the current command after a partial failure.                                                                  |
-| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before checkpoint startup, and coordinates lifecycle-free validator restarts and shutdown.                                      |
+| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before normal or checkpoint startup, and coordinates lifecycle-free validator restarts and shutdown.                            |
 | `observer.py`   | Selects normal or checkpoint observer startup and coordinates observer shutdown without applying validator lifecycle rules.                                                                                        |
 
 `__init__.py` only identifies the internal package. It intentionally performs no
 startup work or global configuration.
+
+## Optional monitoring
+
+`monitoring.py` manages the independent Prometheus Agent configured by the
+[installers](../../install/PROMETHEUS_AGENT.md). A shared best-effort helper
+runs only after successful validator/observer startup; onboarding authorization,
+identity checks, checkpoint validation, and node-start rollback are unchanged.
+Old inventories without `[monitoring]` remain supported. Invalid agent metadata
+or agent startup failure warns without rolling back successful node startup.
+
+Node stop and rollback never stop the agent. Explicit commands:
+
+```bash
+sudo ./tools/seismic-node.py monitoring start --role validator
+sudo ./tools/seismic-node.py monitoring status --role validator
+sudo ./tools/seismic-node.py monitoring stop --role validator
+```
+
+Use `--role observer` or `--inventory /absolute/path.toml` as appropriate.
+Explicit monitoring start updates only the agent Supervisor group, not node
+groups. Status and stop do not reload Supervisor. Monitoring commands read the
+protected inventory without requiring usable node databases or keys.
 
 ## Workflow boundaries
 
@@ -87,8 +109,20 @@ automatically, and non-interactive use requires `--backup`.
 
 ### Validator onboarding
 
-The validator flow uses the node public key from a strictly validated
-`deposit-signature.json` response to call `getValidatorAccount`.
+The validator flow reads `summit_keys_dir` from the validated installation
+inventory, then invokes `/usr/local/bin/summit keys show --key-store-path DIR`
+to derive the installed node public key. Only that public key is sent to
+`getValidatorAccount`; private keys remain local and no deposit RPC is started.
+The command is read-only, has a bounded runtime, and its raw output is never
+included in errors. The parsed identity must be exactly one 32-byte ed25519
+public key.
+
+`--deposit-signature` is optional. When supplied, the response is strictly
+validated and its node public key must match the installed identity before any
+lifecycle polling or checkpoint installation. The installed identity is derived
+again before startup and must still match the public key whose lifecycle was
+checked. `--inventory` overrides the default
+`/etc/seismic/validator-installation.toml` without requiring a signature file.
 
 - `Joining` starts normally.
 - `Active` starts with a late-onboarding warning.
@@ -97,9 +131,28 @@ The validator flow uses the node public key from a strictly validated
 - `SubmittedExitRequest`, `FullPayoutPending`, malformed responses, and unknown
   statuses are refused.
 
-The lifecycle state is checked before preparation and again immediately before
-startup. A confirmed early-start decision is carried across the second check so
-an interactive operator is not prompted twice.
+`validator onboard --mode checkpoint` is the default: it installs a selected
+checkpoint or validates existing checkpoint-start inputs before startup.
+`validator onboard --mode normal` instead starts from local state without
+installing or requiring a checkpoint. Normal mode rejects checkpoint sources and
+installation modifiers, including `--yes`.
+
+For lifecycle-gated normal startup:
+
+```bash
+sudo ./tools/seismic-node.py validator onboard \
+  --mode normal \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --pre-joining-policy wait
+```
+
+Both modes validate the installation inventory and apply the same lifecycle
+policy. The lifecycle state is checked before preparation and again immediately
+before startup. A confirmed early-start decision is carried across the second
+check so an interactive operator is not prompted twice. One wait deadline spans
+both checks; `--validator-wait-timeout 0` (the default) waits indefinitely.
+Normal startup does not guarantee synchronization from empty state.
+`validator start --mode normal` remains the lifecycle-free startup command.
 
 ### Supervisor startup
 

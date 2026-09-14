@@ -454,8 +454,9 @@ configure_node_software() {
 
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
-    SUMMIT_SOURCE_REF="main"
-    RETH_SOURCE_REF="feat/purpose-key-rotation-reth"
+    # Explicit tag refs cannot be mistaken for same-named branches.
+    SUMMIT_SOURCE_REF="refs/tags/internal-testnet-v0"
+    RETH_SOURCE_REF="refs/tags/internal-testnet-v0"
     SUMMIT_INSTALL_METHOD=""
     RETH_INSTALL_METHOD=""
     SUMMIT_BINARY=""
@@ -791,9 +792,9 @@ configure_custodian() {
     COUNCIL_ADDRESS=""
     CUSTODIAN_CHAIN_ID=""
     PARENT_CUSTODIAN=""
-    CUSTODIAN_REQUIRED_SUMMIT_REF="main"
-    CUSTODIAN_REQUIRED_RETH_REF="feat/purpose-key-rotation-reth"
-    CUSTODIAN_SOURCE_REF="d/centralized-custodian"
+    CUSTODIAN_REQUIRED_SUMMIT_REF="internal-testnet-v0"
+    CUSTODIAN_REQUIRED_RETH_REF="internal-testnet-v0"
+    CUSTODIAN_SOURCE_REF="refs/tags/internal-testnet-v0"
 
     if ! confirm "Enable Centralized Custodian?"; then
         _out "Centralized Custodian: $INSTALL_CUSTODIAN"
@@ -1035,6 +1036,7 @@ print_configuration_summary() {
         _out "  Enabled: false"
     fi
 
+    print_prometheus_agent_plan
     print_system_package_plan
 }
 
@@ -1054,6 +1056,7 @@ review_configuration() {
         _out "  7) Edit Centralized Custodian"
         _out "  8) Accept configuration"
         _out "  9) Cancel"
+        _out " 10) Edit Prometheus Agent"
         prompt selection "Select an action" "8"
 
         case "$selection" in
@@ -1079,7 +1082,8 @@ review_configuration() {
                 info "Configuration cancelled; no installation changes were made."
                 exit 0
                 ;;
-            *) error "Select a number from 1 through 9." ;;
+            10) configure_prometheus_agent ;;
+            *) error "Select a number from 1 through 10." ;;
         esac
     done
 }
@@ -1094,5 +1098,6 @@ configure() {
     configure_validator_software
     configure_checkpointer
     configure_custodian
+    configure_prometheus_agent
     review_configuration
 }

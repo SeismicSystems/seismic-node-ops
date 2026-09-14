@@ -9,10 +9,13 @@ namespace = "_SUMMIT"
 validator_minimum_stake = 32000000000
 blocks_per_epoch = 5000
 allowed_timestamp_future_ms = 10000
+treasury_address = "0x0000000000000000000000000000000000000000"
 max_deposits_per_epoch = 3
 max_withdrawals_per_epoch = 16
 observers_per_validator = 5
+max_validator_count = 128
 minimum_validator_count = 3
+invalid_deposit_tax = 0
 max_pending_withdrawals_per_validator = 5
 
 [[validators]]

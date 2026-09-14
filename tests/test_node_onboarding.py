@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import hashlib
 import importlib.util
@@ -614,7 +615,7 @@ class ValidatorTests(unittest.TestCase):
             )
 
     def test_checkpoint_start_prepares_supervisor_before_programs(self) -> None:
-        args = SimpleNamespace(startup_timeout=30.0)
+        args = SimpleNamespace(startup_timeout=30.0, inventory=None, mode="checkpoint")
         events: list[str] = []
         with (
             mock.patch.object(
@@ -623,6 +624,10 @@ class ValidatorTests(unittest.TestCase):
                 return_value=validator.StartDecision(start=True),
             ),
             mock.patch.object(checkpoint, "validate_checkpoint_start_configuration"),
+            mock.patch.object(checkpoint, "load_inventory"),
+            mock.patch.object(
+                validator, "installed_node_public_key", return_value="11" * 32
+            ),
             mock.patch.object(
                 supervisor,
                 "prepare_supervisor",
@@ -634,7 +639,7 @@ class ValidatorTests(unittest.TestCase):
                 side_effect=lambda *args, **kwargs: events.append("start"),
             ) as start_node,
         ):
-            validator.start_checkpoint_validator(
+            validator.start_onboarded_validator(
                 args,
                 "11" * 32,
                 allow_pre_joining_start=False,
@@ -667,6 +672,442 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual(args.command, "validator")
         self.assertEqual(args.validator_command, "stop")
         self.assertIsNone(args.inventory)
+
+
+class InstalledValidatorIdentityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.keys_dir = Path(temporary.name)
+        for name in ("node_key.pem", "consensus_key.pem"):
+            (self.keys_dir / name).write_text("fixture-only-not-a-real-key")
+        self.inventory = {"summit_keys_dir": self.keys_dir}
+
+    def test_read_only_summit_command_returns_normalized_public_key(self) -> None:
+        for prefix in ("", "0x"):
+            with self.subTest(prefix=prefix):
+                output = (
+                    f"Node Public Key (ed25519): {prefix}{'AB' * 32}\n"
+                    f"Consensus Public Key (BLS): {'CD' * 48}\n"
+                )
+                with mock.patch.object(
+                    validator.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout=output),
+                ) as run:
+                    public_key = validator.installed_node_public_key(self.inventory)
+                self.assertEqual(public_key, "ab" * 32)
+                run.assert_called_once_with(
+                    [
+                        str(validator.SUMMIT),
+                        "keys",
+                        "show",
+                        "--key-store-path",
+                        str(self.keys_dir),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=True,
+                    timeout=30.0,
+                )
+
+    def test_invalid_or_ambiguous_public_output_is_rejected(self) -> None:
+        valid = f"Node Public Key (ed25519): {'ab' * 32}\n"
+        for output in (
+            "",
+            "Consensus Public Key (BLS): " + "ab" * 48,
+            "Node Public Key (ed25519): " + "ab" * 31,
+            "Node Public Key (ed25519): " + "zz" * 32,
+            valid + valid,
+            valid.rstrip() + " extra",
+            "secret-fixture-not-a-public-key",
+        ):
+            with (
+                self.subTest(output=output),
+                mock.patch.object(
+                    validator.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess([], 0, stdout=output),
+                ),
+                self.assertRaisesRegex(
+                    checkpoint.CheckpointError, "exactly one valid"
+                ) as raised,
+            ):
+                validator.installed_node_public_key(self.inventory)
+            self.assertNotIn("secret-fixture", str(raised.exception))
+
+    def test_command_failures_do_not_expose_output(self) -> None:
+        secret = "secret-fixture-never-print"
+        for error in (
+            FileNotFoundError(secret),
+            subprocess.CalledProcessError(1, ["summit"], output=secret, stderr=secret),
+            subprocess.TimeoutExpired(["summit"], 30, output=secret, stderr=secret),
+            UnicodeError(secret),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                mock.patch.object(validator.subprocess, "run", side_effect=error),
+                self.assertRaisesRegex(
+                    checkpoint.CheckpointError, "Could not read"
+                ) as raised,
+            ):
+                validator.installed_node_public_key(self.inventory)
+            self.assertNotIn(secret, str(raised.exception))
+
+    def test_symlinked_key_directory_is_rejected(self) -> None:
+        link = self.keys_dir / "symlink"
+        link.symlink_to(self.keys_dir, target_is_directory=True)
+        with (
+            mock.patch.object(validator.subprocess, "run") as run,
+            self.assertRaises(checkpoint.CheckpointError),
+        ):
+            validator.installed_node_public_key({"summit_keys_dir": link})
+        run.assert_not_called()
+
+    def test_missing_empty_and_symlinked_key_files_are_rejected(self) -> None:
+        for name in ("node_key.pem", "consensus_key.pem"):
+            path = self.keys_dir / name
+            for kind in ("missing", "empty", "symlink"):
+                with self.subTest(name=name, kind=kind):
+                    path.unlink()
+                    if kind == "empty":
+                        path.touch()
+                    elif kind == "symlink":
+                        path.symlink_to(self.keys_dir / "missing")
+                    with (
+                        mock.patch.object(validator.subprocess, "run") as run,
+                        self.assertRaises(checkpoint.CheckpointError),
+                    ):
+                        validator.installed_node_public_key(self.inventory)
+                    run.assert_not_called()
+                    if path.is_symlink() or path.exists():
+                        path.unlink()
+                    path.write_text("fixture-only-not-a-real-key")
+
+
+class ValidatorOnboardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.output = io.StringIO()
+        self.stack.enter_context(contextlib.redirect_stdout(self.output))
+        self.inventory = self.patch(checkpoint, "load_inventory")
+        self.identity = self.patch(
+            validator, "installed_node_public_key", return_value="11" * 32
+        )
+        self.deposit = self.patch(
+            validator, "load_deposit_response", return_value=({}, "11" * 32)
+        )
+        self.validate_checkpoint = self.patch(
+            checkpoint, "validate_checkpoint_start_configuration"
+        )
+        self.install = self.patch(node_cli, "install_from_resolved_inputs")
+        self.prepare = self.patch(supervisor, "prepare_supervisor")
+        self.start = self.patch(supervisor, "start_node")
+        self.account = self.patch(
+            validator, "validator_account", return_value=self.status("Joining")
+        )
+        self.sleep = self.patch(validator.time, "sleep")
+        self.patch(rpc, "read_bearer_token", return_value=None)
+
+    def patch(self, target: object, name: str, **kwargs: object) -> mock.Mock:
+        return self.stack.enter_context(mock.patch.object(target, name, **kwargs))
+
+    @staticmethod
+    def status(name: str) -> dict[str, object]:
+        return {"status": name, "balance": 32_000_000_000, "joining_epoch": 14}
+
+    def args(self, *options: str) -> argparse.Namespace:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                "seismic-node.py",
+                "validator",
+                "onboard",
+                "--summit-rpc-url",
+                "https://network.example/summit",
+                "--pre-joining-policy",
+                "wait",
+                *options,
+            ],
+        ):
+            return node_cli.parse_args()
+
+    def assert_no_start(self) -> None:
+        self.prepare.assert_not_called()
+        self.start.assert_not_called()
+
+    def test_normal_waits_for_joining_then_rechecks_before_start(self) -> None:
+        self.account.side_effect = [
+            None,
+            self.status("Inactive"),
+            self.status("Joining"),
+            self.status("Joining"),
+        ]
+        events: list[str] = []
+
+        def check_waiting(_: float) -> None:
+            self.assert_no_start()
+            self.install.assert_not_called()
+            events.append("wait")
+
+        self.sleep.side_effect = check_waiting
+        self.prepare.side_effect = lambda: events.append("prepare")
+        self.start.side_effect = lambda *a, **kw: events.append("start")
+        node_cli.handle_validator(
+            self.args("--mode", "normal", "--inventory", "/etc/seismic/custom.toml")
+        )
+        self.assertEqual(events, ["wait", "wait", "prepare", "start"])
+        self.assertEqual(self.account.call_count, 4)
+        self.inventory.assert_has_calls(
+            [mock.call("validator", Path("/etc/seismic/custom.toml"))] * 2
+        )
+        self.start.assert_called_once_with(
+            "summit", "summit-checkpoint", startup_timeout=30.0
+        )
+        self.validate_checkpoint.assert_not_called()
+        self.install.assert_not_called()
+
+    def test_both_modes_use_installed_identity_without_deposit_file(self) -> None:
+        for mode in ("normal", "checkpoint"):
+            with self.subTest(mode=mode):
+                args = self.args("--mode", mode)
+                self.assertIsNone(args.deposit_signature)
+                self.account.reset_mock()
+                self.identity.reset_mock()
+                node_cli.handle_validator(args)
+                self.assertEqual(self.account.call_count, 2)
+                for call in self.account.call_args_list:
+                    self.assertEqual(call.args[1], "11" * 32)
+                self.assertEqual(self.identity.call_count, 2)
+                self.identity.assert_called_with(self.inventory.return_value)
+        self.deposit.assert_not_called()
+
+    def test_optional_deposit_response_is_checked_against_installed_identity(
+        self,
+    ) -> None:
+        path = Path("/root/deposit-signature.json")
+        node_cli.handle_validator(
+            self.args("--mode", "normal", "--deposit-signature", str(path))
+        )
+        self.deposit.assert_called_once_with(path)
+        self.start.assert_called_once()
+
+    def test_invalid_optional_deposit_response_is_not_ignored(self) -> None:
+        self.deposit.side_effect = checkpoint.CheckpointError(
+            "Invalid deposit response"
+        )
+        with self.assertRaisesRegex(
+            checkpoint.CheckpointError, "Invalid deposit response"
+        ):
+            node_cli.handle_validator(
+                self.args("--deposit-signature", "/root/deposit-signature.json")
+            )
+        self.account.assert_not_called()
+        self.install.assert_not_called()
+        self.assert_no_start()
+
+    def test_mismatched_deposit_identity_fails_before_polling_or_install(self) -> None:
+        self.deposit.return_value = ({}, "22" * 32)
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "does not match"):
+            node_cli.handle_validator(
+                self.args("--deposit-signature", "/root/deposit-signature.json")
+            )
+        self.account.assert_not_called()
+        self.install.assert_not_called()
+        self.assert_no_start()
+
+    def test_identity_read_failure_fails_before_polling_or_install(self) -> None:
+        self.identity.side_effect = checkpoint.CheckpointError("Cannot read identity")
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "Cannot read identity"):
+            node_cli.handle_validator(self.args("--mode", "normal"))
+        self.account.assert_not_called()
+        self.install.assert_not_called()
+        self.assert_no_start()
+
+    def test_key_change_while_waiting_refuses_start_in_both_modes(self) -> None:
+        for mode in ("normal", "checkpoint"):
+            with self.subTest(mode=mode):
+                self.identity.side_effect = ["11" * 32, "22" * 32]
+                with self.assertRaisesRegex(
+                    checkpoint.CheckpointError, "changed during"
+                ):
+                    node_cli.handle_validator(self.args("--mode", mode))
+                self.assert_no_start()
+
+    def test_checkpoint_remains_default_and_uses_existing_inputs(self) -> None:
+        args = self.args()
+        self.assertEqual(args.mode, "checkpoint")
+        node_cli.handle_validator(args)
+        self.validate_checkpoint.assert_has_calls([mock.call("validator")] * 2)
+        self.install.assert_not_called()
+        self.start.assert_called_once_with(
+            "summit-checkpoint", "summit", startup_timeout=30.0
+        )
+
+    def test_checkpoint_download_follows_authorization(self) -> None:
+        self.account.side_effect = [
+            None,
+            self.status("Joining"),
+            self.status("Joining"),
+        ]
+        self.sleep.side_effect = lambda _: self.install.assert_not_called()
+        self.install.side_effect = lambda *a, **kw: self.assert_no_start()
+        node_cli.handle_validator(
+            self.args("--snapshot-api-url", "https://snapshot.example")
+        )
+        self.install.assert_called_once()
+        self.start.assert_called_once_with(
+            "summit-checkpoint", "summit", startup_timeout=30.0
+        )
+
+    def test_normal_rejects_checkpoint_sources_and_install_modifiers(self) -> None:
+        for options in (
+            ["--archive", "/tmp/archive"],
+            ["--manifest", "/tmp/manifest"],
+            ["--snapshot-api-url", "https://snapshot.example"],
+            ["--snapshot-bearer-token-file", "/root/token"],
+            ["--checkpoint-epoch", "14"],
+            ["--checkpoint-policy", "exact"],
+            ["--weak-subjectivity-path", "/tmp/anchor"],
+            ["--weak-subjectivity-rpc-url", "https://anchor.example"],
+            ["--checkpoint-path", "/persistence/checkpoint"],
+            ["--backup-root", "/persistence/backup"],
+            ["--installed-weak-subjectivity-path", "/etc/seismic/custom-anchor"],
+            ["--allow-same-origin-weak-subjectivity"],
+            ["--yes"],
+        ):
+            with (
+                self.subTest(options=options),
+                self.assertRaisesRegex(checkpoint.CheckpointError, "--mode normal"),
+            ):
+                node_cli.handle_validator(self.args("--mode", "normal", *options))
+        self.account.assert_not_called()
+        self.inventory.assert_not_called()
+        self.install.assert_not_called()
+        self.assert_no_start()
+
+    def test_normal_active_starts_with_warning(self) -> None:
+        self.account.return_value = self.status("Active")
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            node_cli.handle_validator(self.args("--mode", "normal"))
+        self.assertIn("already Active", stderr.getvalue())
+        self.start.assert_called_once()
+
+    def test_normal_refuses_unsafe_status_on_either_check(self) -> None:
+        for status in ("SubmittedExitRequest", "FullPayoutPending", "Unknown"):
+            for initial_joining in (False, True):
+                with self.subTest(status=status, initial_joining=initial_joining):
+                    self.account.side_effect = (
+                        [self.status("Joining"), self.status(status)]
+                        if initial_joining
+                        else [self.status(status)]
+                    )
+                    with self.assertRaisesRegex(checkpoint.CheckpointError, "Refusing"):
+                        node_cli.handle_validator(self.args("--mode", "normal"))
+                    self.assert_no_start()
+        self.install.assert_not_called()
+
+    def test_normal_leave_stopped_on_either_check(self) -> None:
+        for initial_joining in (False, True):
+            with self.subTest(initial_joining=initial_joining):
+                self.account.side_effect = (
+                    [self.status("Joining"), None] if initial_joining else [None]
+                )
+                node_cli.handle_validator(
+                    self.args(
+                        "--mode", "normal", "--pre-joining-policy", "leave-stopped"
+                    )
+                )
+                self.assert_no_start()
+        self.assertIn("No checkpoint was installed", self.output.getvalue())
+        self.assertNotIn("checkpoint remains installed", self.output.getvalue().lower())
+        self.install.assert_not_called()
+
+    def test_normal_preserves_interactive_early_start_authorization(self) -> None:
+        args = self.args("--mode", "normal")
+        args.pre_joining_policy = None
+        self.account.return_value = None
+        with mock.patch.object(
+            validator, "choose_pre_joining_action", return_value="start"
+        ) as choose:
+            node_cli.handle_validator(args)
+        choose.assert_called_once_with("NotFound", None)
+        self.assertEqual(self.account.call_count, 2)
+        self.start.assert_called_once()
+
+    def test_normal_shared_wait_deadline_applies_to_second_check(self) -> None:
+        self.account.side_effect = [self.status("Joining"), None]
+        with (
+            mock.patch.object(validator.time, "monotonic", side_effect=[10.0, 12.0]),
+            self.assertRaisesRegex(checkpoint.CheckpointError, "Timed out"),
+        ):
+            node_cli.handle_validator(
+                self.args("--mode", "normal", "--validator-wait-timeout", "1")
+            )
+        self.assert_no_start()
+        self.install.assert_not_called()
+
+    def test_normal_waits_again_if_status_regresses_before_startup(self) -> None:
+        self.account.side_effect = [
+            self.status("Joining"),
+            self.status("Inactive"),
+            self.status("Joining"),
+        ]
+        self.sleep.side_effect = lambda _: self.assert_no_start()
+        node_cli.handle_validator(self.args("--mode", "normal"))
+        self.sleep.assert_called_once()
+        self.assertEqual(self.account.call_count, 3)
+        self.start.assert_called_once()
+
+    def test_normal_rpc_error_never_starts_services(self) -> None:
+        self.account.side_effect = checkpoint.CheckpointError("Invalid RPC response")
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "Invalid RPC response"):
+            node_cli.handle_validator(self.args("--mode", "normal"))
+        self.assert_no_start()
+        self.install.assert_not_called()
+
+    def test_normal_invalid_inventory_fails_before_polling(self) -> None:
+        self.inventory.side_effect = checkpoint.CheckpointError("Invalid inventory")
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "Invalid inventory"):
+            node_cli.handle_validator(self.args("--mode", "normal"))
+        self.account.assert_not_called()
+        self.assert_no_start()
+
+    def test_normal_requires_trusted_rpc(self) -> None:
+        args = self.args("--mode", "normal")
+        args.summit_rpc_url = None
+        with self.assertRaisesRegex(checkpoint.CheckpointError, "--summit-rpc-url"):
+            node_cli.handle_validator(args)
+        self.account.assert_not_called()
+        self.assert_no_start()
+
+    def test_checkpoint_startup_failure_still_reports_rollback(self) -> None:
+        backup = Path("/persistence/rollback/fixture")
+        self.install.return_value = backup
+        self.start.side_effect = supervisor.SupervisorError("Startup failed")
+        with (
+            mock.patch.object(node_cli, "print_startup_rollback") as rollback,
+            self.assertRaisesRegex(supervisor.SupervisorError, "Startup failed"),
+        ):
+            node_cli.handle_validator(
+                self.args("--snapshot-api-url", "https://snapshot.example")
+            )
+        rollback.assert_called_once_with(backup)
+
+    def test_normal_startup_failure_has_no_checkpoint_rollback(self) -> None:
+        self.start.side_effect = supervisor.SupervisorError("Startup failed")
+        with (
+            mock.patch.object(node_cli, "print_startup_rollback") as rollback,
+            self.assertRaisesRegex(supervisor.SupervisorError, "Startup failed"),
+        ):
+            node_cli.handle_validator(self.args("--mode", "normal"))
+        rollback.assert_not_called()
+        self.install.assert_not_called()
 
 
 class ValidatorStartTests(unittest.TestCase):

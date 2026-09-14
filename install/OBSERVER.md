@@ -14,6 +14,11 @@ after installation.
 For a validator node, use `install/install-validator.sh` and follow the separate
 **[Validator Installer and First-Start Guide](README.md)**.
 
+Optional authenticated push monitoring is shared with the validator installer:
+see [Prometheus Agent](PROMETHEUS_AGENT.md). Register observer push nodes with
+role `observer` on the monitoring server so they do not affect validator quorum
+alerts.
+
 ## Safety model
 
 The installer is designed to avoid replacing persistent observer state:
@@ -28,7 +33,8 @@ The installer is designed to avoid replacing persistent observer state:
 - Existing observer Custodian root keys are preserved for verification against
   the parent Custodian.
 - Service binaries are installed as root-owned, non-writable executables.
-- Supervisor programs use `autostart=false` and `autorestart=false`.
+- Node Supervisor programs use `autostart=false` and `autorestart=false`. The
+  optional independent Prometheus Agent uses `autorestart=true` once started.
 - The installer does not start, enable, reread, update, reload, or restart
   observer services.
 
@@ -154,10 +160,10 @@ Summit, seismic-reth, summit-checkpointer, and Centralized Custodian support:
 The current source-build defaults are:
 
 ```text
-Summit:       main
-seismic-reth: feat/purpose-key-rotation-reth
-Checkpointer: main
-Custodian:    d/centralized-custodian
+Summit:       internal-testnet-v0 (tag)
+seismic-reth: internal-testnet-v0 (tag)
+Checkpointer: main (branch)
+Custodian:    internal-testnet-v0 (tag, enclave repository)
 ```
 
 A prebuilt or already-present deferred summit-checkpointer must support
@@ -748,11 +754,27 @@ On a normal rerun, the installer:
 Changing a persistent path does not migrate existing data. It creates or uses a
 separate store.
 
-For source installations, new checkouts fetch all remote branches. On a rerun,
-the installer validates the origin and clean working tree, configures `origin`
-to fetch all branches, fetches and prunes remote references, checks out or
-creates the configured local branch, and merges `origin/<branch>` with
-`--ff-only` before rebuilding. Dirty, diverged, or force-pushed checkouts are
+For source installations, refs are configured in `install/lib/configuration.sh`.
+Use `refs/tags/<tag>` for a release tag; unqualified names (or
+`refs/heads/<branch>`) select branches. Summit, seismic-reth, and Custodian
+default to the explicit tag `refs/tags/internal-testnet-v0`; these tags must be
+published in their respective repositories before installation. Checkpointer
+remains on the `main` branch.
+
+New checkouts fetch all remote branches. Every tag installation fetches the
+exact tag without forcing or pruning tags, resolves it to a commit, and checks
+it out with detached HEAD. Both lightweight and annotated tags are supported.
+Reruns stay on that release even when branches advance. A missing/deleted tag or
+a remote tag that differs from the existing local tag is rejected, rather than
+silently switching releases. Publish a new tag for a new release; do not move an
+existing release tag. This is not signature verification or an independent
+commit-SHA pin.
+
+On a rerun, the installer validates the origin and clean working tree before
+switching refs. Existing branch checkouts can migrate to a tag without deleting
+their local branches. Branch-mode updates expand legacy single-branch fetch
+configuration, fetch/prune remote branches, and merge `origin/<branch>` with
+`--ff-only`. Dirty working trees and non-fast-forward branch updates are
 rejected rather than reset. The installer does not update its own
 `seismic-node-ops` checkout.
 

@@ -192,6 +192,7 @@ print_observer_configuration_summary() {
         fi
     fi
 
+    print_prometheus_agent_plan
     print_system_package_plan
 }
 
@@ -212,6 +213,7 @@ review_observer_configuration() {
         _out "  8) Edit Centralized Custodian"
         _out "  9) Accept configuration"
         _out " 10) Cancel"
+        _out " 11) Edit Prometheus Agent"
         prompt selection "Select an action" "9"
 
         case "$selection" in
@@ -238,7 +240,8 @@ review_observer_configuration() {
                 info "Configuration cancelled; no installation changes were made."
                 exit 0
                 ;;
-            *) error "Select a number from 1 through 10." ;;
+            11) configure_prometheus_agent ;;
+            *) error "Select a number from 1 through 11." ;;
         esac
     done
 }
@@ -254,5 +257,6 @@ configure_observer() {
     configure_node_software
     configure_checkpointer
     configure_custodian
+    configure_prometheus_agent
     review_observer_configuration
 }

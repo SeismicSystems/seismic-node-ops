@@ -14,6 +14,11 @@ after installation.
 For an observer node, use `install/install-observer.sh` and follow the separate
 **[Observer Installer and First-Start Guide](OBSERVER.md)**.
 
+Optional authenticated push monitoring is shared with the observer installer:
+see [Prometheus Agent](PROMETHEUS_AGENT.md). When configured, `seismic-node`
+starts the agent after successful node startup and leaves it running on node
+stop.
+
 ## Safety model
 
 The installer is designed to avoid replacing persistent validator state:
@@ -24,7 +29,8 @@ The installer is designed to avoid replacing persistent validator state:
 - An incomplete Summit key pair causes the installer to stop rather than
   regenerate either key.
 - Service binaries are installed as root-owned, non-writable executables.
-- Supervisor programs use `autostart=false` and `autorestart=false`.
+- Node Supervisor programs use `autostart=false` and `autorestart=false`. The
+  optional independent Prometheus Agent uses `autorestart=true` once started.
 - The installer does not start, enable, reread, update, reload, or restart
   validator services.
 
@@ -132,10 +138,10 @@ supported installation modes are:
 The current source-build defaults are:
 
 ```text
-Summit:       main
-seismic-reth: feat/purpose-key-rotation-reth
-Checkpointer: main
-Custodian:    d/centralized-custodian
+Summit:       internal-testnet-v0 (tag)
+seismic-reth: internal-testnet-v0 (tag)
+Checkpointer: main (branch)
+Custodian:    internal-testnet-v0 (tag, enclave repository)
 ```
 
 Deferred binaries must be installed at the configured target paths before the
@@ -363,12 +369,55 @@ coordinate startup:
 
 ```bash
 sudo ./tools/seismic-node.py validator onboard \
-  --deposit-signature /root/deposit-signature.json \
   --summit-rpc-url https://trusted-validator.example/summit \
   --snapshot-api-url https://snapshot.example/checkpointer \
   --snapshot-bearer-token-file /root/snapshot-token \
   --weak-subjectivity-rpc-url https://independent-validator.example/summit
 ```
+
+Onboarding reads `summit_keys_dir` from the installation inventory and uses
+`/usr/local/bin/summit keys show` to derive the installed node public key
+locally. The default inventory is `/etc/seismic/validator-installation.toml`;
+select a custom file with `--inventory /absolute/path/to/installation.toml`.
+Only the public key is sent to the trusted Summit RPC. No signing endpoint is
+started.
+
+The deposit-signature file is not required for onboarding. Existing commands may
+still pass `--deposit-signature /root/deposit-signature.json` as an optional
+identity cross-check; a mismatch with the installed node key is rejected before
+polling or checkpoint installation. The installed public key is checked again
+before startup so a key change during the wait cannot start a different
+identity. Generating and submitting the deposit remains a separate prerequisite.
+
+#### Onboard without a checkpoint
+
+To wait for `Joining` and then start from local state without installing or
+requiring a checkpoint:
+
+```bash
+sudo ./tools/seismic-node.py validator onboard \
+  --mode normal \
+  --summit-rpc-url https://trusted-validator.example/summit \
+  --pre-joining-policy wait
+```
+
+This can be run after submitting the deposit transaction. It waits while the
+account is `NotFound` or `Inactive`, starts when it reaches `Joining`, and also
+allows `Active` with a warning. By default it waits indefinitely; use
+`--validator-wait-timeout SECONDS` to bound the wait. Status is checked again
+immediately before startup, using the same wait deadline.
+
+Normal mode starts `summit` instead of `summit-checkpoint` and does not read
+checkpoint-start configuration or replace local state. It rejects checkpoint
+source and installation options, including `--yes`. It does not guarantee that a
+freshly reset node can synchronize with the running network from genesis. Unlike
+`validator start --mode normal`, it applies the onboarding lifecycle checks.
+
+Checkpoint mode remains the default (`--mode checkpoint`). In that mode,
+omitting source options uses an already-installed checkpoint; it does not switch
+to normal startup.
+
+#### Startup behavior
 
 When startup is authorized, `validator onboard` automatically runs:
 
@@ -378,7 +427,8 @@ sudo supervisorctl reread
 sudo supervisorctl update
 ```
 
-It then starts Custodian when configured, Reth, `summit-checkpoint`, and
+It then starts Custodian when configured, Reth, the selected Summit program
+(`summit` in normal mode or `summit-checkpoint` in checkpoint mode), and
 summit-checkpointer when configured. It does not start or reload OpenResty.
 
 For unattended installation, pass `--yes` to skip the interactive confirmation,
@@ -660,11 +710,27 @@ On a normal rerun, the installer preserves existing validator keys and state,
 then replaces its generated OpenResty and Supervisor configuration. It does not
 start or reload those services.
 
-For source installations, new checkouts fetch all remote branches. On a rerun,
-the installer validates the origin and clean working tree, configures `origin`
-to fetch all branches, fetches and prunes remote references, checks out or
-creates the configured local branch, and merges `origin/<branch>` with
-`--ff-only` before rebuilding. Dirty, diverged, or force-pushed checkouts are
+For source installations, refs are configured in `install/lib/configuration.sh`.
+Use `refs/tags/<tag>` for a release tag; unqualified names (or
+`refs/heads/<branch>`) select branches. Summit, seismic-reth, and Custodian
+default to the explicit tag `refs/tags/internal-testnet-v0`; these tags must be
+published in their respective repositories before installation. Checkpointer
+remains on the `main` branch.
+
+New checkouts fetch all remote branches. Every tag installation fetches the
+exact tag without forcing or pruning tags, resolves it to a commit, and checks
+it out with detached HEAD. Both lightweight and annotated tags are supported.
+Reruns stay on that release even when branches advance. A missing/deleted tag or
+a remote tag that differs from the existing local tag is rejected, rather than
+silently switching releases. Publish a new tag for a new release; do not move an
+existing release tag. This is not signature verification or an independent
+commit-SHA pin.
+
+On a rerun, the installer validates the origin and clean working tree before
+switching refs. Existing branch checkouts can migrate to a tag without deleting
+their local branches. Branch-mode updates expand legacy single-branch fetch
+configuration, fetch/prune remote branches, and merge `origin/<branch>` with
+`--ff-only`. Dirty working trees and non-fast-forward branch updates are
 rejected rather than reset. The installer does not update its own
 `seismic-node-ops` checkout.
 

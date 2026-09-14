@@ -202,6 +202,25 @@ def stop_program(name: str) -> bool:
     return True
 
 
+def stop_autorestarting_program(name: str, timeout: float = 60.0) -> None:
+    """EXITED is not quiescent for autorestart=true programs.
+
+    Supervisor may report NOT_RUNNING while between EXITED and a restart.
+    Retry until an administrative stop is confirmed; do not change node rules.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        current = status(name)
+        if not current.exists or current.state in {"STOPPED", "FATAL"}:
+            return
+        result = run_supervisorctl("stop", name)
+        if result.returncode not in (0, 7):
+            raise SupervisorError(f"Could not stop {name}; inspect Supervisor")
+        if time.monotonic() >= deadline:
+            raise SupervisorError(f"Timed out confirming {name} is stopped")
+        time.sleep(0.1)
+
+
 def optional_programs() -> tuple[bool, bool]:
     """Detect optional Custodian and checkpointer Supervisor programs."""
     return status("custodian").exists, status("checkpointer").exists

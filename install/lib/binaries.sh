@@ -159,25 +159,61 @@ prepare_source_checkout() {
     local description=$1
     local repository=$2
     local source_dir=$3
-    local branch=$4
+    local source_ref=$4
+    local ref_kind
+    local ref_name
+    local full_ref
     local origin
     local commit
     local status
+    local clone_options=(--no-tags)
 
-    [[ -n "$branch" ]] || die "$description source branch is not configured."
+    [[ -n "$source_ref" ]] || die "$description source ref is not configured."
+    case "$source_ref" in
+        refs/tags/*)
+            ref_kind=tag
+            ref_name=${source_ref#refs/tags/}
+            full_ref=$source_ref
+            clone_options+=(--no-checkout)
+            ;;
+        refs/heads/*)
+            ref_kind=branch
+            ref_name=${source_ref#refs/heads/}
+            full_ref=$source_ref
+            clone_options+=(--branch "$ref_name")
+            ;;
+        refs/*) die "$description source ref must name a branch or refs/tags/<tag>." ;;
+        *)
+            ref_kind=branch
+            ref_name=$source_ref
+            full_ref="refs/heads/$ref_name"
+            clone_options+=(--branch "$ref_name")
+            ;;
+    esac
+    run_as_service_user git check-ref-format "$full_ref" \
+        >>"$LOG_FILE" 2>&1 \
+        || die "$description source ref is invalid: $source_ref"
+    [[ "$ref_name" != -* && "$ref_name" != HEAD ]] \
+        || die "$description source ref is invalid: $source_ref"
+    [[ ! -L "$source_dir" ]] \
+        || die "$description source directory must not be a symbolic link: $source_dir"
     prepare_source_root
 
     if [[ ! -e "$source_dir" ]]; then
-        info "Cloning $description branch $branch into $source_dir..."
+        info "Cloning $description $ref_kind $ref_name into $source_dir..."
         if ! run_as_service_user git clone \
-            --branch "$branch" \
+            "${clone_options[@]}" \
             "$repository" \
             "$source_dir" >>"$LOG_FILE" 2>&1; then
             die "Could not clone $description; see $LOG_FILE"
         fi
+        # git clone --branch also accepts tag names; branch mode must not.
+        if [[ "$ref_kind" == branch ]]; then
+            run_as_service_user git -C "$source_dir" show-ref \
+                --verify --quiet "$full_ref" \
+                || die "$description branch $ref_name was not found; use refs/tags/<tag> for a tag."
+        fi
     else
-        [[ ! -L "$source_dir" ]] \
-            || die "$description source directory must not be a symbolic link: $source_dir"
         [[ -d "$source_dir/.git" ]] \
             || die "$description source path exists but is not a Git checkout: $source_dir"
 
@@ -196,35 +232,51 @@ prepare_source_checkout() {
             die "$description checkout has local changes; refusing to overwrite them: $source_dir"
         fi
 
-        info "Updating $description branch $branch with fast-forward only..."
-        run_as_service_user git -C "$source_dir" remote \
-            set-branches origin '*' \
-            >>"$LOG_FILE" 2>&1 \
-            || die "Could not configure $description to fetch all origin branches."
-        run_as_service_user git -C "$source_dir" fetch --prune origin \
-            >>"$LOG_FILE" 2>&1 \
-            || die "Could not fetch $description branches; see $LOG_FILE"
+        if [[ "$ref_kind" == branch ]]; then
+            info "Updating $description branch $ref_name with fast-forward only..."
+            run_as_service_user git -C "$source_dir" remote \
+                set-branches origin '*' \
+                >>"$LOG_FILE" 2>&1 \
+                || die "Could not configure $description to fetch all origin branches."
+            run_as_service_user git -C "$source_dir" fetch --no-tags --prune origin \
+                >>"$LOG_FILE" 2>&1 \
+                || die "Could not fetch $description branches; see $LOG_FILE"
 
-        if run_as_service_user git -C "$source_dir" show-ref \
-            --verify --quiet "refs/heads/$branch"; then
-            run_as_service_user git -C "$source_dir" checkout "$branch" \
-                >>"$LOG_FILE" 2>&1 \
-                || die "Could not check out $description branch $branch."
-        else
-            run_as_service_user git -C "$source_dir" checkout \
-                -b "$branch" --track "origin/$branch" \
-                >>"$LOG_FILE" 2>&1 \
-                || die "Could not create local $description branch $branch."
+            if run_as_service_user git -C "$source_dir" show-ref \
+                --verify --quiet "$full_ref"; then
+                run_as_service_user git -C "$source_dir" checkout "$ref_name" -- \
+                    >>"$LOG_FILE" 2>&1 \
+                    || die "Could not check out $description branch $ref_name."
+            else
+                run_as_service_user git -C "$source_dir" checkout \
+                    -b "$ref_name" --track "origin/$ref_name" \
+                    >>"$LOG_FILE" 2>&1 \
+                    || die "Could not create local $description branch $ref_name."
+            fi
+
+            run_as_service_user git -C "$source_dir" merge \
+                --ff-only "refs/remotes/origin/$ref_name" >>"$LOG_FILE" 2>&1 \
+                || die "$description branch cannot be updated with fast-forward only."
         fi
+    fi
 
-        run_as_service_user git -C "$source_dir" merge \
-            --ff-only "origin/$branch" >>"$LOG_FILE" 2>&1 \
-            || die "$description branch cannot be updated with fast-forward only."
+    if [[ "$ref_kind" == tag ]]; then
+        info "Checking $description release tag $ref_name..."
+        # Fetch the exact tag, even in a legacy --single-branch/--no-tags clone.
+        # Never force or prune tags: a moved/deleted release must fail closed.
+        run_as_service_user git -C "$source_dir" fetch --no-tags --no-prune origin \
+            "$full_ref:$full_ref" >>"$LOG_FILE" 2>&1 \
+            || die "Could not fetch $description tag $ref_name unchanged; it may be missing or moved. See $LOG_FILE"
+        commit=$(run_as_service_user git -C "$source_dir" rev-parse --verify "$full_ref^{commit}") \
+            || die "$description tag $ref_name does not resolve to a commit."
+        run_as_service_user git -C "$source_dir" checkout --detach "$commit" -- \
+            >>"$LOG_FILE" 2>&1 \
+            || die "Could not check out $description tag $ref_name."
     fi
 
     commit=$(run_as_service_user git -C "$source_dir" rev-parse HEAD) \
         || die "Could not determine the installed $description source revision."
-    success "$description source ready: $branch at $commit"
+    success "$description source ready: $source_ref at $commit"
 }
 
 install_binary_target() {
