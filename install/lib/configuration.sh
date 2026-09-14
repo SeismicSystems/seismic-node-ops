@@ -454,8 +454,9 @@ configure_node_software() {
 
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
-    SUMMIT_SOURCE_REF="m/update-commonware-2026.9.0"
-    RETH_SOURCE_REF="feat/purpose-key-rotation-reth"
+    # Explicit tag refs cannot be mistaken for same-named branches.
+    SUMMIT_SOURCE_REF="refs/tags/internal-testnet-v0"
+    RETH_SOURCE_REF="refs/tags/internal-testnet-v0"
     SUMMIT_INSTALL_METHOD=""
     RETH_INSTALL_METHOD=""
     SUMMIT_BINARY=""
@@ -791,9 +792,9 @@ configure_custodian() {
     COUNCIL_ADDRESS=""
     CUSTODIAN_CHAIN_ID=""
     PARENT_CUSTODIAN=""
-    CUSTODIAN_REQUIRED_SUMMIT_REF="m/update-commonware-2026.9.0"
-    CUSTODIAN_REQUIRED_RETH_REF="feat/purpose-key-rotation-reth"
-    CUSTODIAN_SOURCE_REF="d/centralized-custodian"
+    CUSTODIAN_REQUIRED_SUMMIT_REF="internal-testnet-v0"
+    CUSTODIAN_REQUIRED_RETH_REF="internal-testnet-v0"
+    CUSTODIAN_SOURCE_REF="refs/tags/internal-testnet-v0"
 
     if ! confirm "Enable Centralized Custodian?"; then
         _out "Centralized Custodian: $INSTALL_CUSTODIAN"
