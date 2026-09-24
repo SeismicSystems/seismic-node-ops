@@ -375,7 +375,15 @@ printf '%s\\n' "$SUMMIT_SOURCE_REF" "$RETH_SOURCE_REF" "$CUSTODIAN_SOURCE_REF" "
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            result.stdout.splitlines(), [f"refs/tags/{TAG}"] * 3 + ["main", TAG, TAG]
+            result.stdout.splitlines(),
+            [
+                "refs/tags/internal-testnet-v1",  # Summit source selection
+                "refs/tags/internal-testnet-v1",  # Reth source selection
+                f"refs/tags/{TAG}",  # Custodian
+                "main",  # Checkpointer
+                TAG,  # Custodian's Summit compatibility baseline is unchanged.
+                TAG,  # Custodian's Reth compatibility baseline is unchanged.
+            ],
         )
 
 

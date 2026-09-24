@@ -455,8 +455,8 @@ configure_node_software() {
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
     # Explicit tag refs cannot be mistaken for same-named branches.
-    SUMMIT_SOURCE_REF="refs/tags/internal-testnet-v0"
-    RETH_SOURCE_REF="refs/tags/internal-testnet-v0"
+    SUMMIT_SOURCE_REF="refs/tags/internal-testnet-v1"
+    RETH_SOURCE_REF="refs/tags/internal-testnet-v1"
     SUMMIT_INSTALL_METHOD=""
     RETH_INSTALL_METHOD=""
     SUMMIT_BINARY=""
