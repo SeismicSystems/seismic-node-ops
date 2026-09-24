@@ -68,8 +68,13 @@ EOF
 }
 
 main() {
+    parse_node_installer_arguments "$@"
     info "Seismic observer installer"
     preflight
+    if [[ "$MONITORING_ONLY" == true ]]; then
+        install_monitoring_only observer
+        return
+    fi
     confirm_installation_inventory_overwrite "$INSTALLATION_INVENTORY_PATH"
     configure_observer
     validate_prometheus_agent_plan

@@ -57,8 +57,13 @@ EOF
 }
 
 main() {
+    parse_node_installer_arguments "$@"
     info "Seismic validator installer"
     preflight
+    if [[ "$MONITORING_ONLY" == true ]]; then
+        install_monitoring_only validator
+        return
+    fi
     confirm_installation_inventory_overwrite "$INSTALLATION_INVENTORY_PATH"
     configure
     validate_prometheus_agent_plan

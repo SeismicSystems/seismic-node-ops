@@ -17,7 +17,17 @@ For a validator node, use `install/install-validator.sh` and follow the separate
 Optional authenticated push monitoring is shared with the validator installer:
 see [Prometheus Agent](PROMETHEUS_AGENT.md). Register observer push nodes with
 role `observer` on the monitoring server so they do not affect validator quorum
-alerts.
+alerts. To add or update only monitoring on an existing observer without
+reinstalling or stopping node services:
+
+```bash
+sudo ./install/install-observer.sh --monitoring-only
+```
+
+The existing installation inventory is required; use
+`--inventory /absolute/path.toml` for a non-default one. The mode preserves the
+observer assignment and updates only agent resources and the inventory's
+`[monitoring]` table.
 
 ## Safety model
 

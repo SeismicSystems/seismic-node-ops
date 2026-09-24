@@ -17,7 +17,17 @@ For an observer node, use `install/install-observer.sh` and follow the separate
 Optional authenticated push monitoring is shared with the observer installer:
 see [Prometheus Agent](PROMETHEUS_AGENT.md). When configured, `seismic-node`
 starts the agent after successful node startup and leaves it running on node
-stop.
+stop. To add or update only monitoring on an existing validator without
+reinstalling or stopping node services:
+
+```bash
+sudo ./install/install-validator.sh --monitoring-only
+```
+
+The existing installation inventory is required; use
+`--inventory /absolute/path.toml` for a non-default one. The mode prompts only
+for agent settings and updates only its resources and the inventory's
+`[monitoring]` table.
 
 ## Safety model
 
