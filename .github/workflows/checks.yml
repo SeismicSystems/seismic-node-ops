@@ -53,12 +53,14 @@ jobs:
           python3 -m pip install ruff==0.16.5
           ruff check --target-version py312 \
             install/lib/prometheus_agent.py \
+            install/lib/monitoring_only.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
             tests
           ruff format --check --target-version py312 \
             install/lib/prometheus_agent.py \
+            install/lib/monitoring_only.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
@@ -79,6 +81,7 @@ jobs:
         run: |
           python3 -m py_compile \
             install/lib/prometheus_agent.py \
+            install/lib/monitoring_only.py \
             tools/seismic-node.py \
             tools/seismic_node/*.py \
             tools/checkpoint-start/summit-checkpoint-runner.py

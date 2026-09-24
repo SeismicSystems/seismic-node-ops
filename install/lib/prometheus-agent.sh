@@ -5,6 +5,43 @@ PROMETHEUS_AGENT_HELPER="$SCRIPT_DIR/lib/prometheus_agent.py"
 PROMETHEUS_AGENT_ACTION=keep
 PROMETHEUS_AGENT_ENABLED=false
 
+parse_node_installer_arguments() {
+    local inventory=""
+    MONITORING_ONLY=false
+    while (($# > 0)); do
+        case "$1" in
+            --monitoring-only)
+                MONITORING_ONLY=true
+                shift
+                ;;
+            --inventory)
+                [[ $# -ge 2 && -n "$2" && "$2" != -* ]] \
+                    || die "--inventory requires a path."
+                inventory=$2
+                shift 2
+                ;;
+            -h | --help)
+                printf 'Usage: %s [--monitoring-only [--inventory /absolute/path.toml]]\n' "${0##*/}"
+                printf 'Without options: full interactive node installation.\n'
+                printf '%s\n' '--monitoring-only: configure only the agent for an existing node; no node services or packages are changed.'
+                exit 0
+                ;;
+            *) die "Unknown installer option: $1" ;;
+        esac
+    done
+    if [[ -n "$inventory" ]]; then
+        [[ "$MONITORING_ONLY" == true ]] \
+            || die "--inventory is supported only with --monitoring-only."
+        [[ "$inventory" == /* ]] || die "--inventory requires an absolute path."
+        INSTALLATION_INVENTORY_PATH=$inventory
+    fi
+}
+
+install_monitoring_only() {
+    /usr/bin/python3 "$SCRIPT_DIR/lib/monitoring_only.py" \
+        --role "$1" --inventory "$INSTALLATION_INVENTORY_PATH"
+}
+
 agent_saved_field() {
     python3 "$PROMETHEUS_AGENT_HELPER" show --field "$1"
 }

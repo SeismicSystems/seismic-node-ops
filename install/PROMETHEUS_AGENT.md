@@ -18,6 +18,69 @@ services. Silencing and maintenance exclusions are not part of this feature.
 - Choose a stable lowercase hostname-style node label. Use the same name in the
   monitoring server's expected push inventory.
 
+## Add monitoring to an existing node
+
+From the `seismic-node-ops` checkout on the node:
+
+```bash
+# Validator: install/configure only Prometheus Agent.
+sudo ./install/install-validator.sh --monitoring-only
+
+# Observer: same workflow with observer role and inventory.
+sudo ./install/install-observer.sh --monitoring-only
+
+# Optional non-default installation inventory:
+sudo ./install/install-validator.sh --monitoring-only \
+  --inventory /etc/seismic/custom-validator.toml
+```
+
+This mode requires an existing root-managed installation inventory and a working
+Supervisor control interface. It uses the same Ubuntu 24.04 / Python 3.12
+preflight as the full installer, but **does not install system packages or run
+any node installation steps**. Node services can remain running.
+
+It prompts only for agent settings, validates the recorded node role and paths,
+then shows a confirmation before applying changes. It preserves node binaries,
+keys, data, OpenResty, and node Supervisor configuration. Only the agent's
+resources and the inventory's `[monitoring]` table are updated; existing node
+fields, comments, and inventory permissions are preserved. Node key contents are
+not read. An old inventory without `[monitoring]` is supported. Missing,
+untrusted, wrong-role, or unsupported inventories are refused rather than
+reconstructed. Existing monitoring metadata must use the installer's standard
+`[monitoring]` table, not inline/dotted alternatives.
+
+An existing agent offers **keep** (default), **update**, and **disable**. Keep
+leaves the agent untouched and can reconcile its saved settings into an outdated
+inventory. Stop only the agent before selecting update or rotating its token:
+
+```bash
+sudo ./tools/seismic-node.py monitoring stop --role validator
+sudo ./install/install-validator.sh --monitoring-only
+```
+
+Use the observer command/role for observers. Disable explicitly stops only the
+agent, preserves credentials and WAL, and records it as disabled. Installation
+and updates do not start the agent; when the metrics receiver is ready:
+
+```bash
+sudo ./tools/seismic-node.py monitoring start --role validator
+sudo ./tools/seismic-node.py monitoring status --role validator
+```
+
+Successful later node startup also starts an enabled agent. Register the same
+identity centrally as `PUSH_NODE`; do not collect it with both pull and push.
+
+Monitoring-only runs hold a shared lock under `/run/seismic-prometheus-agent/`
+and refuse an inventory changed during the operation. Do not run full
+installers, node starts, or low-level agent helpers concurrently. Agent
+configuration and node inventory are separate files: if agent installation
+succeeds but the final atomic inventory update fails, inspect the agent and
+rerun this mode with **keep** to reconcile the inventory. A failed agent
+installation never publishes new monitoring metadata. No automatic rollback or
+node restart is performed.
+
+Without `--monitoring-only`, the installers still run the full node workflow.
+
 ## Installer configuration
 
 Run `install/install-validator.sh` or `install/install-observer.sh` normally and
