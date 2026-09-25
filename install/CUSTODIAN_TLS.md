@@ -2,11 +2,16 @@
 
 Both node installers use the enclave `centralized-custodian` branch. Choose a
 Custodian backend port when prompted (default **7876**). The bind address stays
-**`127.0.0.1`**, behind a same-host TLS terminator. Choose an unused port
-accessible to the service user and never expose it externally; the installer
-does not configure firewall rules.
+**`127.0.0.1`**. Choose an unused port accessible to the service user and never
+expose it directly; the installer does not configure firewall rules.
 
 ## Installer choices
+
+Validators require a public Custodian HTTPS endpoint. **Observers default to no
+public Custodian endpoint**: they only need outbound access to their parent.
+Observers can still publish node RPC endpoints through OpenResty independently.
+
+For validators, or observers that opt in to Custodian exposure, choose:
 
 | Mode                                  | HTTPS routes                                                  |
 | ------------------------------------- | ------------------------------------------------------------- |
@@ -21,7 +26,7 @@ Internet-reachable without a source-IP allowlist.
 
 ## Endpoint
 
-Give Seismic operations your domain. We will reach your Custodian at:
+If exposing Custodian, give Seismic operations your domain. We will reach it at:
 
 ```text
 https://YOUR_DOMAIN/custodian
@@ -72,7 +77,9 @@ policy.
 
 ## Deployment checklist
 
-The installer prepares configuration but does **not** start services.
+The installer prepares configuration but does **not** start services. The steps
+below apply to public Custodian endpoints; private observers need only their
+parent's HTTPS endpoint and their local Custodian service.
 
 1. Install Custodian, choose a TLS option, and give Seismic operations your
    domain.

@@ -98,8 +98,10 @@ When observer Custodian is enabled, it needs outbound HTTPS access to the
 parent's configured base URL. The parent's TLS terminator and trusted
 certificate must be ready before a fresh observer starts. Protocol bodies
 contain root keys; remote plaintext HTTP is not supported, even on private
-networks. The HTTPS frontend is Internet-reachable for now, with signatures
-authorizing operations. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md).
+networks. Observers do not need inbound Custodian access: public Custodian
+exposure is optional and disabled by default. A local TLS terminator or public
+domain is not required unless publishing an endpoint. See
+[Custodian HTTPS deployment](CUSTODIAN_TLS.md).
 
 The following application ports must remain loopback-only:
 
@@ -146,9 +148,10 @@ The installer asks you to configure:
 
 - The non-root service user.
 - Persistent Reth, Summit, and observer-key directories.
-- HTTPS termination: own same-host terminator, Custodian-only OpenResty, or
-  OpenResty for Custodian plus existing endpoints. Without Custodian, managed
-  OpenResty remains optional.
+- Optional public Custodian exposure (default: disabled). If enabled, choose
+  your own same-host TLS terminator, Custodian-only OpenResty, or OpenResty for
+  Custodian plus node endpoints. Node endpoints can also use OpenResty without
+  exposing Custodian.
 - The Summit genesis file and an optional Reth bootnode RPC.
 - The parent validator Summit node public key.
 - An observer derivation index from `0` through `255`.
@@ -373,9 +376,9 @@ path and defaults to:
 ```
 
 Both managed modes write `nginx.conf` and log rotation configuration. When
-Custodian is enabled they also install `lua/custodian.lua`. Only full mode
-installs the rate-limit and JWT Lua files below; Custodian-only mode skips JWT
-secret setup entirely.
+Custodian exposure is enabled they also install `lua/custodian.lua`. Only full
+mode installs the rate-limit and JWT Lua files below; Custodian-only mode skips
+JWT secret setup entirely.
 
 ```text
 /usr/local/openresty/nginx/conf/nginx.conf
@@ -485,8 +488,8 @@ listener are different settings:
   `https://parent.example.com/custodian`, used to fetch/verify the root key and
   synchronize epoch-key deliveries. Do not append `/v1/council` yourself.
 - The local HTTP backend uses an operator-selected port (default `7876`) on
-  `127.0.0.1`, behind the observer's same-host TLS terminator. This port and
-  proxy choice do not change the parent's endpoint.
+  `127.0.0.1`. Public exposure is disabled by default. If enabled, a same-host
+  TLS terminator is required. These choices do not change the parent's endpoint.
 
 The generated observer Custodian command includes:
 
@@ -675,8 +678,9 @@ sudo supervisorctl status
 Both managed modes terminate HTTPS and obtain certificates through
 `lua-resty-auto-ssl`. **Custodian-only** exposes only
 `POST /custodian/v1/council`, forwarding to `/v1/council` on the selected
-loopback Custodian port without proxy JWT authentication. **Full mode**
-additionally proxies the existing node routes below. See
+loopback Custodian port without proxy JWT authentication. **Full mode** proxies
+the node routes below; it includes Custodian only when exposure is enabled. With
+exposure disabled, `/custodian` paths return 404. See
 [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated limits, TLS
 requirements, and deployment verification.
 

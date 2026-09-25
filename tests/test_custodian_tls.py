@@ -51,6 +51,8 @@ def render(
     custodian: bool = True,
     lua_dir: str = "/fixture/lua",
     custodian_port: int = 7876,
+    expose_custodian: bool | None = None,
+    role: str = "validator",
 ) -> str:
     result = shell(
         """
@@ -58,12 +60,16 @@ OPENRESTY_MODE=$1
 INSTALL_CUSTODIAN=$2
 DOMAIN=node.example.com
 COUNCIL_LISTEN=127.0.0.1:$4
+EXPOSE_CUSTODIAN=$5
+NODE_ROLE=$6
 render_openresty_configuration "$3"
 """,
         mode,
         str(custodian).lower(),
         lua_dir,
         str(custodian_port),
+        str(custodian if expose_custodian is None else expose_custodian).lower(),
+        role,
     )
     if result.returncode:
         raise AssertionError(result.stderr)
@@ -221,7 +227,13 @@ printf 'RESULT=%s\\n' "$COUNCIL_LISTEN"
 
 class CustodianTLSPlanTests(unittest.TestCase):
     def configure(
-        self, enabled: bool, choice: str = "2", confirm: bool = True, port: int = 7876
+        self,
+        enabled: bool,
+        choice: str = "2",
+        confirm: bool = True,
+        port: int = 7876,
+        role: str = "validator",
+        expose: bool = False,
     ):
         return shell(
             """
@@ -229,10 +241,22 @@ INSTALL_CUSTODIAN=$1
 CHOICE=$2
 CONFIRM=$3
 COUNCIL_LISTEN=127.0.0.1:$4
-confirm() { [[ "$CONFIRM" == true ]]; }
+NODE_ROLE=$5
+EXPOSURE_CHOICE=$6
+EXPOSURE_PROMPTS=0
+PROMPTS=""
+confirm() {
+    if [[ "$1" == "Expose this observer's Custodian through HTTPS?" ]]; then
+        EXPOSURE_PROMPTS=$((EXPOSURE_PROMPTS + 1))
+        [[ "$EXPOSURE_CHOICE" == true ]]
+    else
+        [[ "$CONFIRM" == true ]]
+    fi
+}
 load_persisted_openresty_jwt_secret_path() { return 1; }
 configure_file_path() { printf -v "$1" '%s' /fixture/secret; }
 prompt() {
+    PROMPTS+="$1 "
     case "$1" in
         selection) printf -v "$1" '%s' "$CHOICE" ;;
         DOMAIN) printf -v "$1" '%s' node.example.com ;;
@@ -243,11 +267,14 @@ prompt() {
 configure_public_endpoint
 validate_https_endpoint_plan
 printf 'RESULT=%s,%s,%s,%s,%s\\n' "$OPENRESTY_MODE" "$CONFIGURE_PUBLIC_ENDPOINT" "$CUSTODIAN_BASE_URL" "$DOMAIN" "${OPENRESTY_JWT_SECRET_PATH_CONFIGURED:-false}"
+printf 'EXPOSURE=%s,%s\\nPROMPTS=%s\\n' "$EXPOSE_CUSTODIAN" "$EXPOSURE_PROMPTS" "$PROMPTS"
 """,
             str(enabled).lower(),
             choice,
             str(confirm).lower(),
             str(port),
+            role,
+            str(expose).lower(),
         )
 
     def test_three_modes_and_custodian_disabled(self):
@@ -279,6 +306,108 @@ printf 'RESULT=%s,%s,%s,%s,%s\\n' "$OPENRESTY_MODE" "$CONFIGURE_PUBLIC_ENDPOINT"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("RESULT=" + expected, result.stdout)
 
+    def test_observer_defaults_to_private_without_domain_or_tls_setup(self):
+        result = shell(
+            """
+NODE_ROLE=observer
+INSTALL_CUSTODIAN=true
+COUNCIL_LISTEN=127.0.0.1:17876
+PARENT_CUSTODIAN=https://parent.example.com:8443/custodian
+# A fresh choice must not retain previously selected public exposure.
+EXPOSE_CUSTODIAN=true
+CUSTODIAN_BASE_URL=https://stale.example.com/custodian
+configure_public_endpoint <<< $'\\n\\n'
+validate_https_endpoint_plan
+print_https_endpoint_plan
+print_https_activation_instructions
+printf 'RESULT=%s,%s,%s,%s,%s\\n' "$EXPOSE_CUSTODIAN" "$OPENRESTY_MODE" "$CONFIGURE_PUBLIC_ENDPOINT" "$DOMAIN" "$CUSTODIAN_BASE_URL"
+printf 'PARENT=%s\\nINSTALLED=%s\\n' "$PARENT_CUSTODIAN" "$INSTALL_CUSTODIAN"
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RESULT=false,disabled,false,,", result.stdout)
+        self.assertIn("INSTALLED=true", result.stdout)
+        self.assertIn("PARENT=https://parent.example.com:8443/custodian", result.stdout)
+        self.assertIn("Public Custodian endpoint: disabled", result.stdout)
+        self.assertNotIn("stale.example.com", result.stdout)
+        self.assertNotIn("Give Seismic operations your domain", result.stdout)
+        self.assertNotIn("Configure a same-host HTTPS proxy", result.stdout)
+        self.assertNotIn("systemctl enable openresty", result.stdout)
+
+    def test_observer_can_publish_node_routes_without_custodian(self):
+        result = self.configure(True, role="observer", port=17876)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RESULT=full,true,,node.example.com,true", result.stdout)
+        self.assertIn("EXPOSURE=false,1", result.stdout)
+        config = render(
+            "full", custodian_port=17876, expose_custodian=False, role="observer"
+        )
+        self.assertIn("location /rpc", config)
+        self.assertIn("location ^~ /custodian/ { access_log off; return 404; }", config)
+        self.assertNotIn("127.0.0.1:17876", config)
+        self.assertNotIn("custodian.lua", config)
+        self.assertNotIn("custodian_global_rate", config)
+        with tempfile.TemporaryDirectory() as tmp:
+            result = shell(
+                """
+NODE_ROLE=observer
+INSTALL_CUSTODIAN=true
+EXPOSE_CUSTODIAN=false
+OPENRESTY_MODE=full
+RATE_LIMIT_RPS=20
+RATE_LIMIT_BURST=40
+render_openresty_lua "$1"
+""",
+                tmp,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                {p.name for p in Path(tmp).iterdir()},
+                {"jwt_auth.lua", "rate_limit.lua"},
+            )
+
+    def test_observer_can_opt_in_to_each_tls_mode(self):
+        for choice, mode in (("1", "external"), ("2", "custodian"), ("3", "full")):
+            result = self.configure(True, choice, role="observer", expose=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"RESULT={mode},", result.stdout)
+            self.assertIn("EXPOSURE=true,1", result.stdout)
+            self.assertIn("https://", result.stdout)
+        for mode in ("custodian", "full"):
+            config = render(mode, role="observer", custodian_port=17876)
+            self.assertIn("proxy_pass http://127.0.0.1:17876/v1/council;", config)
+
+    def test_validator_cannot_disable_custodian_exposure(self):
+        result = self.configure(True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("EXPOSURE=true,0", result.stdout)
+        result = shell(
+            """
+NODE_ROLE=validator
+INSTALL_CUSTODIAN=true
+EXPOSE_CUSTODIAN=false
+COUNCIL_LISTEN=127.0.0.1:17876
+OPENRESTY_MODE=disabled
+CONFIGURE_PUBLIC_ENDPOINT=false
+CUSTODIAN_BASE_URL=""
+validate_https_endpoint_plan
+"""
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_custodian_only_mode_requires_exposure(self):
+        result = shell(
+            """
+NODE_ROLE=observer
+INSTALL_CUSTODIAN=true
+EXPOSE_CUSTODIAN=false
+COUNCIL_LISTEN=127.0.0.1:17876
+OPENRESTY_MODE=custodian
+render_openresty_configuration
+"""
+        )
+        self.assertNotEqual(result.returncode, 0)
+
     def test_custom_port_in_all_tls_modes(self):
         for choice in ("1", "2", "3"):
             result = self.configure(True, choice, port=17876)
@@ -297,6 +426,7 @@ printf 'RESULT=%s,%s,%s,%s,%s\\n' "$OPENRESTY_MODE" "$CONFIGURE_PUBLIC_ENDPOINT"
             result = shell(
                 """
 INSTALL_CUSTODIAN=true
+EXPOSE_CUSTODIAN=true
 CONFIGURE_PUBLIC_ENDPOINT=$1
 COUNCIL_LISTEN=127.0.0.1:17876
 CUSTODIAN_BASE_URL=https://node.example.com/custodian
@@ -335,7 +465,7 @@ print_https_activation_instructions
             self.assertNotIn(forbidden, config)
         with tempfile.TemporaryDirectory() as tmp:
             result = shell(
-                'INSTALL_CUSTODIAN=true; OPENRESTY_MODE=custodian; render_openresty_lua "$1"',
+                'INSTALL_CUSTODIAN=true; EXPOSE_CUSTODIAN=true; OPENRESTY_MODE=custodian; render_openresty_lua "$1"',
                 tmp,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -370,7 +500,7 @@ print_https_activation_instructions
             ("full", "true", "127.0.0.1:17876; return 200"),
         ):
             result = shell(
-                "OPENRESTY_MODE=$1; INSTALL_CUSTODIAN=$2; COUNCIL_LISTEN=$3; DOMAIN=node.example.com; render_openresty_configuration",
+                "OPENRESTY_MODE=$1; INSTALL_CUSTODIAN=$2; EXPOSE_CUSTODIAN=$2; COUNCIL_LISTEN=$3; DOMAIN=node.example.com; render_openresty_configuration",
                 mode,
                 enabled,
                 backend,
@@ -410,6 +540,7 @@ printf '%s\\n' "${SYSTEM_PACKAGES[@]}"
                     """
 CONFIGURE_PUBLIC_ENDPOINT=true
 INSTALL_CUSTODIAN=true
+EXPOSE_CUSTODIAN=true
 OPENRESTY_MODE=$1
 DOMAIN=node.example.com
 COUNCIL_LISTEN=127.0.0.1:7876
