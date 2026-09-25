@@ -486,6 +486,7 @@ configure_public_endpoint() {
 
     CONFIGURE_PUBLIC_ENDPOINT=false
     OPENRESTY_MODE=disabled
+    EXPOSE_CUSTODIAN=false
     CUSTODIAN_BASE_URL=""
     DOMAIN=""
     RATE_LIMIT_RPS=""
@@ -493,7 +494,18 @@ configure_public_endpoint() {
     OPENRESTY_JWT_SECRET_PATH=${OPENRESTY_JWT_SECRET_PATH:-/etc/seismic/openresty-jwt-secret}
 
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        _out "Custodian requires a same-host TLS terminator; its backend stays on 127.0.0.1:7876."
+        if [[ "${NODE_ROLE:-validator}" == observer ]]; then
+            _out "Observers fetch keys from their parent's HTTPS endpoint; no public Custodian endpoint is normally needed."
+            if confirm "Expose this observer's Custodian through HTTPS?"; then
+                EXPOSE_CUSTODIAN=true
+            fi
+        else
+            EXPOSE_CUSTODIAN=true
+        fi
+    fi
+
+    if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
+        _out "Custodian requires a same-host TLS terminator; its backend stays on $COUNCIL_LISTEN."
         _out "  1) Use your own TLS terminator"
         _out "  2) OpenResty for Custodian only"
         _out "  3) OpenResty for Custodian and existing node endpoints"
@@ -562,7 +574,7 @@ configure_public_endpoint() {
         break
     done
 
-    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+    if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
         CUSTODIAN_BASE_URL="https://$DOMAIN/custodian"
     fi
     if [[ "$OPENRESTY_MODE" == custodian ]]; then
@@ -612,9 +624,13 @@ print_https_endpoint_plan() {
         fi
     fi
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        _out "  Custodian base URL: $CUSTODIAN_BASE_URL"
-        _out "  Private HTTP backend: $COUNCIL_LISTEN; never open port 7876 externally."
-        _out "  Internet-reachable HTTPS; protocol signatures authorize operations (no proxy JWT)."
+        _out "  Private HTTP backend: $COUNCIL_LISTEN; never expose this backend externally."
+        if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
+            _out "  Custodian base URL: $CUSTODIAN_BASE_URL"
+            _out "  Internet-reachable HTTPS; protocol signatures authorize operations (no proxy JWT)."
+        else
+            _out "  Public Custodian endpoint: disabled; only outbound access to the parent is required."
+        fi
     fi
 }
 
@@ -622,13 +638,26 @@ validate_custodian_url() {
     python3 "$SCRIPT_DIR/lib/custodian_url.py" "$@"
 }
 
-validate_https_endpoint_plan() {
-    case "$OPENRESTY_MODE:$INSTALL_CUSTODIAN:$CONFIGURE_PUBLIC_ENDPOINT" in
-        external:true:false | custodian:true:true | full:true:true)
-            [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] \
-                && validate_custodian_url "$CUSTODIAN_BASE_URL" || return 1
+validate_custodian_exposure() {
+    case "$INSTALL_CUSTODIAN:$EXPOSE_CUSTODIAN:${NODE_ROLE:-validator}" in
+        true:true:validator | true:true:observer | true:false:observer)
+            validate_custodian_listen "$COUNCIL_LISTEN"
             ;;
-        disabled:false:false | full:false:true) ;;
+        false:false:validator | false:false:observer) return 0 ;;
+        *)
+            error "Inconsistent Custodian exposure; only observers may disable an installed Custodian's HTTPS endpoint."
+            return 1
+            ;;
+    esac
+}
+
+validate_https_endpoint_plan() {
+    validate_custodian_exposure || return 1
+    case "$OPENRESTY_MODE:$EXPOSE_CUSTODIAN:$CONFIGURE_PUBLIC_ENDPOINT" in
+        external:true:false | custodian:true:true | full:true:true)
+            validate_custodian_url "$CUSTODIAN_BASE_URL" || return 1
+            ;;
+        disabled:false:false | full:false:true) [[ -z "$CUSTODIAN_BASE_URL" ]] || return 1 ;;
         *)
             error "Inconsistent HTTPS mode; configure endpoints again."
             return 1
@@ -866,6 +895,34 @@ validate_host_port() {
     ((port >= 1 && port <= 65535))
 }
 
+validate_custodian_port() {
+    local port=$1
+    # Canonical decimal only: avoid octal interpretation and shell expressions.
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535))
+}
+
+validate_custodian_listen() {
+    [[ "$1" == 127.0.0.1:* ]] && validate_custodian_port "${1#127.0.0.1:}"
+}
+
+configure_custodian_port() {
+    local port
+
+    _out "Choose an unused backend port accessible to the service user. The bind address remains 127.0.0.1."
+    while true; do
+        prompt port "Custodian backend port" "7876"
+        if validate_custodian_port "$port"; then
+            break
+        fi
+        error "Custodian backend port must be a decimal integer from 1 to 65535, without leading zeros."
+    done
+    if ((port < 1024)); then
+        warn "Ports below 1024 may require privileges; the installer does not grant additional binding privileges."
+    fi
+    COUNCIL_LISTEN="127.0.0.1:$port"
+    _out "Custodian HTTP backend: $COUNCIL_LISTEN (loopback-only)."
+}
+
 configure_custodian() {
     section "Custodian configuration"
 
@@ -943,8 +1000,7 @@ configure_custodian() {
         warn "The shared default makes epoch-0 purpose keys public."
     fi
 
-    COUNCIL_LISTEN="127.0.0.1:7876"
-    _out "Custodian HTTP backend: $COUNCIL_LISTEN (same-host TLS termination required)."
+    configure_custodian_port
 
     while true; do
         prompt COUNCIL_ADDRESS \

@@ -218,8 +218,8 @@ render_custodian_supervisor_config() {
     local template="$TEMPLATES_DIR/supervisor/custodian.conf"
     local conf
 
-    [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] \
-        || die "Custodian HTTP backend must remain on 127.0.0.1:7876."
+    validate_custodian_listen "$COUNCIL_LISTEN" \
+        || die "Custodian HTTP backend must use 127.0.0.1 with a valid port."
     conf=$(<"$template")
     conf=${conf//CUSTODIAN_BINARY_PLACEHOLDER/$CUSTODIAN_TARGET_BIN}
     conf=${conf//CUSTODIAN_SOCKET_PLACEHOLDER/$CUSTODIAN_SOCKET}

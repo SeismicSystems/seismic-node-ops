@@ -349,7 +349,7 @@ validate_openresty_templates() {
     if [[ "$OPENRESTY_MODE" == full ]]; then
         required+=("$template_root/node-locations.conf" "$template_root/lua/jwt_auth.lua" "$template_root/lua/rate_limit.lua")
     fi
-    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+    if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
         required+=("$template_root/custodian-http.conf" "$template_root/custodian-location.conf" "$template_root/lua/custodian.lua")
     fi
     for path in "${required[@]}"; do
@@ -360,11 +360,15 @@ validate_openresty_templates() {
 print_https_activation_instructions() {
     _out ""
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        _out "Custodian HTTPS endpoint: $CUSTODIAN_BASE_URL"
-        _out "Give Seismic operations your domain so they can reach your Custodian."
-        warn "Never expose HTTP port 7876. Remove old firewall/security-group allowances before migrating."
+        if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
+            _out "Custodian HTTPS endpoint: $CUSTODIAN_BASE_URL"
+            _out "Give Seismic operations your domain so they can reach your Custodian."
+        else
+            _out "Observer Custodian has no public endpoint; only outbound access to its parent is required."
+        fi
+        warn "Keep the Custodian HTTP backend $COUNCIL_LISTEN private; never open its port externally."
         _out "Verify the backend is loopback-only after explicitly restarting Custodian:"
-        _out "  sudo ss -ltnp '( sport = :7876 )'"
+        _out "  sudo ss -ltnp '( sport = :${COUNCIL_LISTEN##*:} )'"
     fi
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
         _out "Verify DNS and inbound TCP 80/443, then activate OpenResty explicitly:"
@@ -378,8 +382,8 @@ print_https_activation_instructions() {
         warn "Old routes remain until reload/stop; existing requests can continue draining after reload."
     else
         warn "Existing OpenResty configuration/services were not modified. Previously public routes may still be active."
-        if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-            _out "Configure a same-host HTTPS proxy to 127.0.0.1:7876 using $SCRIPT_DIR/CUSTODIAN_TLS.md."
+        if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
+            _out "Configure a same-host HTTPS proxy to $COUNCIL_LISTEN using $SCRIPT_DIR/CUSTODIAN_TLS.md."
             warn "Arrange an explicit handover from any old managed proxy; do not stop your own terminator inadvertently."
         fi
     fi
@@ -392,6 +396,7 @@ render_openresty_configuration() {
     local conf node_locations node_policy="" custodian_location="" custodian_policy=""
     local http_fallback='return 404;'
 
+    validate_custodian_exposure || return 1
     case "$OPENRESTY_MODE" in
         full)
             node_locations=$(<"$template_root/node-locations.conf")
@@ -399,17 +404,17 @@ render_openresty_configuration() {
             http_fallback='return 301 https://$host$request_uri;'
             ;;
         custodian)
-            [[ "$INSTALL_CUSTODIAN" == true ]] || return 1
+            [[ "$EXPOSE_CUSTODIAN" == true ]] || return 1
             node_locations='location / { return 404; }'
             ;;
         *) return 1 ;;
     esac
-    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] || return 1
+    if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
         custodian_policy=$(<"$template_root/custodian-http.conf")
         custodian_location=$(<"$template_root/custodian-location.conf")
+        custodian_location=${custodian_location//CUSTODIAN_LISTEN_PLACEHOLDER/$COUNCIL_LISTEN}
     else
-        # Reserve this prefix even when Custodian is disabled.
+        # Reserve this prefix even when Custodian is installed but not exposed.
         custodian_location='location = /custodian { access_log off; return 404; }
         location ^~ /custodian/ { access_log off; return 404; }'
     fi
@@ -428,7 +433,7 @@ render_openresty_configuration() {
 render_openresty_lua() {
     local staging=$1
     local template_root="$TEMPLATES_DIR/openresty/lua"
-    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+    if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
         cp -- "$template_root/custodian.lua" "$staging/custodian.lua" || return 1
     fi
     if [[ "$OPENRESTY_MODE" == full ]]; then

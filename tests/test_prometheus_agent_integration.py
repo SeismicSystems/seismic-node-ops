@@ -43,6 +43,8 @@ def free_port():
 class AgentIntegrationTests(unittest.TestCase):
     def test_forward_labels_authentication_and_failed_scrapes(self):
         received_auth = []
+        ingress_results = []
+        query_results = {}
         exporter_ok = threading.Event()
         exporter_ok.set()
         receiver_port, agent_port = free_port(), free_port()
@@ -91,6 +93,10 @@ class AgentIntegrationTests(unittest.TestCase):
                         code = response.status
                 except urllib.error.HTTPError as error:
                     code = error.code
+                except urllib.error.URLError as error:
+                    ingress_results.append(f"receiver connection failed: {error}")
+                    code = 503
+                ingress_results.append(code)
                 self.send_response(code)
                 self.end_headers()
 
@@ -103,18 +109,37 @@ class AgentIntegrationTests(unittest.TestCase):
                 f"http://127.0.0.1:{receiver_port}/api/v1/query?{query_string}",
                 timeout=2,
             ) as response:
-                return json.load(response)["data"]["result"]
+                result = json.load(response)["data"]["result"]
+                query_results[expression] = result
+                return result
 
-        def wait_for(predicate):
+        def fail_with_diagnostics(description, last_error):
+            details = [
+                f"Isolated agent/receiver did not reach: {description}",
+                f"Last polling error: {last_error!r}",
+                f"Last query results: {query_results!r}",
+                f"Ingress requests: {len(received_auth)}; results: {ingress_results!r}",
+            ]
+            for number, process in enumerate(processes):
+                name = ("receiver", "agent")[number]
+                details.append(f"{name}: pid={process.pid}, exit={process.poll()}")
+                log = root / f"process-{number}.log"
+                details.append(log.read_text(errors="replace")[-12000:])
+            self.fail("\n".join(details))
+
+        def wait_for(predicate, description):
             deadline = time.monotonic() + 45
+            last_error = None
             while time.monotonic() < deadline:
+                if any(process.poll() is not None for process in processes):
+                    fail_with_diagnostics(description, "fixture process exited")
                 try:
                     if predicate():
                         return
-                except (OSError, KeyError, urllib.error.URLError):
-                    pass
+                except (OSError, KeyError, urllib.error.URLError) as error:
+                    last_error = error
                 time.sleep(0.25)
-            self.fail("Isolated agent/receiver did not reach the expected state")
+            fail_with_diagnostics(description, last_error)
 
         with tempfile.TemporaryDirectory(prefix="seismic-agent-integration-") as tmp:
             root = Path(tmp)
@@ -208,7 +233,10 @@ class AgentIntegrationTests(unittest.TestCase):
                         )
                     )
                 expression = 'up{node="validator-0.example.com"}'
-                wait_for(lambda: len(query(expression)) == 3)
+                wait_for(
+                    lambda: len(query(expression)) == 3,
+                    "three remote-written up series",
+                )
                 result = query(expression)
                 self.assertEqual(
                     {sample["metric"]["job"] for sample in result},
@@ -229,7 +257,10 @@ class AgentIntegrationTests(unittest.TestCase):
                 self.assertTrue(received_auth)
                 self.assertEqual(set(received_auth), {"Bearer " + "a" * 64})
                 exporter_ok.clear()
-                wait_for(lambda: len(query(expression + " == 0")) == 2)
+                wait_for(
+                    lambda: len(query(expression + " == 0")) == 2,
+                    "two failed exporter scrapes",
+                )
                 self.assertEqual(
                     len(
                         query('up{job="prometheus-agent/validator-0.example.com"} == 1')

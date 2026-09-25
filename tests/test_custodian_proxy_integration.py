@@ -33,8 +33,9 @@ def free_port():
 
 
 class ProxyFixture:
-    def __init__(self, mode="custodian", backend_port=None):
+    def __init__(self, mode="custodian", backend_port=None, expose_custodian=True):
         self.backend_port = backend_port
+        self.expose_custodian = expose_custodian
         self.tmp = tempfile.TemporaryDirectory(prefix="custodian-proxy-")
         self.root = Path(self.tmp.name)
         self.records = []
@@ -118,14 +119,23 @@ class ProxyFixture:
             "{set=noop, init=noop, init_worker=noop, ssl_certificate=noop, "
             "challenge_server=noop, hook_server=noop} end}\n"
         )
-        shutil.copyfile(
-            ROOT / "install/templates/openresty/lua/custodian.lua",
-            lua / "custodian.lua",
-        )
+        if self.expose_custodian:
+            shutil.copyfile(
+                ROOT / "install/templates/openresty/lua/custodian.lua",
+                lua / "custodian.lua",
+            )
         # Existing non-Custodian auth is outside this fixture's scope.
         (lua / "rate_limit.lua").write_text("-- unrelated node-route limiter stub\n")
         (lua / "jwt_auth.lua").write_text("return ngx.exit(401)\n")
-        config = render(self.mode, lua_dir=str(lua))
+        # Exercise the production port substitution, rather than rewriting a
+        # hardcoded Custodian upstream after rendering.
+        config = render(
+            self.mode,
+            lua_dir=str(lua),
+            custodian_port=self.server.server_port,
+            expose_custodian=self.expose_custodian,
+            role="validator" if self.expose_custodian else "observer",
+        )
         config = config.replace("user nobody nogroup;", "").replace(
             "worker_processes auto;", "worker_processes 1;"
         )
@@ -139,7 +149,7 @@ class ProxyFixture:
             "/etc/ssl/resty-auto-ssl-fallback.key", str(self.root / "key.pem")
         )
         for host in ("localhost", "127.0.0.1"):
-            for port in (7876, 3000, 8545, 8546, 3030, 8552, 42069, 9090, 9001):
+            for port in (3000, 8545, 8546, 3030, 8552, 42069, 9090, 9001):
                 config = config.replace(
                     f"http://{host}:{port}",
                     f"http://127.0.0.1:{self.server.server_port}",
@@ -293,6 +303,16 @@ class CustodianProxyTests(unittest.TestCase):
                     self.assertNotIn(
                         b"secret-body-never-log-or-spill", log.read_bytes()
                     )
+
+    def test_private_observer_keeps_node_routes_but_rejects_custodian(self):
+        with ProxyFixture("full", expose_custodian=False) as proxy:
+            for tls in (True, False):
+                for path in ("/custodian", "/custodian/", "/custodian/v1/council"):
+                    self.assertEqual(proxy.request(path=path, tls=tls)[0], 404)
+            self.assertEqual(proxy.records, [])
+            self.assertEqual(proxy.request(path="/rpc")[0], 200)
+            self.assertEqual(len(proxy.records), 1)
+            self.assertEqual(proxy.records[0][0], "/")
 
     def test_rejections_never_reach_backend(self):
         cases = (
