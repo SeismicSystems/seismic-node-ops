@@ -481,21 +481,67 @@ configure_validator_software() {
 }
 
 configure_public_endpoint() {
-    section "Public endpoint configuration"
+    local selection
+    section "HTTPS endpoint configuration"
 
     CONFIGURE_PUBLIC_ENDPOINT=false
+    OPENRESTY_MODE=disabled
+    CUSTODIAN_BASE_URL=""
     DOMAIN=""
     RATE_LIMIT_RPS=""
     RATE_LIMIT_BURST=""
     OPENRESTY_JWT_SECRET_PATH=${OPENRESTY_JWT_SECRET_PATH:-/etc/seismic/openresty-jwt-secret}
 
-    if ! confirm "Configure a public HTTPS endpoint with OpenResty?"; then
-        _out "Public HTTPS endpoint: disabled"
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        _out "Custodian requires a same-host TLS terminator; its backend stays on 127.0.0.1:7876."
+        _out "  1) Use your own TLS terminator"
+        _out "  2) OpenResty for Custodian only"
+        _out "  3) OpenResty for Custodian and existing node endpoints"
+        while true; do
+            prompt selection "TLS termination mode" "2"
+            case "$selection" in
+                1)
+                    OPENRESTY_MODE=external
+                    break
+                    ;;
+                2)
+                    OPENRESTY_MODE=custodian
+                    break
+                    ;;
+                3)
+                    OPENRESTY_MODE=full
+                    break
+                    ;;
+                *) error "Select 1, 2, or 3." ;;
+            esac
+        done
+        if [[ "$OPENRESTY_MODE" == external ]]; then
+            while true; do
+                prompt CUSTODIAN_BASE_URL "Custodian HTTPS base URL (for example https://node.example.com/custodian)" ""
+                if validate_custodian_url "$CUSTODIAN_BASE_URL"; then
+                    break
+                fi
+                error "Enter an HTTPS base URL without credentials, query, fragment, or unsafe path characters."
+            done
+            warn "Configure your same-host proxy using $SCRIPT_DIR/CUSTODIAN_TLS.md before remote access."
+            warn "Existing OpenResty configuration and services will be left untouched; arrange an explicit handover."
+            return
+        fi
+    elif confirm "Configure the existing node HTTPS endpoints with OpenResty?"; then
+        OPENRESTY_MODE=full
+    else
+        warn "OpenResty is unmanaged; any existing configuration and running routes remain unchanged."
         return
     fi
 
     CONFIGURE_PUBLIC_ENDPOINT=true
-    if [[ "${OPENRESTY_JWT_SECRET_PATH_CONFIGURED:-false}" != true ]] \
+    if [[ -e /usr/local/openresty/nginx/conf/nginx.conf ]]; then
+        warn "This replaces the entire /usr/local/openresty/nginx/conf/nginx.conf, not just one virtual host."
+        confirm "Allow the installer to manage this OpenResty configuration?" \
+            || die "OpenResty configuration replacement declined; choose your own TLS terminator instead."
+    fi
+    warn "Configuration is not activated automatically. Previously active routes remain until an explicit reload or stop."
+    if [[ "$OPENRESTY_MODE" == full && "${OPENRESTY_JWT_SECRET_PATH_CONFIGURED:-false}" != true ]] \
         && load_persisted_openresty_jwt_secret_path; then
         OPENRESTY_JWT_SECRET_PATH=$PERSISTED_OPENRESTY_JWT_SECRET_PATH
         info "Using the previously installed OpenResty JWT secret path as the default."
@@ -515,6 +561,14 @@ configure_public_endpoint() {
         fi
         break
     done
+
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        CUSTODIAN_BASE_URL="https://$DOMAIN/custodian"
+    fi
+    if [[ "$OPENRESTY_MODE" == custodian ]]; then
+        print_https_endpoint_plan
+        return
+    fi
 
     while true; do
         prompt RATE_LIMIT_RPS "Requests per second" "20"
@@ -543,10 +597,43 @@ configure_public_endpoint() {
         "$OPENRESTY_JWT_SECRET_PATH"
     OPENRESTY_JWT_SECRET_PATH_CONFIGURED=true
 
-    _out "Public HTTPS endpoint enabled: $CONFIGURE_PUBLIC_ENDPOINT"
-    success "Public HTTPS endpoint configured: https://$DOMAIN"
-    _out "Rate limit: $RATE_LIMIT_RPS requests/sec, burst $RATE_LIMIT_BURST"
-    _out "JWT secret: $OPENRESTY_JWT_SECRET_PATH (contents hidden)"
+    print_https_endpoint_plan
+}
+
+print_https_endpoint_plan() {
+    _out "HTTPS mode: $OPENRESTY_MODE"
+    if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
+        _out "  OpenResty: https://$DOMAIN (automatic certificates; inbound TCP 80/443 required)"
+        if [[ "$OPENRESTY_MODE" == full ]]; then
+            _out "  Node rate limit: $RATE_LIMIT_RPS requests/sec, burst $RATE_LIMIT_BURST"
+            _out "  JWT secret: $OPENRESTY_JWT_SECRET_PATH (contents hidden)"
+        else
+            _out "  Only Custodian is proxied; all other application routes return 404."
+        fi
+    fi
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        _out "  Custodian base URL: $CUSTODIAN_BASE_URL"
+        _out "  Private HTTP backend: $COUNCIL_LISTEN; never open port 7876 externally."
+        _out "  Internet-reachable HTTPS; protocol signatures authorize operations (no proxy JWT)."
+    fi
+}
+
+validate_custodian_url() {
+    python3 "$SCRIPT_DIR/lib/custodian_url.py" "$@"
+}
+
+validate_https_endpoint_plan() {
+    case "$OPENRESTY_MODE:$INSTALL_CUSTODIAN:$CONFIGURE_PUBLIC_ENDPOINT" in
+        external:true:false | custodian:true:true | full:true:true)
+            [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] \
+                && validate_custodian_url "$CUSTODIAN_BASE_URL" || return 1
+            ;;
+        disabled:false:false | full:false:true) ;;
+        *)
+            error "Inconsistent HTTPS mode; configure endpoints again."
+            return 1
+            ;;
+    esac
 }
 
 validate_http_url() {
@@ -794,7 +881,8 @@ configure_custodian() {
     PARENT_CUSTODIAN=""
     CUSTODIAN_REQUIRED_SUMMIT_REF="internal-testnet-v0"
     CUSTODIAN_REQUIRED_RETH_REF="internal-testnet-v0"
-    CUSTODIAN_SOURCE_REF="refs/tags/internal-testnet-v0"
+    # Temporary branch until the HTTP migration receives a release tag.
+    CUSTODIAN_SOURCE_REF="refs/heads/centralized-custodian"
 
     if ! confirm "Enable Centralized Custodian?"; then
         _out "Centralized Custodian: $INSTALL_CUSTODIAN"
@@ -840,28 +928,23 @@ configure_custodian() {
         _out "The observer uses it to fetch or verify the root key and synchronize epoch-key deliveries."
         while true; do
             prompt PARENT_CUSTODIAN \
-                "Parent validator Custodian council endpoint (host:port; default port 7876)" \
+                "Parent Custodian base URL (https://parent.example.com/custodian; not the /v1/council path)" \
                 ""
-            if validate_host_port "$PARENT_CUSTODIAN"; then
+            if validate_custodian_url "$PARENT_CUSTODIAN" --allow-loopback-http; then
                 break
             fi
-            error "Parent validator Custodian council endpoint must be host:port with a valid port."
+            error "Enter an HTTPS base URL, or loopback HTTP for a local secure tunnel; bare host:port is unsupported."
         done
         _out "The observer Custodian will fetch and verify its root key through $PARENT_CUSTODIAN."
         warn "The parent Custodian connection transports root-key and epoch-key material."
-        warn "Use a private network or protect the connection with a TLS tunnel."
+        warn "The parent's HTTPS endpoint and trusted certificate must be ready before a fresh observer starts."
     else
         _out "Custodian will use the publicly known shared default root key."
         warn "The shared default makes epoch-0 purpose keys public."
     fi
 
-    while true; do
-        prompt COUNCIL_LISTEN "Custodian council listen address" "0.0.0.0:7876"
-        if validate_host_port "$COUNCIL_LISTEN"; then
-            break
-        fi
-        error "Custodian council listen address must be host:port with a valid port."
-    done
+    COUNCIL_LISTEN="127.0.0.1:7876"
+    _out "Custodian HTTP backend: $COUNCIL_LISTEN (same-host TLS termination required)."
 
     while true; do
         prompt COUNCIL_ADDRESS \
@@ -961,14 +1044,7 @@ print_configuration_summary() {
         _out "  Custodian:      disabled"
     fi
 
-    _out "Public endpoint:"
-    if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
-        _out "  URL:        https://$DOMAIN"
-        _out "  Rate limit: $RATE_LIMIT_RPS requests/sec, burst $RATE_LIMIT_BURST"
-        _out "  JWT secret: $OPENRESTY_JWT_SECRET_PATH (contents hidden)"
-    else
-        _out "  Disabled"
-    fi
+    print_https_endpoint_plan
 
     _out "Network bootstrap:"
     _out "  Genesis: $GENESIS_PATH"
@@ -1049,7 +1125,7 @@ review_configuration() {
         _out "What would you like to do?"
         _out "  1) Edit service user"
         _out "  2) Edit directories"
-        _out "  3) Edit public endpoint"
+        _out "  3) Edit HTTPS termination and routes"
         _out "  4) Edit network bootstrap"
         _out "  5) Edit validator software"
         _out "  6) Edit summit-checkpointer"
@@ -1066,8 +1142,15 @@ review_configuration() {
             4) configure_network_bootstrap ;;
             5) configure_validator_software ;;
             6) configure_checkpointer ;;
-            7) configure_custodian ;;
+            7)
+                configure_custodian
+                configure_public_endpoint
+                ;;
             8)
+                if ! validate_https_endpoint_plan; then
+                    configure_public_endpoint
+                    continue
+                fi
                 if ! validate_network_bootstrap_configuration; then
                     warn "Network bootstrap validation failed; please configure it again."
                     configure_network_bootstrap
@@ -1093,11 +1176,11 @@ configure() {
     section "Configuration"
     configure_service_user
     configure_directories
-    configure_public_endpoint
     configure_network_bootstrap
     configure_validator_software
     configure_checkpointer
     configure_custodian
+    configure_public_endpoint
     configure_prometheus_agent
     review_configuration
 }

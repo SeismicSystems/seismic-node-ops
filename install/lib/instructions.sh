@@ -110,16 +110,7 @@ print_manual_start_instructions() {
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         _out "  sudo supervisorctl start checkpointer"
     fi
-    if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
-        _out ""
-        _out "Start or reload OpenResty separately:"
-        _out "  sudo systemctl enable openresty"
-        _out "  if sudo systemctl is-active --quiet openresty; then"
-        _out "      sudo systemctl reload openresty"
-        _out "  else"
-        _out "      sudo systemctl start openresty"
-        _out "  fi"
-    fi
+    print_https_activation_instructions
     _out ""
     _out "Stop all validator node programs in reverse dependency order with:"
     _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py validator stop"

@@ -65,18 +65,18 @@ The installer does not configure cloud firewall, security-group, or host
 firewall rules. Configure the required inbound access before starting the
 validator.
 
-| Port    | Protocol    | Purpose                          | Required exposure                                                                                 |
-| ------- | ----------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `30303` | TCP and UDP | seismic-reth P2P and discovery   | Public                                                                                            |
-| `18551` | TCP and UDP | Summit consensus P2P             | Public                                                                                            |
-| `80`    | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled                                                                  |
-| `443`   | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled                                                                  |
-| `7876`  | TCP         | Custodian council communication  | Externally reachable when Custodian is enabled; restrict sources to intended council participants |
+| Port    | Protocol    | Purpose                          | Required exposure                    |
+| ------- | ----------- | -------------------------------- | ------------------------------------ |
+| `30303` | TCP and UDP | seismic-reth P2P and discovery   | Public                               |
+| `18551` | TCP and UDP | Summit consensus P2P             | Public                               |
+| `80`    | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled     |
+| `443`   | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
+| `7876`  | TCP         | Custodian HTTP backend           | Loopback-only; never expose directly |
 
 When summit-checkpointer is enabled, its RPC and snapshot server binds only to
 `127.0.0.1:42069`. Do not expose TCP port `42069` directly through a firewall.
-When OpenResty is enabled, it provides the rate-limited and JWT-protected
-`/checkpointer` HTTPS route instead.
+In full OpenResty mode, the rate-limited and JWT-protected `/checkpointer` HTTPS
+route provides remote access instead. Custodian-only mode omits it.
 
 The installation log is written to:
 
@@ -119,7 +119,9 @@ The installer asks you to configure:
 
 - The non-root service user.
 - Persistent Reth, Summit, and validator-key directories.
-- An optional public HTTPS endpoint through OpenResty.
+- HTTPS termination: own same-host terminator, Custodian-only OpenResty, or
+  OpenResty for Custodian plus existing endpoints. Without Custodian, managed
+  OpenResty remains optional.
 - The Summit genesis file and an optional bootnode RPC.
 - Summit and seismic-reth binary installation methods.
 - summit-checkpointer.
@@ -129,14 +131,13 @@ When Centralized Custodian is enabled, the installer always uses its publicly
 known shared default root key and does not prompt for a custom key. This makes
 epoch-0 purpose keys public.
 
-The Custodian council listener defaults to `0.0.0.0:7876`. TCP port `7876` must
-be reachable from outside the node for key rotation. The generated validator
-Custodian program also receives the Summit key directory so it can authenticate
-and serve configured observer Custodians. Configure the cloud firewall, security
-group, and host firewall as needed, and restrict allowed source addresses to
-intended council participants and observer hosts rather than exposing the port
-more broadly than necessary. Observer root keys and plaintext epoch-key material
-transit the parent-Custodian connection; use a private network or TLS tunnel.
+The Custodian HTTP backend is fixed to `127.0.0.1:7876`; never expose that port
+externally. Remote clients use an Internet-reachable HTTPS endpoint through a
+same-host TLS terminator, normally `https://DOMAIN/custodian`. The generated
+Custodian program receives the Summit key directory to authenticate observers.
+Root keys and epoch-key material require encrypted transport and special proxy
+protections. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for all three
+installer modes, operator-owned proxy requirements, and setup instructions.
 
 For Summit, seismic-reth, summit-checkpointer, and Centralized Custodian,
 supported installation modes are:
@@ -151,7 +152,7 @@ The current source-build defaults are:
 Summit:       internal-testnet-v1 (tag)
 seismic-reth: internal-testnet-v1 (tag)
 Checkpointer: main (branch)
-Custodian:    internal-testnet-v0 (tag, enclave repository)
+Custodian:    centralized-custodian (temporary branch, enclave repository)
 ```
 
 Deferred binaries must be installed at the configured target paths before the
@@ -291,14 +292,17 @@ configuration-file path and defaults to:
 The generated Supervisor command uses the selected path. Its parent directory
 hierarchy must be root-owned and must not be group- or world-writable.
 
-When OpenResty is enabled, the installer prompts for an absolute JWT-secret file
+In full OpenResty mode, the installer prompts for an absolute JWT-secret file
 path and defaults to:
 
 ```text
 /etc/seismic/openresty-jwt-secret
 ```
 
-It also writes:
+Both managed modes write `nginx.conf` and log rotation configuration. When
+Custodian is enabled they also install `lua/custodian.lua`. Only full mode
+installs the rate-limit and JWT Lua files below; Custodian-only mode skips JWT
+secret setup entirely.
 
 ```text
 /usr/local/openresty/nginx/conf/nginx.conf
@@ -664,9 +668,12 @@ sudo supervisorctl status
 
 ## OpenResty public endpoint
 
-When enabled, OpenResty terminates HTTPS, obtains certificates through
-`lua-resty-auto-ssl`, applies per-client rate limiting, and proxies local Reth,
-Summit, and summit-checkpointer endpoints.
+Both managed modes terminate HTTPS and obtain certificates through
+`lua-resty-auto-ssl`. **Custodian-only** exposes only
+`POST /custodian/v1/council`, forwarding to `127.0.0.1:7876/v1/council` without
+proxy JWT authentication. **Full mode** additionally proxies the existing node
+routes below. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated
+limits, TLS requirements, and deployment verification.
 
 Reth HTTP and WebSocket RPC, Summit RPC, their metrics listeners, and the
 summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
@@ -674,7 +681,7 @@ enabled. When OpenResty is disabled, these endpoints are available only from the
 node itself or through an operator-managed tunnel; they are not exposed directly
 on public interfaces.
 
-The configured routes are:
+The additional routes configured in **full mode** are:
 
 | Public path     | Local upstream          | Notes                                            |
 | --------------- | ----------------------- | ------------------------------------------------ |
@@ -717,16 +724,19 @@ directories, genesis path, and optional component settings unless you are
 intentionally changing them.
 
 On a normal rerun, the installer preserves existing validator keys and state,
-then replaces its generated OpenResty and Supervisor configuration. It does not
-start or reload those services.
+then replaces its generated Supervisor configuration and, in managed modes,
+OpenResty configuration. It does not start or reload those services. Previously
+active listeners and routes remain until explicit activation. Choosing your own
+terminator leaves existing OpenResty untouched; arrange an explicit handover.
+See the [deployment checklist](CUSTODIAN_TLS.md#deployment-checklist).
 
 For source installations, refs are configured in `install/lib/configuration.sh`.
 Use `refs/tags/<tag>` for a release tag; unqualified names (or
 `refs/heads/<branch>`) select branches. Summit and seismic-reth default to
-`refs/tags/internal-testnet-v1`; Custodian remains on
-`refs/tags/internal-testnet-v0`. These tags must be published in their
-respective repositories before installation. Checkpointer remains on the `main`
-branch.
+`refs/tags/internal-testnet-v1`; Custodian temporarily uses
+`refs/heads/centralized-custodian` for its HTTP transport migration, pending a
+new release tag. Summit and Reth tags must be published in their respective
+repositories before installation. Checkpointer remains on the `main` branch.
 
 New checkouts fetch all remote branches. Every tag installation fetches the
 exact tag without forcing or pruning tags, resolves it to a commit, and checks
