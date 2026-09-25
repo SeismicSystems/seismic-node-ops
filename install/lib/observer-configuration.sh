@@ -154,14 +154,7 @@ print_observer_configuration_summary() {
     _out "  Genesis: $GENESIS_PATH"
     _out "  Reth bootnode RPC: ${BOOTNODE_RPC:-none}"
 
-    _out "Public endpoint:"
-    if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
-        _out "  https://$DOMAIN"
-        _out "  Rate limit: $RATE_LIMIT_RPS requests/sec, burst $RATE_LIMIT_BURST"
-        _out "  JWT secret: $OPENRESTY_JWT_SECRET_PATH (contents hidden)"
-    else
-        _out "  Disabled"
-    fi
+    print_https_endpoint_plan
 
     _out "Node software:"
     print_component_installation \
@@ -205,7 +198,7 @@ review_observer_configuration() {
         _out "What would you like to do?"
         _out "  1) Edit service user"
         _out "  2) Edit directories"
-        _out "  3) Edit public endpoint"
+        _out "  3) Edit HTTPS termination and routes"
         _out "  4) Edit network bootstrap"
         _out "  5) Edit observer assignment"
         _out "  6) Edit node software"
@@ -224,8 +217,15 @@ review_observer_configuration() {
             5) configure_observer_assignment ;;
             6) configure_node_software ;;
             7) configure_checkpointer ;;
-            8) configure_custodian ;;
+            8)
+                configure_custodian
+                configure_public_endpoint
+                ;;
             9)
+                if ! validate_https_endpoint_plan; then
+                    configure_public_endpoint
+                    continue
+                fi
                 if ! validate_network_bootstrap_configuration; then
                     warn "Network bootstrap validation failed; please configure it again."
                     configure_network_bootstrap
@@ -251,12 +251,12 @@ configure_observer() {
     section "Configuration"
     configure_service_user
     configure_observer_directories
-    configure_public_endpoint
     configure_network_bootstrap
     configure_observer_assignment
     configure_node_software
     configure_checkpointer
     configure_custodian
+    configure_public_endpoint
     configure_prometheus_agent
     review_observer_configuration
 }

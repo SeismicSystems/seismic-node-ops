@@ -61,6 +61,10 @@ validate_custodian_cli_support() {
         || die "Could not inspect the installed Custodian command-line interface."
     grep -q -- '--summit-key-dir' <<<"$help_output" \
         || die "Installed Custodian does not support --summit-key-dir."
+    # Existing flags/version numbers are also present on the old TCP binary.
+    # The migration branch explicitly advertises its HTTP backend in --help.
+    grep -Fq -- 'HTTP backend listen address' <<<"$help_output" \
+        || die "Installed Custodian does not advertise the HTTP backend. Install a build from centralized-custodian; the old TCP protocol is incompatible."
     if [[ "${NODE_ROLE:-validator}" == "observer" ]]; then
         grep -q -- '--observer' <<<"$help_output" \
             || die "Installed Custodian does not support --observer."

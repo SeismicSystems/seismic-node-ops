@@ -347,7 +347,7 @@ prepare_source_checkout "Fixture" "$3" "$4" "$5"
                 self.prepare(ref, expected=False)
                 self.assertFalse(self.checkout.exists())
 
-    def test_configured_release_refs_are_explicit_tags(self):
+    def test_configured_refs_include_temporary_custodian_branch(self):
         result = subprocess.run(
             [
                 "bash",
@@ -379,7 +379,7 @@ printf '%s\\n' "$SUMMIT_SOURCE_REF" "$RETH_SOURCE_REF" "$CUSTODIAN_SOURCE_REF" "
             [
                 "refs/tags/internal-testnet-v1",  # Summit source selection
                 "refs/tags/internal-testnet-v1",  # Reth source selection
-                f"refs/tags/{TAG}",  # Custodian
+                "refs/heads/centralized-custodian",  # Until the HTTP release is tagged.
                 "main",  # Checkpointer
                 TAG,  # Custodian's Summit compatibility baseline is unchanged.
                 TAG,  # Custodian's Reth compatibility baseline is unchanged.

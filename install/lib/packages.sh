@@ -41,6 +41,7 @@ collect_system_packages() {
     fi
 
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
+        # auto-ssl's rockspec can fetch Git sources, even without JWT libraries.
         needs_git=true
     fi
 
@@ -55,7 +56,8 @@ collect_system_packages() {
             pkg-config
             libssl-dev
         )
-    elif [[ "$needs_mdbx_build" == true ]]; then
+    elif [[ "$needs_mdbx_build" == true || "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
+        # lua-resty-auto-ssl builds its sockproc helper with make/a C compiler.
         SYSTEM_PACKAGES+=(build-essential)
     fi
 

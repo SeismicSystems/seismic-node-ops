@@ -56,7 +56,7 @@ install_openresty() {
     local runtime_masked=false
 
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" != true ]]; then
-        info "Public endpoint disabled; skipping OpenResty installation."
+        info "OpenResty is unmanaged; skipping installation and leaving existing services untouched."
         return
     fi
 
@@ -114,16 +114,18 @@ install_openresty() {
     fi
     success "lua-resty-auto-ssl $LUA_RESTY_AUTO_SSL_VERSION installed"
 
-    install_pinned_openresty_lua_library \
-        "lua-resty-hmac" \
-        "$LUA_RESTY_HMAC_REPO" \
-        "$LUA_RESTY_HMAC_RELEASE" \
-        "$LUA_RESTY_HMAC_REVISION"
-    install_pinned_openresty_lua_library \
-        "lua-resty-jwt" \
-        "$LUA_RESTY_JWT_REPO" \
-        "$LUA_RESTY_JWT_RELEASE" \
-        "$LUA_RESTY_JWT_REVISION"
+    if [[ "$OPENRESTY_MODE" == full ]]; then
+        install_pinned_openresty_lua_library \
+            "lua-resty-hmac" \
+            "$LUA_RESTY_HMAC_REPO" \
+            "$LUA_RESTY_HMAC_RELEASE" \
+            "$LUA_RESTY_HMAC_REVISION"
+        install_pinned_openresty_lua_library \
+            "lua-resty-jwt" \
+            "$LUA_RESTY_JWT_REPO" \
+            "$LUA_RESTY_JWT_RELEASE" \
+            "$LUA_RESTY_JWT_REVISION"
+    fi
 
     if [[ ! -f /etc/ssl/resty-auto-ssl-fallback.crt ||
         ! -f /etc/ssl/resty-auto-ssl-fallback.key ]]; then
@@ -341,82 +343,153 @@ setup_openresty_jwt_secret() {
 
 validate_openresty_templates() {
     local template_root="$TEMPLATES_DIR/openresty"
-    local required=(
-        "$template_root/nginx.conf"
-        "$template_root/logrotate-openresty"
-        "$template_root/lua/jwt_auth.lua"
-        "$template_root/lua/rate_limit.lua"
-    )
+    local required=("$template_root/nginx.conf" "$template_root/logrotate-openresty")
     local path
 
+    if [[ "$OPENRESTY_MODE" == full ]]; then
+        required+=("$template_root/node-locations.conf" "$template_root/lua/jwt_auth.lua" "$template_root/lua/rate_limit.lua")
+    fi
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        required+=("$template_root/custodian-http.conf" "$template_root/custodian-location.conf" "$template_root/lua/custodian.lua")
+    fi
     for path in "${required[@]}"; do
         [[ -f "$path" ]] || die "Required OpenResty template not found: $path"
     done
 }
 
+print_https_activation_instructions() {
+    _out ""
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        _out "Custodian HTTPS endpoint: $CUSTODIAN_BASE_URL"
+        _out "Give Seismic operations your domain so they can reach your Custodian."
+        warn "Never expose HTTP port 7876. Remove old firewall/security-group allowances before migrating."
+        _out "Verify the backend is loopback-only after explicitly restarting Custodian:"
+        _out "  sudo ss -ltnp '( sport = :7876 )'"
+    fi
+    if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
+        _out "Verify DNS and inbound TCP 80/443, then activate OpenResty explicitly:"
+        _out "  sudo openresty -t"
+        _out "  sudo systemctl enable openresty"
+        _out "  if sudo systemctl is-active --quiet openresty; then"
+        _out "      sudo systemctl reload openresty"
+        _out "  else"
+        _out "      sudo systemctl start openresty"
+        _out "  fi"
+        warn "Old routes remain until reload/stop; existing requests can continue draining after reload."
+    else
+        warn "Existing OpenResty configuration/services were not modified. Previously public routes may still be active."
+        if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+            _out "Configure a same-host HTTPS proxy to 127.0.0.1:7876 using $SCRIPT_DIR/CUSTODIAN_TLS.md."
+            warn "Arrange an explicit handover from any old managed proxy; do not stop your own terminator inadvertently."
+        fi
+    fi
+}
+
+# Pure rendering, also used by isolated tests. Never install or activate services.
+render_openresty_configuration() {
+    local lua_dir=${1:-/usr/local/openresty/nginx/lua}
+    local template_root="$TEMPLATES_DIR/openresty"
+    local conf node_locations node_policy="" custodian_location="" custodian_policy=""
+    local http_fallback='return 404;'
+
+    case "$OPENRESTY_MODE" in
+        full)
+            node_locations=$(<"$template_root/node-locations.conf")
+            node_policy='lua_shared_dict limit_req_store 100m;'
+            http_fallback='return 301 https://$host$request_uri;'
+            ;;
+        custodian)
+            [[ "$INSTALL_CUSTODIAN" == true ]] || return 1
+            node_locations='location / { return 404; }'
+            ;;
+        *) return 1 ;;
+    esac
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] || return 1
+        custodian_policy=$(<"$template_root/custodian-http.conf")
+        custodian_location=$(<"$template_root/custodian-location.conf")
+    else
+        # Reserve this prefix even when Custodian is disabled.
+        custodian_location='location = /custodian { access_log off; return 404; }
+        location ^~ /custodian/ { access_log off; return 404; }'
+    fi
+    conf=$(<"$template_root/nginx.conf")
+    conf=${conf//CUSTODIAN_HTTP_POLICY_PLACEHOLDER/$custodian_policy}
+    conf=${conf//CUSTODIAN_LOCATION_PLACEHOLDER/$custodian_location}
+    conf=${conf//NODE_LOCATIONS_PLACEHOLDER/$node_locations}
+    conf=${conf//NODE_HTTP_POLICY_PLACEHOLDER/$node_policy}
+    conf=${conf//HTTP_FALLBACK_PLACEHOLDER/$http_fallback}
+    conf=${conf//DOMAIN_NAME_PLACEHOLDER/$DOMAIN}
+    conf=${conf//OPENRESTY_LUA_DIR_PLACEHOLDER/$lua_dir}
+    [[ "$conf" != *"_PLACEHOLDER"* ]] || return 1
+    printf '%s\n' "$conf"
+}
+
+render_openresty_lua() {
+    local staging=$1
+    local template_root="$TEMPLATES_DIR/openresty/lua"
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        cp -- "$template_root/custodian.lua" "$staging/custodian.lua" || return 1
+    fi
+    if [[ "$OPENRESTY_MODE" == full ]]; then
+        sed -e "s|RATE_LIMIT_RPS_PLACEHOLDER|$RATE_LIMIT_RPS|g" \
+            -e "s|RATE_LIMIT_BURST_PLACEHOLDER|$RATE_LIMIT_BURST|g" \
+            "$template_root/rate_limit.lua" >"$staging/rate_limit.lua" || return 1
+        sed "s|OPENRESTY_JWT_SECRET_PATH_PLACEHOLDER|$OPENRESTY_JWT_SECRET_PATH|g" \
+            "$template_root/jwt_auth.lua" >"$staging/jwt_auth.lua" || return 1
+    fi
+}
+
 deploy_openresty_configuration() {
     local template_root="$TEMPLATES_DIR/openresty"
     local staging
+    local lua_files=()
 
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" != true ]]; then
-        info "Public endpoint disabled; skipping OpenResty configuration deployment."
+        warn "OpenResty configuration and services are untouched. Previously active routes may still be public."
         return
     fi
 
-    section "Deploying OpenResty configuration"
-    command -v openresty >/dev/null 2>&1 \
-        || die "OpenResty is not installed."
+    section "Deploying OpenResty configuration ($OPENRESTY_MODE)"
+    command -v openresty >/dev/null 2>&1 || die "OpenResty is not installed."
     validate_openresty_templates
 
     staging=$(mktemp -d)
-    if ! sed "s|DOMAIN_NAME_PLACEHOLDER|$DOMAIN|g" \
-        "$template_root/nginx.conf" >"$staging/nginx.conf" \
-        || ! sed \
-            -e "s|RATE_LIMIT_RPS_PLACEHOLDER|$RATE_LIMIT_RPS|g" \
-            -e "s|RATE_LIMIT_BURST_PLACEHOLDER|$RATE_LIMIT_BURST|g" \
-            "$template_root/lua/rate_limit.lua" >"$staging/rate_limit.lua" \
-        || ! sed \
-            "s|OPENRESTY_JWT_SECRET_PATH_PLACEHOLDER|$OPENRESTY_JWT_SECRET_PATH|g" \
-            "$template_root/lua/jwt_auth.lua" >"$staging/jwt_auth.lua"; then
+    # The config test references the staged Lua, not stale installed handlers.
+    if ! render_openresty_lua "$staging" \
+        || ! render_openresty_configuration "$staging" >"$staging/test.conf" \
+        || ! render_openresty_configuration >"$staging/nginx.conf"; then
         rm -rf -- "$staging"
         die "Could not render the OpenResty configuration templates."
     fi
-
     if grep -R -n '_PLACEHOLDER' "$staging" >>"$LOG_FILE" 2>&1; then
         rm -rf -- "$staging"
         die "Rendered OpenResty configuration still contains placeholders; see $LOG_FILE"
     fi
-
-    setup_openresty_jwt_secret
+    if [[ "$OPENRESTY_MODE" == full ]]; then
+        setup_openresty_jwt_secret
+    fi
 
     info "Testing the staged OpenResty configuration..."
-    if ! openresty -t \
-        -p /usr/local/openresty/nginx/ \
-        -c "$staging/nginx.conf" >>"$LOG_FILE" 2>&1; then
+    if ! openresty -t -p /usr/local/openresty/nginx/ \
+        -c "$staging/test.conf" >>"$LOG_FILE" 2>&1; then
         rm -rf -- "$staging"
         die "Staged OpenResty configuration validation failed; see $LOG_FILE"
     fi
 
     install -d -o root -g root -m 0755 /usr/local/openresty/nginx/lua
-    install -o root -g root -m 0644 \
-        "$staging/jwt_auth.lua" \
-        /usr/local/openresty/nginx/lua/jwt_auth.lua
-    install -o root -g root -m 0644 \
-        "$staging/rate_limit.lua" \
-        /usr/local/openresty/nginx/lua/rate_limit.lua
-    install -o root -g root -m 0644 \
-        "$staging/nginx.conf" \
-        /usr/local/openresty/nginx/conf/nginx.conf
-    install -o root -g root -m 0644 \
-        "$template_root/logrotate-openresty" \
-        /etc/logrotate.d/openresty
+    mapfile -t lua_files < <(find "$staging" -maxdepth 1 -type f -name '*.lua' -print)
+    install -o root -g root -m 0644 "${lua_files[@]}" /usr/local/openresty/nginx/lua/
+    install -o root -g root -m 0644 "$staging/nginx.conf" /usr/local/openresty/nginx/conf/nginx.conf
+    install -o root -g root -m 0644 "$template_root/logrotate-openresty" /etc/logrotate.d/openresty
     rm -rf -- "$staging"
 
     if ! openresty -t >>"$LOG_FILE" 2>&1; then
         die "Installed OpenResty configuration validation failed; see $LOG_FILE"
     fi
-
-    persist_openresty_jwt_secret_path
-    success "OpenResty configuration deployed for https://$DOMAIN."
-    info "OpenResty was not started, enabled, or reloaded."
+    if [[ "$OPENRESTY_MODE" == full ]]; then
+        persist_openresty_jwt_secret_path
+    fi
+    success "OpenResty configuration deployed for https://$DOMAIN ($OPENRESTY_MODE)."
+    warn "OpenResty was not started, enabled, or reloaded. Old routes remain active until explicit activation; draining requests may outlive a reload."
 }

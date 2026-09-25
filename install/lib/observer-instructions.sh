@@ -72,6 +72,11 @@ print_observer_manual_start_instructions() {
     _out "Before starting the observer, provide the parent validator's private node_key.pem at:"
     _out "  $SUMMIT_KEYS_DIR/node_key.pem"
     _out "It must be owned by $SERVICE_USER:$SERVICE_GROUP with mode 0600."
+    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
+        warn "This host needs outbound HTTPS access to parent Custodian $PARENT_CUSTODIAN (or its configured loopback tunnel)."
+        warn "Bring up and verify the parent's HTTPS endpoint before starting a fresh observer Custodian."
+        warn "Parent URLs are base URLs, not /v1/council URLs; old bare host:port values are incompatible."
+    fi
     _out ""
     _out "After resolving all warnings, use the Python node tool for coordinated startup:"
     _out "  sudo $SCRIPT_DIR/../tools/seismic-node.py observer start --mode normal"
@@ -106,16 +111,7 @@ print_observer_manual_start_instructions() {
         _out "  sudo supervisorctl stop custodian"
     fi
 
-    if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
-        _out ""
-        _out "Start or reload OpenResty explicitly:"
-        _out "  sudo systemctl enable openresty"
-        _out "  if sudo systemctl is-active --quiet openresty; then"
-        _out "      sudo systemctl reload openresty"
-        _out "  else"
-        _out "      sudo systemctl start openresty"
-        _out "  fi"
-    fi
+    print_https_activation_instructions
 
     _out ""
     _out "Inspect status with:"
@@ -125,9 +121,4 @@ print_observer_manual_start_instructions() {
     warn "Start them manually again after a server or Supervisor restart."
     warn "Do not start summit-observer-checkpoint until a verified checkpoint-start configuration has been installed."
     warn "The summit-observer and summit-observer-checkpoint programs are mutually exclusive."
-    if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        warn "This host needs outbound TCP access to parent Custodian $PARENT_CUSTODIAN."
-        warn "The parent Custodian firewall must allow this observer's source IP."
-        warn "Root-key and plaintext epoch-key material transit this connection; use a private network or TLS tunnel."
-    fi
 }

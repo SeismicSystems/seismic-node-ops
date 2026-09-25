@@ -67,8 +67,8 @@ Review the complete interactive configuration summary before accepting it.
   optional components.
 - Network access to package and source repositories when installing packages or
   building from source.
-- When Custodian is enabled, the reachable council endpoint of the Custodian
-  running on the parent validator, normally `PARENT_IP:7876`.
+- When Custodian is enabled, the parent's reachable HTTPS base URL, normally
+  `https://parent.example.com/custodian`, with a trusted certificate.
 - If configuring OpenResty, DNS for the selected domain must point to the node.
 
 The installer validates local input and key consistency. It deliberately does
@@ -86,32 +86,31 @@ The installation log is written to:
 The installer does not configure cloud firewall, security-group, or host
 firewall rules. Configure the required access before starting the observer.
 
-| Port                       | Protocol    | Purpose                             | Required exposure                                                                         |
-| -------------------------- | ----------- | ----------------------------------- | ----------------------------------------------------------------------------------------- |
-| `30303`                    | TCP and UDP | seismic-reth P2P and discovery      | Public                                                                                    |
-| `18551` or configured port | TCP and UDP | Summit observer P2P                 | Public                                                                                    |
-| `80`                       | TCP         | HTTP redirect and ACME challenge    | Public when OpenResty is enabled                                                          |
-| `443`                      | TCP         | OpenResty HTTPS endpoint            | Public when OpenResty is enabled                                                          |
-| `7876` or configured port  | TCP         | Observer Custodian council listener | Externally reachable when Custodian is enabled; restrict sources to intended participants |
+| Port                       | Protocol    | Purpose                          | Required exposure                    |
+| -------------------------- | ----------- | -------------------------------- | ------------------------------------ |
+| `30303`                    | TCP and UDP | seismic-reth P2P and discovery   | Public                               |
+| `18551` or configured port | TCP and UDP | Summit observer P2P              | Public                               |
+| `80`                       | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled     |
+| `443`                      | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
+| `7876`                     | TCP         | Observer Custodian HTTP backend  | Loopback-only; never expose directly |
 
-When observer Custodian is enabled, the observer also needs outbound TCP access
-to the configured parent validator Custodian council endpoint. The parent
-firewall must allow the observer's source IP.
-
-The parent-Custodian protocol transports root-key and plaintext epoch-key
-material. Use a private network or protect the path with a TLS tunnel. Do not
-send it over an untrusted plaintext network.
+When observer Custodian is enabled, it needs outbound HTTPS access to the
+parent's configured base URL. The parent's TLS terminator and trusted
+certificate must be ready before a fresh observer starts. Protocol bodies
+contain root keys; remote plaintext HTTP is not supported, even on private
+networks. The HTTPS frontend is Internet-reachable for now, with signatures
+authorizing operations. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md).
 
 The following application ports must remain loopback-only:
 
 ```text
-3000 3030 3031 8545 8546 8552 8999 9001 9090 42069
+3000 3030 3031 7876 8545 8546 8552 8999 9001 9090 42069
 ```
 
 When summit-checkpointer is enabled, its direct listener remains on
-`127.0.0.1:42069`. When OpenResty is enabled, remote clients use the
-rate-limited and JWT-protected `/checkpointer` HTTPS route instead of direct
-access to that port.
+`127.0.0.1:42069`. In full OpenResty mode, remote clients use the rate-limited
+and JWT-protected `/checkpointer` HTTPS route instead. Custodian-only mode does
+not expose that route.
 
 ### Supplied internal-testnet genesis
 
@@ -144,7 +143,9 @@ The installer asks you to configure:
 
 - The non-root service user.
 - Persistent Reth, Summit, and observer-key directories.
-- An optional public HTTPS endpoint through OpenResty.
+- HTTPS termination: own same-host terminator, Custodian-only OpenResty, or
+  OpenResty for Custodian plus existing endpoints. Without Custodian, managed
+  OpenResty remains optional.
 - The Summit genesis file and an optional Reth bootnode RPC.
 - The parent validator Summit node public key.
 - An observer derivation index from `0` through `255`.
@@ -173,7 +174,7 @@ The current source-build defaults are:
 Summit:       internal-testnet-v1 (tag)
 seismic-reth: internal-testnet-v1 (tag)
 Checkpointer: main (branch)
-Custodian:    internal-testnet-v0 (tag, enclave repository)
+Custodian:    centralized-custodian (temporary branch, enclave repository)
 ```
 
 A prebuilt or already-present deferred summit-checkpointer must support
@@ -361,14 +362,17 @@ configuration-file path and defaults to:
 The generated Supervisor command uses the selected path. Its parent directory
 hierarchy must be root-owned and must not be group- or world-writable.
 
-When OpenResty is enabled, the installer prompts for an absolute JWT-secret file
+In full OpenResty mode, the installer prompts for an absolute JWT-secret file
 path and defaults to:
 
 ```text
 /etc/seismic/openresty-jwt-secret
 ```
 
-It also writes:
+Both managed modes write `nginx.conf` and log rotation configuration. When
+Custodian is enabled they also install `lua/custodian.lua`. Only full mode
+installs the rate-limit and JWT Lua files below; Custodian-only mode skips JWT
+secret setup entirely.
 
 ```text
 /usr/local/openresty/nginx/conf/nginx.conf
@@ -474,16 +478,18 @@ available backups for selection by number.
 The parent validator Custodian council endpoint and the observer's local council
 listener are different settings:
 
-- The parent endpoint is a remote `host:port` that the observer contacts to
-  fetch or verify the root key and synchronize epoch-key deliveries.
-- The local listener is the observer Custodian's own bind address and defaults
-  to `0.0.0.0:7876`.
+- The parent endpoint is an HTTPS **base URL**, normally
+  `https://parent.example.com/custodian`, used to fetch/verify the root key and
+  synchronize epoch-key deliveries. Do not append `/v1/council` yourself.
+- The local HTTP backend is fixed to `127.0.0.1:7876`, behind the observer's own
+  same-host TLS terminator. Its proxy choice does not configure the parent's
+  proxy.
 
 The generated observer Custodian command includes:
 
 ```text
 --observer <observer-index>
---parent-custodian <parent-host:port>
+--parent-custodian https://parent.example.com/custodian
 --summit-key-dir <observer-summit-key-directory>
 ```
 
@@ -663,16 +669,19 @@ sudo supervisorctl status
 
 ## OpenResty public endpoint
 
-When enabled, OpenResty terminates HTTPS, obtains certificates through
-`lua-resty-auto-ssl`, applies per-client rate limiting, and proxies local Reth,
-Summit, and summit-checkpointer endpoints.
+Both managed modes terminate HTTPS and obtain certificates through
+`lua-resty-auto-ssl`. **Custodian-only** exposes only
+`POST /custodian/v1/council`, forwarding to `127.0.0.1:7876/v1/council` without
+proxy JWT authentication. **Full mode** additionally proxies the existing node
+routes below. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated
+limits, TLS requirements, and deployment verification.
 
 Reth HTTP and WebSocket RPC, Reth Ops RPC, Summit RPC, metrics listeners, and
 the summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
 enabled. When OpenResty is disabled, these endpoints are available only from the
 node itself or through an operator-managed tunnel.
 
-The configured routes are:
+The additional routes configured in **full mode** are:
 
 | Public path     | Local upstream          | Notes                                            |
 | --------------- | ----------------------- | ------------------------------------------------ |
@@ -729,7 +738,7 @@ Confirm that:
 - Reth ports `8545`, `8546`, `8552`, and `9001` are loopback-only.
 - Summit ports `3030`, `3031`, and `9090` are loopback-only.
 - summit-checkpointer port `42069` is loopback-only when enabled.
-- Custodian listens on the configured council address when enabled.
+- Custodian's HTTP backend listens only on `127.0.0.1:7876` when enabled.
 - OpenResty listens on ports `80` and `443` only when configured and explicitly
   started.
 
@@ -758,8 +767,15 @@ On a normal rerun, the installer:
 - Preserves an existing observer Custodian root key.
 - Replaces the installer-managed bootstrappers file from the accepted source, or
   removes it when no source is configured.
-- Replaces generated OpenResty and Supervisor configuration.
-- Leaves services stopped and does not reload Supervisor or OpenResty.
+- Replaces generated Supervisor configuration and, in managed modes, OpenResty
+  configuration.
+- Does not start or reload Supervisor or OpenResty; already-running services
+  retain their active configuration.
+
+Previously public routes remain until explicit reload/stop, and requests may
+continue draining after a graceful reload. Choosing your own terminator leaves
+OpenResty configuration and services untouched; arrange an explicit handover.
+See the [deployment checklist](CUSTODIAN_TLS.md#deployment-checklist).
 
 Changing a persistent path does not migrate existing data. It creates or uses a
 separate store.
@@ -767,10 +783,10 @@ separate store.
 For source installations, refs are configured in `install/lib/configuration.sh`.
 Use `refs/tags/<tag>` for a release tag; unqualified names (or
 `refs/heads/<branch>`) select branches. Summit and seismic-reth default to
-`refs/tags/internal-testnet-v1`; Custodian remains on
-`refs/tags/internal-testnet-v0`. These tags must be published in their
-respective repositories before installation. Checkpointer remains on the `main`
-branch.
+`refs/tags/internal-testnet-v1`; Custodian temporarily uses
+`refs/heads/centralized-custodian` for its HTTP transport migration, pending a
+new release tag. Summit and Reth tags must be published in their respective
+repositories before installation. Checkpointer remains on the `main` branch.
 
 New checkouts fetch all remote branches. Every tag installation fetches the
 exact tag without forcing or pruning tags, resolves it to a commit, and checks
@@ -827,9 +843,10 @@ and Summit data paths for a different assignment.
 
 ### Parent Custodian is unreachable
 
-Verify the configured parent `host:port`, outbound routing, and the parent
-firewall. The parent Custodian must be running and configured with its Summit
-key directory.
+Verify the parent's HTTPS base URL, DNS, trusted certificate, outbound routing,
+and TLS-terminating proxy. The parent Custodian must be running with its Summit
+key directory and the new HTTP transport. Bare `host:port` values no longer
+work. See the [deployment checklist](CUSTODIAN_TLS.md#deployment-checklist).
 
 ### Custodian root-key fetch or verification fails
 

@@ -91,6 +91,10 @@ render_observer_custodian_supervisor_config() {
     local template="$TEMPLATES_DIR/supervisor/observer-custodian.conf"
     local conf
 
+    [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] \
+        || die "Custodian HTTP backend must remain on 127.0.0.1:7876."
+    validate_custodian_url "$PARENT_CUSTODIAN" --allow-loopback-http \
+        || die "Observer parent Custodian must be an HTTPS base URL (HTTP only for loopback tunnels)."
     conf=$(<"$template")
     conf=${conf//CUSTODIAN_BINARY_PLACEHOLDER/$CUSTODIAN_TARGET_BIN}
     conf=${conf//CUSTODIAN_SOCKET_PLACEHOLDER/$CUSTODIAN_SOCKET}

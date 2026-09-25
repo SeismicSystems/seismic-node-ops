@@ -52,6 +52,7 @@ jobs:
         run: |
           python3 -m pip install ruff==0.16.5
           ruff check --target-version py312 \
+            install/lib/custodian_url.py \
             install/lib/prometheus_agent.py \
             install/lib/monitoring_only.py \
             tools/seismic-node.py \
@@ -59,6 +60,7 @@ jobs:
             tools/checkpoint-start/summit-checkpoint-runner.py \
             tests
           ruff format --check --target-version py312 \
+            install/lib/custodian_url.py \
             install/lib/prometheus_agent.py \
             install/lib/monitoring_only.py \
             tools/seismic-node.py \
@@ -80,12 +82,36 @@ jobs:
       - name: Check Python compilation and tests
         run: |
           python3 -m py_compile \
+            install/lib/custodian_url.py \
             install/lib/prometheus_agent.py \
             install/lib/monitoring_only.py \
             tools/seismic-node.py \
             tools/seismic_node/*.py \
             tools/checkpoint-start/summit-checkpoint-runner.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+  custodian-proxy:
+    name: Isolated Custodian TLS proxy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build checksum-pinned OpenResty without installing system services
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential libpcre3-dev libssl-dev zlib1g-dev
+          curl -fsSL --max-time 120 https://openresty.org/download/openresty-1.27.1.2.tar.gz -o "$RUNNER_TEMP/openresty.tar.gz"
+          printf '74f076f7e364b2a99a6c5f9bb531c27610c78985abe956b442b192a2295f7548  %s\n' "$RUNNER_TEMP/openresty.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/openresty.tar.gz" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/openresty-1.27.1.2"
+          ./configure --prefix="$RUNNER_TEMP/openresty" --with-http_ssl_module
+          make -j2
+          make install
+          echo "CUSTODIAN_OPENRESTY_BIN=$RUNNER_TEMP/openresty/nginx/sbin/nginx" >> "$GITHUB_ENV"
+      - name: Verify installer modes and real TLS proxy protections
+        run: python3 -m unittest discover -s tests -p 'test_custodian*.py' -v
 
   markdown:
     name: Markdown checks
