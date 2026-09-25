@@ -86,13 +86,13 @@ The installation log is written to:
 The installer does not configure cloud firewall, security-group, or host
 firewall rules. Configure the required access before starting the observer.
 
-| Port                       | Protocol    | Purpose                          | Required exposure                    |
-| -------------------------- | ----------- | -------------------------------- | ------------------------------------ |
-| `30303`                    | TCP and UDP | seismic-reth P2P and discovery   | Public                               |
-| `18551` or configured port | TCP and UDP | Summit observer P2P              | Public                               |
-| `80`                       | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled     |
-| `443`                      | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
-| `7876`                     | TCP         | Observer Custodian HTTP backend  | Loopback-only; never expose directly |
+| Port                           | Protocol    | Purpose                          | Required exposure                    |
+| ------------------------------ | ----------- | -------------------------------- | ------------------------------------ |
+| `30303`                        | TCP and UDP | seismic-reth P2P and discovery   | Public                               |
+| `18551` or configured port     | TCP and UDP | Summit observer P2P              | Public                               |
+| `80`                           | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled     |
+| `443`                          | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
+| `7876` (default; configurable) | TCP         | Observer Custodian HTTP backend  | Loopback-only; never expose directly |
 
 When observer Custodian is enabled, it needs outbound HTTPS access to the
 parent's configured base URL. The parent's TLS terminator and trusted
@@ -104,8 +104,11 @@ authorizing operations. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md).
 The following application ports must remain loopback-only:
 
 ```text
-3000 3030 3031 7876 8545 8546 8552 8999 9001 9090 42069
+3000 3030 3031 8545 8546 8552 8999 9001 9090 42069
 ```
+
+The selected Custodian backend port (default `7876`) must also remain
+loopback-only.
 
 When summit-checkpointer is enabled, its direct listener remains on
 `127.0.0.1:42069`. In full OpenResty mode, remote clients use the rate-limited
@@ -481,9 +484,9 @@ listener are different settings:
 - The parent endpoint is an HTTPS **base URL**, normally
   `https://parent.example.com/custodian`, used to fetch/verify the root key and
   synchronize epoch-key deliveries. Do not append `/v1/council` yourself.
-- The local HTTP backend is fixed to `127.0.0.1:7876`, behind the observer's own
-  same-host TLS terminator. Its proxy choice does not configure the parent's
-  proxy.
+- The local HTTP backend uses an operator-selected port (default `7876`) on
+  `127.0.0.1`, behind the observer's same-host TLS terminator. This port and
+  proxy choice do not change the parent's endpoint.
 
 The generated observer Custodian command includes:
 
@@ -671,10 +674,11 @@ sudo supervisorctl status
 
 Both managed modes terminate HTTPS and obtain certificates through
 `lua-resty-auto-ssl`. **Custodian-only** exposes only
-`POST /custodian/v1/council`, forwarding to `127.0.0.1:7876/v1/council` without
-proxy JWT authentication. **Full mode** additionally proxies the existing node
-routes below. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated
-limits, TLS requirements, and deployment verification.
+`POST /custodian/v1/council`, forwarding to `/v1/council` on the selected
+loopback Custodian port without proxy JWT authentication. **Full mode**
+additionally proxies the existing node routes below. See
+[Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated limits, TLS
+requirements, and deployment verification.
 
 Reth HTTP and WebSocket RPC, Reth Ops RPC, Summit RPC, metrics listeners, and
 the summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
@@ -738,7 +742,8 @@ Confirm that:
 - Reth ports `8545`, `8546`, `8552`, and `9001` are loopback-only.
 - Summit ports `3030`, `3031`, and `9090` are loopback-only.
 - summit-checkpointer port `42069` is loopback-only when enabled.
-- Custodian's HTTP backend listens only on `127.0.0.1:7876` when enabled.
+- Custodian's HTTP backend listens only on `127.0.0.1` at the selected port
+  (default `7876`) when enabled.
 - OpenResty listens on ports `80` and `443` only when configured and explicitly
   started.
 

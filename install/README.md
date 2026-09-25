@@ -65,13 +65,13 @@ The installer does not configure cloud firewall, security-group, or host
 firewall rules. Configure the required inbound access before starting the
 validator.
 
-| Port    | Protocol    | Purpose                          | Required exposure                    |
-| ------- | ----------- | -------------------------------- | ------------------------------------ |
-| `30303` | TCP and UDP | seismic-reth P2P and discovery   | Public                               |
-| `18551` | TCP and UDP | Summit consensus P2P             | Public                               |
-| `80`    | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled     |
-| `443`   | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
-| `7876`  | TCP         | Custodian HTTP backend           | Loopback-only; never expose directly |
+| Port                           | Protocol    | Purpose                          | Required exposure                    |
+| ------------------------------ | ----------- | -------------------------------- | ------------------------------------ |
+| `30303`                        | TCP and UDP | seismic-reth P2P and discovery   | Public                               |
+| `18551`                        | TCP and UDP | Summit consensus P2P             | Public                               |
+| `80`                           | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled     |
+| `443`                          | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
+| `7876` (default; configurable) | TCP         | Custodian HTTP backend           | Loopback-only; never expose directly |
 
 When summit-checkpointer is enabled, its RPC and snapshot server binds only to
 `127.0.0.1:42069`. Do not expose TCP port `42069` directly through a firewall.
@@ -131,7 +131,8 @@ When Centralized Custodian is enabled, the installer always uses its publicly
 known shared default root key and does not prompt for a custom key. This makes
 epoch-0 purpose keys public.
 
-The Custodian HTTP backend is fixed to `127.0.0.1:7876`; never expose that port
+The installer prompts for the Custodian HTTP backend port (default `7876`) and
+keeps its bind address fixed to `127.0.0.1`. Never expose the selected port
 externally. Remote clients use an Internet-reachable HTTPS endpoint through a
 same-host TLS terminator, normally `https://DOMAIN/custodian`. The generated
 Custodian program receives the Summit key directory to authenticate observers.
@@ -670,10 +671,11 @@ sudo supervisorctl status
 
 Both managed modes terminate HTTPS and obtain certificates through
 `lua-resty-auto-ssl`. **Custodian-only** exposes only
-`POST /custodian/v1/council`, forwarding to `127.0.0.1:7876/v1/council` without
-proxy JWT authentication. **Full mode** additionally proxies the existing node
-routes below. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated
-limits, TLS requirements, and deployment verification.
+`POST /custodian/v1/council`, forwarding to `/v1/council` on the selected
+loopback Custodian port without proxy JWT authentication. **Full mode**
+additionally proxies the existing node routes below. See
+[Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated limits, TLS
+requirements, and deployment verification.
 
 Reth HTTP and WebSocket RPC, Summit RPC, their metrics listeners, and the
 summit-checkpointer RPC remain bound to loopback whether or not OpenResty is

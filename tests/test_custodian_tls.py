@@ -46,18 +46,24 @@ die() { error "$@"; exit 1; }
     )
 
 
-def render(mode: str, custodian: bool = True, lua_dir: str = "/fixture/lua") -> str:
+def render(
+    mode: str,
+    custodian: bool = True,
+    lua_dir: str = "/fixture/lua",
+    custodian_port: int = 7876,
+) -> str:
     result = shell(
         """
 OPENRESTY_MODE=$1
 INSTALL_CUSTODIAN=$2
 DOMAIN=node.example.com
-COUNCIL_LISTEN=127.0.0.1:7876
+COUNCIL_LISTEN=127.0.0.1:$4
 render_openresty_configuration "$3"
 """,
         mode,
         str(custodian).lower(),
         lua_dir,
+        str(custodian_port),
     )
     if result.returncode:
         raise AssertionError(result.stderr)
@@ -111,14 +117,118 @@ class CustodianURLTests(unittest.TestCase):
                 self.assertFalse(URLS.valid_url(url, allow_loopback_http=True))
 
 
+class CustodianPortTests(unittest.TestCase):
+    def test_port_validation(self):
+        for port in ("1", "1024", "7876", "17876", "65535"):
+            with self.subTest(port=port):
+                result = shell('validate_custodian_port "$1"', port)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        for port in (
+            "",
+            "0",
+            "65536",
+            "99999999999999999999999",
+            "-1",
+            "+1",
+            "07876",
+            "0x1ec4",
+            "7876 ",
+            "7876\n",
+            "1+1",
+            "$(id)",
+            "7876; exit 0",
+            "abc",
+            "127.0.0.1:7876",
+        ):
+            with self.subTest(port=port):
+                self.assertNotEqual(
+                    shell('validate_custodian_port "$1"', port).returncode, 0
+                )
+
+    def test_listen_validation_requires_exact_loopback_address(self):
+        self.assertEqual(
+            shell('validate_custodian_listen "$1"', "127.0.0.1:17876").returncode, 0
+        )
+        for listen in (
+            "0.0.0.0:17876",
+            "10.0.0.1:17876",
+            "localhost:17876",
+            "[::1]:17876",
+            "127.0.0.1:0",
+            "127.0.0.1:65536",
+            "127.0.0.1:07876",
+            "127.0.0.1:17876/path",
+        ):
+            with self.subTest(listen=listen):
+                self.assertNotEqual(
+                    shell('validate_custodian_listen "$1"', listen).returncode, 0
+                )
+
+    def test_prompt_retries_invalid_port(self):
+        result = shell(
+            """
+count=0
+prompt() {
+    count=$((count + 1))
+    if ((count == 1)); then
+        printf -v "$1" '%s' 65536
+    else
+        printf -v "$1" '%s' 17876
+    fi
+}
+configure_custodian_port
+printf 'RESULT=%s,%s\\n' "$COUNCIL_LISTEN" "$count"
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RESULT=127.0.0.1:17876,2", result.stdout)
+        self.assertIn("from 1 to 65535", result.stderr)
+
+    def test_both_roles_prompt_for_default_and_custom_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for role in ("validator", "observer"):
+                for selected, expected in (("", "7876"), ("17876", "17876")):
+                    with self.subTest(role=role, port=selected):
+                        result = shell(
+                            """
+NODE_ROLE=$1
+PORT_CHOICE=$2
+SOCKET_PATH="$3/custodian.sock"
+confirm() { return 0; }
+contains_unsafe_path_characters() { return 1; }
+configure_directory() { printf -v "$1" '%s' "$3"; }
+configure_component_installation() { printf -v "$1" '%s' deferred; }
+print_component_installation() { :; }
+prompt() {
+    case "$1" in
+        port) printf -v "$1" '%s' "${PORT_CHOICE:-$3}" ;;
+        CUSTODIAN_SOCKET) printf -v "$1" '%s' "$SOCKET_PATH" ;;
+        PARENT_CUSTODIAN) printf -v "$1" '%s' https://parent.example.com:8443/custodian ;;
+        CUSTODIAN_CHAIN_ID) printf -v "$1" '%s' 5124 ;;
+        *) printf -v "$1" '%s' "$3" ;;
+    esac
+}
+configure_custodian
+printf 'RESULT=%s\\n' "$COUNCIL_LISTEN"
+""",
+                            role,
+                            selected,
+                            tmp,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn(f"RESULT=127.0.0.1:{expected}", result.stdout)
+
+
 class CustodianTLSPlanTests(unittest.TestCase):
-    def configure(self, enabled: bool, choice: str = "2", confirm: bool = True):
+    def configure(
+        self, enabled: bool, choice: str = "2", confirm: bool = True, port: int = 7876
+    ):
         return shell(
             """
 INSTALL_CUSTODIAN=$1
 CHOICE=$2
 CONFIRM=$3
-COUNCIL_LISTEN=127.0.0.1:7876
+COUNCIL_LISTEN=127.0.0.1:$4
 confirm() { [[ "$CONFIRM" == true ]]; }
 load_persisted_openresty_jwt_secret_path() { return 1; }
 configure_file_path() { printf -v "$1" '%s' /fixture/secret; }
@@ -137,6 +247,7 @@ printf 'RESULT=%s,%s,%s,%s,%s\\n' "$OPENRESTY_MODE" "$CONFIGURE_PUBLIC_ENDPOINT"
             str(enabled).lower(),
             choice,
             str(confirm).lower(),
+            str(port),
         )
 
     def test_three_modes_and_custodian_disabled(self):
@@ -167,6 +278,40 @@ printf 'RESULT=%s,%s,%s,%s,%s\\n' "$OPENRESTY_MODE" "$CONFIGURE_PUBLIC_ENDPOINT"
                 result = self.configure(enabled, choice, confirm)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("RESULT=" + expected, result.stdout)
+
+    def test_custom_port_in_all_tls_modes(self):
+        for choice in ("1", "2", "3"):
+            result = self.configure(True, choice, port=17876)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("127.0.0.1:17876", result.stdout)
+            self.assertNotIn("127.0.0.1:7876", result.stdout)
+        for mode in ("custodian", "full"):
+            for port in (17876, 65535):
+                config = render(mode, custodian_port=port)
+                self.assertIn(f"proxy_pass http://127.0.0.1:{port}/v1/council;", config)
+                self.assertNotIn("127.0.0.1:7876", config)
+                self.assertNotIn("_PLACEHOLDER", config)
+
+    def test_custom_port_in_activation_instructions(self):
+        for managed in ("true", "false"):
+            result = shell(
+                """
+INSTALL_CUSTODIAN=true
+CONFIGURE_PUBLIC_ENDPOINT=$1
+COUNCIL_LISTEN=127.0.0.1:17876
+CUSTODIAN_BASE_URL=https://node.example.com/custodian
+print_https_activation_instructions
+""",
+                managed,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("sport = :17876", result.stdout)
+            self.assertIn("127.0.0.1:17876", result.stderr)
+            self.assertNotRegex(
+                result.stdout + result.stderr, r"(?<![0-9])7876(?![0-9])"
+            )
+            if managed == "false":
+                self.assertIn("proxy to 127.0.0.1:17876", result.stdout)
 
     def test_custodian_only_does_not_render_jwt_or_node_routes(self):
         config = render("custodian")
@@ -219,6 +364,10 @@ printf 'RESULT=%s,%s,%s,%s,%s\\n' "$OPENRESTY_MODE" "$CONFIGURE_PUBLIC_ENDPOINT"
             ("external", "true", "127.0.0.1:7876"),
             ("custodian", "false", "127.0.0.1:7876"),
             ("full", "true", "0.0.0.0:7876"),
+            ("custodian", "true", "0.0.0.0:17876"),
+            ("full", "true", "127.0.0.1:0"),
+            ("custodian", "true", "127.0.0.1:65536"),
+            ("full", "true", "127.0.0.1:17876; return 200"),
         ):
             result = shell(
                 "OPENRESTY_MODE=$1; INSTALL_CUSTODIAN=$2; COUNCIL_LISTEN=$3; DOMAIN=node.example.com; render_openresty_configuration",
@@ -311,40 +460,53 @@ deploy_openresty_configuration
                 "    configure_custodian\n    configure_public_endpoint", text
             )
 
-    def test_observer_and_validator_supervisor_configs(self):
-        for role in ("validator", "observer"):
-            result = shell(
-                """
+    def render_supervisor(self, role, listen):
+        return shell(
+            """
 source "$SCRIPT_DIR/lib/supervisor.sh"
 source "$SCRIPT_DIR/lib/observer-supervisor.sh"
 CUSTODIAN_TARGET_BIN=/usr/local/bin/seismic-centralized-custodian-service
 CUSTODIAN_SOCKET=/tmp/custodian.sock
 CUSTODIAN_DATA_DIR=/persistence/custodian
-COUNCIL_LISTEN=127.0.0.1:7876
+COUNCIL_LISTEN=$2
 COUNCIL_ADDRESS=0xd412c5ecd343e264381ff15afc0ad78a67b79f35
 CUSTODIAN_CHAIN_ID=5124
 SUMMIT_KEYS_DIR=/persistence/keys/summit
 SERVICE_USER=seismic
 OBSERVER_INDEX=1
-PARENT_CUSTODIAN=https://parent.example.com/custodian
+PARENT_CUSTODIAN=https://parent.example.com:8443/custodian
 if [[ "$1" == observer ]]; then
     render_observer_custodian_supervisor_config
 else
     render_custodian_supervisor_config
 fi
 """,
-                role,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertNotIn("_PLACEHOLDER", result.stdout)
-            self.assertIn("--council-listen 127.0.0.1:7876", result.stdout)
-            self.assertIn("autostart=false", result.stdout)
-            self.assertIn("autorestart=false", result.stdout)
-            if role == "observer":
-                self.assertIn(
-                    "--parent-custodian https://parent.example.com/custodian",
-                    result.stdout,
-                )
+            role,
+            listen,
+        )
+
+    def test_observer_and_validator_supervisor_configs(self):
+        for role in ("validator", "observer"):
+            for port in (7876, 17876, 65535):
+                with self.subTest(role=role, port=port):
+                    result = self.render_supervisor(role, f"127.0.0.1:{port}")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("_PLACEHOLDER", result.stdout)
+                    self.assertIn(f"--council-listen 127.0.0.1:{port}", result.stdout)
+                    self.assertIn("autostart=false", result.stdout)
+                    self.assertIn("autorestart=false", result.stdout)
+                    if role == "observer":
+                        self.assertIn(
+                            "--parent-custodian https://parent.example.com:8443/custodian",
+                            result.stdout,
+                        )
+
+    def test_supervisor_rejects_public_or_invalid_backend(self):
+        for role in ("validator", "observer"):
+            for listen in ("0.0.0.0:17876", "127.0.0.1:0", "127.0.0.1:65536"):
+                result = self.render_supervisor(role, listen)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("127.0.0.1 with a valid port", result.stderr)
 
     def test_cli_compatibility_rejects_old_tcp_binary(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,8 +1,10 @@
 # Custodian HTTPS deployment
 
-Both node installers use the enclave `centralized-custodian` branch. Custodian
-binds to **`127.0.0.1:7876`** behind a same-host TLS terminator. Never expose
-port 7876 externally; the installer does not configure firewall rules.
+Both node installers use the enclave `centralized-custodian` branch. Choose a
+Custodian backend port when prompted (default **7876**). The bind address stays
+**`127.0.0.1`**, behind a same-host TLS terminator. Choose an unused port
+accessible to the service user and never expose it externally; the installer
+does not configure firewall rules.
 
 ## Installer choices
 
@@ -29,8 +31,9 @@ When installing an observer, enter the **parent validator's** Custodian endpoint
 when prompted—not the observer's own endpoint.
 
 Clients append `/v1/council`; the proxy forwards `POST /custodian/v1/council` to
-`http://127.0.0.1:7876/v1/council`. Do not include `/v1/council` in the base
-URL.
+`http://127.0.0.1:BACKEND_PORT/v1/council` using your selected port. Changing
+the backend port does not change the public HTTPS endpoint. Do not include
+`/v1/council` in the base URL.
 
 Clients require trusted HTTPS certificates and do not follow redirects. Loopback
 HTTP is allowed for a local secure tunnel; remote plaintext HTTP is rejected.
@@ -74,9 +77,9 @@ The installer prepares configuration but does **not** start services.
 1. Install Custodian, choose a TLS option, and give Seismic operations your
    domain.
 2. Point DNS at the node. For managed OpenResty, allow inbound TCP **80 and
-   443**; keep **7876** private.
+   443**; keep the selected backend port private.
 3. Start Custodian using the node installer's service instructions. Verify its
-   loopback binding with `sudo ss -ltnp '( sport = :7876 )'`.
+   selected port is bound to `127.0.0.1` with `sudo ss -ltnp`.
 4. Start your TLS terminator. For managed OpenResty:
 
    ```bash

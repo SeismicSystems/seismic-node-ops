@@ -362,9 +362,9 @@ print_https_activation_instructions() {
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
         _out "Custodian HTTPS endpoint: $CUSTODIAN_BASE_URL"
         _out "Give Seismic operations your domain so they can reach your Custodian."
-        warn "Never expose HTTP port 7876. Remove old firewall/security-group allowances before migrating."
+        warn "Keep the Custodian HTTP backend $COUNCIL_LISTEN private; never open its port externally."
         _out "Verify the backend is loopback-only after explicitly restarting Custodian:"
-        _out "  sudo ss -ltnp '( sport = :7876 )'"
+        _out "  sudo ss -ltnp '( sport = :${COUNCIL_LISTEN##*:} )'"
     fi
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
         _out "Verify DNS and inbound TCP 80/443, then activate OpenResty explicitly:"
@@ -379,7 +379,7 @@ print_https_activation_instructions() {
     else
         warn "Existing OpenResty configuration/services were not modified. Previously public routes may still be active."
         if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-            _out "Configure a same-host HTTPS proxy to 127.0.0.1:7876 using $SCRIPT_DIR/CUSTODIAN_TLS.md."
+            _out "Configure a same-host HTTPS proxy to $COUNCIL_LISTEN using $SCRIPT_DIR/CUSTODIAN_TLS.md."
             warn "Arrange an explicit handover from any old managed proxy; do not stop your own terminator inadvertently."
         fi
     fi
@@ -405,9 +405,10 @@ render_openresty_configuration() {
         *) return 1 ;;
     esac
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] || return 1
+        validate_custodian_listen "$COUNCIL_LISTEN" || return 1
         custodian_policy=$(<"$template_root/custodian-http.conf")
         custodian_location=$(<"$template_root/custodian-location.conf")
+        custodian_location=${custodian_location//CUSTODIAN_LISTEN_PLACEHOLDER/$COUNCIL_LISTEN}
     else
         # Reserve this prefix even when Custodian is disabled.
         custodian_location='location = /custodian { access_log off; return 404; }

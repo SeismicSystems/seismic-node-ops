@@ -125,7 +125,11 @@ class ProxyFixture:
         # Existing non-Custodian auth is outside this fixture's scope.
         (lua / "rate_limit.lua").write_text("-- unrelated node-route limiter stub\n")
         (lua / "jwt_auth.lua").write_text("return ngx.exit(401)\n")
-        config = render(self.mode, lua_dir=str(lua))
+        # Exercise the production port substitution, rather than rewriting a
+        # hardcoded Custodian upstream after rendering.
+        config = render(
+            self.mode, lua_dir=str(lua), custodian_port=self.server.server_port
+        )
         config = config.replace("user nobody nogroup;", "").replace(
             "worker_processes auto;", "worker_processes 1;"
         )
@@ -139,7 +143,7 @@ class ProxyFixture:
             "/etc/ssl/resty-auto-ssl-fallback.key", str(self.root / "key.pem")
         )
         for host in ("localhost", "127.0.0.1"):
-            for port in (7876, 3000, 8545, 8546, 3030, 8552, 42069, 9090, 9001):
+            for port in (3000, 8545, 8546, 3030, 8552, 42069, 9090, 9001):
                 config = config.replace(
                     f"http://{host}:{port}",
                     f"http://127.0.0.1:{self.server.server_port}",

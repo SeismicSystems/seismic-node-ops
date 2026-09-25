@@ -493,7 +493,7 @@ configure_public_endpoint() {
     OPENRESTY_JWT_SECRET_PATH=${OPENRESTY_JWT_SECRET_PATH:-/etc/seismic/openresty-jwt-secret}
 
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
-        _out "Custodian requires a same-host TLS terminator; its backend stays on 127.0.0.1:7876."
+        _out "Custodian requires a same-host TLS terminator; its backend stays on $COUNCIL_LISTEN."
         _out "  1) Use your own TLS terminator"
         _out "  2) OpenResty for Custodian only"
         _out "  3) OpenResty for Custodian and existing node endpoints"
@@ -613,7 +613,7 @@ print_https_endpoint_plan() {
     fi
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
         _out "  Custodian base URL: $CUSTODIAN_BASE_URL"
-        _out "  Private HTTP backend: $COUNCIL_LISTEN; never open port 7876 externally."
+        _out "  Private HTTP backend: $COUNCIL_LISTEN; never expose this backend externally."
         _out "  Internet-reachable HTTPS; protocol signatures authorize operations (no proxy JWT)."
     fi
 }
@@ -625,7 +625,7 @@ validate_custodian_url() {
 validate_https_endpoint_plan() {
     case "$OPENRESTY_MODE:$INSTALL_CUSTODIAN:$CONFIGURE_PUBLIC_ENDPOINT" in
         external:true:false | custodian:true:true | full:true:true)
-            [[ "$COUNCIL_LISTEN" == 127.0.0.1:7876 ]] \
+            validate_custodian_listen "$COUNCIL_LISTEN" \
                 && validate_custodian_url "$CUSTODIAN_BASE_URL" || return 1
             ;;
         disabled:false:false | full:false:true) ;;
@@ -866,6 +866,34 @@ validate_host_port() {
     ((port >= 1 && port <= 65535))
 }
 
+validate_custodian_port() {
+    local port=$1
+    # Canonical decimal only: avoid octal interpretation and shell expressions.
+    [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && ((port <= 65535))
+}
+
+validate_custodian_listen() {
+    [[ "$1" == 127.0.0.1:* ]] && validate_custodian_port "${1#127.0.0.1:}"
+}
+
+configure_custodian_port() {
+    local port
+
+    _out "Choose an unused backend port accessible to the service user. The bind address remains 127.0.0.1."
+    while true; do
+        prompt port "Custodian backend port" "7876"
+        if validate_custodian_port "$port"; then
+            break
+        fi
+        error "Custodian backend port must be a decimal integer from 1 to 65535, without leading zeros."
+    done
+    if ((port < 1024)); then
+        warn "Ports below 1024 may require privileges; the installer does not grant additional binding privileges."
+    fi
+    COUNCIL_LISTEN="127.0.0.1:$port"
+    _out "Custodian HTTP backend: $COUNCIL_LISTEN (same-host TLS termination required)."
+}
+
 configure_custodian() {
     section "Custodian configuration"
 
@@ -943,8 +971,7 @@ configure_custodian() {
         warn "The shared default makes epoch-0 purpose keys public."
     fi
 
-    COUNCIL_LISTEN="127.0.0.1:7876"
-    _out "Custodian HTTP backend: $COUNCIL_LISTEN (same-host TLS termination required)."
+    configure_custodian_port
 
     while true; do
         prompt COUNCIL_ADDRESS \
