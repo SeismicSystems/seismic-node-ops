@@ -377,8 +377,8 @@ printf '%s\\n' "$SUMMIT_SOURCE_REF" "$RETH_SOURCE_REF" "$CUSTODIAN_SOURCE_REF" "
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                "refs/tags/internal-testnet-v1",  # Summit source selection
-                "refs/tags/internal-testnet-v1",  # Reth source selection
+                "refs/tags/internal-testnet-v2",  # Summit source selection
+                "refs/tags/internal-testnet-v2",  # Reth source selection
                 "refs/heads/centralized-custodian",  # Until the HTTP release is tagged.
                 "main",  # Checkpointer
                 TAG,  # Custodian's Summit compatibility baseline is unchanged.

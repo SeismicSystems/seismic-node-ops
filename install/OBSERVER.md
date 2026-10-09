@@ -177,8 +177,8 @@ Summit, seismic-reth, summit-checkpointer, and Centralized Custodian support:
 The current source-build defaults are:
 
 ```text
-Summit:       internal-testnet-v1 (tag)
-seismic-reth: internal-testnet-v1 (tag)
+Summit:       internal-testnet-v2 (tag)
+seismic-reth: internal-testnet-v2 (tag)
 Checkpointer: main (branch)
 Custodian:    centralized-custodian (temporary branch, enclave repository)
 ```
@@ -792,7 +792,7 @@ separate store.
 For source installations, refs are configured in `install/lib/configuration.sh`.
 Use `refs/tags/<tag>` for a release tag; unqualified names (or
 `refs/heads/<branch>`) select branches. Summit and seismic-reth default to
-`refs/tags/internal-testnet-v1`; Custodian temporarily uses
+`refs/tags/internal-testnet-v2`; Custodian temporarily uses
 `refs/heads/centralized-custodian` for its HTTP transport migration, pending a
 new release tag. Summit and Reth tags must be published in their respective
 repositories before installation. Checkpointer remains on the `main` branch.
