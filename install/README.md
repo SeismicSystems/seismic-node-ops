@@ -740,6 +740,14 @@ Use `refs/tags/<tag>` for a release tag; unqualified names (or
 new release tag. Summit and Reth tags must be published in their respective
 repositories before installation. Checkpointer remains on the `main` branch.
 
+To install a different ref without editing the installer, export the matching
+variable before running it: `SUMMIT_SOURCE_REF`, `RETH_SOURCE_REF`,
+`CUSTODIAN_SOURCE_REF`, or `CHECKPOINTER_SOURCE_REF`, for example
+`sudo SUMMIT_SOURCE_REF=refs/tags/internal-testnet-v2 ./install/install-validator.sh`.
+The same ref syntax and validation apply. Source builds run
+`cargo build --locked`, so the selected ref must carry a consistent
+`Cargo.lock`.
+
 New checkouts fetch all remote branches. Every tag installation fetches the
 exact tag without forcing or pruning tags, resolves it to a commit, and checks
 it out with detached HEAD. Both lightweight and annotated tags are supported.

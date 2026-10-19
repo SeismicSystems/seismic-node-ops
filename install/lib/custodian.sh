@@ -27,7 +27,7 @@ install_custodian_binary() {
             info "Building Centralized Custodian from $CUSTODIAN_SOURCE_REF..."
             # shellcheck disable=SC2016
             if ! run_as_service_user bash -c \
-                'source "$HOME/.cargo/env"; cd "$1"; cargo build --release -p seismic-centralized-custodian-service' \
+                'source "$HOME/.cargo/env"; cd "$1"; cargo build --locked --release -p seismic-centralized-custodian-service' \
                 _ "$source_dir" >>"$LOG_FILE" 2>&1; then
                 die "Centralized Custodian build failed; see $LOG_FILE"
             fi

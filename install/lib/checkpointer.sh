@@ -25,7 +25,7 @@ install_checkpointer_binary() {
             info "Building summit-checkpointer from $CHECKPOINTER_SOURCE_REF..."
             # shellcheck disable=SC2016
             if ! run_as_service_user bash -c \
-                'source "$HOME/.cargo/env"; cd "$1"; cargo build --release' \
+                'source "$HOME/.cargo/env"; cd "$1"; cargo build --locked --release' \
                 _ "$source_dir" >>"$LOG_FILE" 2>&1; then
                 die "summit-checkpointer build failed; see $LOG_FILE"
             fi

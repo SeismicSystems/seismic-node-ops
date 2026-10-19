@@ -323,7 +323,7 @@ install_summit_binary() {
             info "Building Summit from $SUMMIT_SOURCE_REF..."
             # shellcheck disable=SC2016
             if ! run_as_service_user bash -c \
-                'source "$HOME/.cargo/env"; cd "$1"; cargo build --release --features prom' \
+                'source "$HOME/.cargo/env"; cd "$1"; cargo build --locked --release --features prom' \
                 _ "$source_dir" >>"$LOG_FILE" 2>&1; then
                 die "Summit build failed; see $LOG_FILE"
             fi
@@ -351,7 +351,7 @@ install_reth_binary() {
             info "Building seismic-reth from $RETH_SOURCE_REF..."
             # shellcheck disable=SC2016
             if ! run_as_service_user bash -c \
-                'source "$HOME/.cargo/env"; cd "$1"; cargo build --release' \
+                'source "$HOME/.cargo/env"; cd "$1"; cargo build --locked --release' \
                 _ "$source_dir" >>"$LOG_FILE" 2>&1; then
                 die "seismic-reth build failed; see $LOG_FILE"
             fi

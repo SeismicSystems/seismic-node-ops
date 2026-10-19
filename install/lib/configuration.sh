@@ -455,8 +455,10 @@ configure_node_software() {
     SUMMIT_TARGET_BIN="/usr/local/bin/summit"
     RETH_TARGET_BIN="/usr/local/bin/seismic-reth"
     # Explicit tag refs cannot be mistaken for same-named branches.
-    SUMMIT_SOURCE_REF="refs/tags/internal-testnet-v1"
-    RETH_SOURCE_REF="refs/tags/internal-testnet-v1"
+    # Operators may override the pinned refs through the environment, for
+    # example SUMMIT_SOURCE_REF=refs/tags/<tag> or refs/heads/<branch>.
+    SUMMIT_SOURCE_REF=${SUMMIT_SOURCE_REF:-refs/tags/internal-testnet-v1}
+    RETH_SOURCE_REF=${RETH_SOURCE_REF:-refs/tags/internal-testnet-v1}
     SUMMIT_INSTALL_METHOD=""
     RETH_INSTALL_METHOD=""
     SUMMIT_BINARY=""
@@ -845,7 +847,7 @@ configure_checkpointer() {
     CHECKPOINTER_TARGET_BIN="/usr/local/bin/summit-checkpointer"
     MDBX_COPY_TARGET_BIN="/usr/local/bin/mdbx_copy"
     CHECKPOINTER_CONFIG_PATH=${CHECKPOINTER_CONFIG_PATH:-/etc/seismic/summit-checkpointer.toml}
-    CHECKPOINTER_SOURCE_REF="main"
+    CHECKPOINTER_SOURCE_REF=${CHECKPOINTER_SOURCE_REF:-main}
     CHECKPOINTER_INSTALL_METHOD=""
     CHECKPOINTS_DIR=""
     CHECKPOINTER_BINARY=""
@@ -936,10 +938,12 @@ configure_custodian() {
     COUNCIL_ADDRESS=""
     CUSTODIAN_CHAIN_ID=""
     PARENT_CUSTODIAN=""
-    CUSTODIAN_REQUIRED_SUMMIT_REF="internal-testnet-v0"
-    CUSTODIAN_REQUIRED_RETH_REF="internal-testnet-v0"
+    # Must match the Summit and seismic-reth defaults in configure_node_software;
+    # a mismatch is shown to operators as a compatibility warning.
+    CUSTODIAN_REQUIRED_SUMMIT_REF="internal-testnet-v1"
+    CUSTODIAN_REQUIRED_RETH_REF="internal-testnet-v1"
     # Temporary branch until the HTTP migration receives a release tag.
-    CUSTODIAN_SOURCE_REF="refs/heads/centralized-custodian"
+    CUSTODIAN_SOURCE_REF=${CUSTODIAN_SOURCE_REF:-refs/heads/centralized-custodian}
 
     if ! confirm "Enable Centralized Custodian?"; then
         _out "Centralized Custodian: $INSTALL_CUSTODIAN"
