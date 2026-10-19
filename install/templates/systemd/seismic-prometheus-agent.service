@@ -1,0 +1,34 @@
+# Prometheus in agent mode: scrapes Summit and Reth locally and remote-writes
+# to the central Prometheus with a bearer token.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# Runs as its own account so node keys stay unreadable to the agent. The
+# installer maintains the `current` binary symlink and renders prometheus.yml.
+
+[Unit]
+Description=Seismic Prometheus Agent
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seismic-prometheus
+Group=seismic-prometheus
+EnvironmentFile=/etc/seismic/node.env
+ExecStart=/usr/local/lib/seismic/prometheus-agent/current/prometheus \
+    --agent \
+    --config.file=/etc/seismic/prometheus-agent/prometheus.yml \
+    --storage.agent.path=${MONITORING_DATA_DIR} \
+    --storage.agent.retention.min-time=5m \
+    --storage.agent.retention.max-time=6h \
+    --storage.agent.wal-compression \
+    --storage.remote.flush-deadline=30s \
+    --web.listen-address=127.0.0.1:9091
+Restart=always
+RestartSec=5s
+TimeoutStopSec=60s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,25 @@
+# Short-lived Summit deposit-signature RPC, validator role.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# Started and stopped by `seismic-node validator deposit`; never enabled at
+# boot and never restarted automatically. It shares Summit's key store, so it
+# conflicts with both Summit units.
+
+[Unit]
+Description=Seismic Summit deposit-signature RPC (temporary)
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+Conflicts=seismic-summit.service seismic-summit-checkpoint.service
+RefuseManualStart=no
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+ExecStart=/usr/local/bin/summit deposit-rpc \
+    --genesis-path ${GENESIS_PATH} \
+    --key-store-path ${SUMMIT_KEYS_DIR} \
+    --port 3031
+Restart=no
+TimeoutStopSec=30s
+KillMode=mixed

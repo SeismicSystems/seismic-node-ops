@@ -46,6 +46,26 @@ from seismic_node.checkpoint import (
 )
 
 DEFAULT_PATH = Path("/etc/seismic/node.env")
+# Fixed by the static systemd units; not configurable through node.env.
+SERVICE_USER = "seismic"
+SERVICE_GROUP = "seismic"
+CHECKPOINT_START_CONFIG = Path("/etc/seismic/checkpoint-start.toml")
+WEAK_SUBJECTIVITY_PATH = Path("/etc/seismic/weak-subjectivity.toml")
+# systemd forbids a variable as the program in ExecStart=, so binaries have
+# fixed locations that the units name literally.
+BINARIES = {
+    "summit": Path("/usr/local/bin/summit"),
+    "reth": Path("/usr/local/bin/seismic-reth"),
+    "custodian": Path("/usr/local/bin/seismic-centralized-custodian-service"),
+    "checkpointer": Path("/usr/local/bin/summit-checkpointer"),
+    "mdbx_copy": Path("/usr/local/bin/mdbx_copy"),
+    "summit_checkpoint_runner": Path(
+        "/usr/local/libexec/seismic/summit-checkpoint-runner"
+    ),
+    "prometheus_agent": Path(
+        "/usr/local/lib/seismic/prometheus-agent/current/prometheus"
+    ),
+}
 
 KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ROLES = ("validator", "observer")
@@ -306,8 +326,6 @@ class Field:
 SCHEMA: dict[str, Field] = {
     # Identity
     "SEISMIC_ROLE": Field(_enum(ROLES)),
-    "SERVICE_USER": Field(_string),
-    "SERVICE_GROUP": Field(_string),
     # Persistent layout
     "RETH_DATA_DIR": Field(_path),
     "SUMMIT_DATA_DIR": Field(_path),
@@ -315,11 +333,9 @@ SCHEMA: dict[str, Field] = {
     "RETH_P2P_KEY_PATH": Field(_path),
     "SUMMIT_KEYS_DIR": Field(_path),
     "SUMMIT_BOOTSTRAPPERS_FILE": Field(_optional_path),
+    "SUMMIT_BOOTSTRAPPERS_ARG": Field(_optional_string),
     "SUMMIT_CRITICAL_LOG_DIR": Field(_path),
     # Binaries
-    "SUMMIT_BIN": Field(_path),
-    "RETH_BIN": Field(_path),
-    "SUMMIT_CHECKPOINT_RUNNER": Field(_path),
     "SUMMIT_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
     "RETH_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
     "SUMMIT_VERSION": Field(_string),
@@ -329,16 +345,18 @@ SCHEMA: dict[str, Field] = {
     # Network
     "GENESIS_PATH": Field(_path),
     "RETH_BOOTNODE": Field(_optional_url),
+    "RETH_BOOTNODES_ARG": Field(_optional_string),
+    "RETH_PURPOSE_KEYS_SOURCE": Field(_enum(("built-in", "custodian"))),
     "RETH_RPC_BIND": Field(_bind_address),
     "SUMMIT_RPC_BIND": Field(_bind_address),
     "RETH_ENGINE_IPC": Field(_path),
     "OBSERVER_PARENT_NODE_PUBLIC_KEY": Field(_public_key, observer),
     "OBSERVER_INDEX": Field(_int(0, 2**31 - 1), observer),
     "OBSERVER_PUBLIC_ADDRESS": Field(_host_port, observer),
+    "OBSERVER_P2P_PORT": Field(_int(1, 65535), observer),
     # Custodian
     "CUSTODIAN_ENABLED": Field(_bool),
     "CUSTODIAN_DATA_DIR": Field(_path, flag("CUSTODIAN_ENABLED")),
-    "CUSTODIAN_BIN": Field(_path, flag("CUSTODIAN_ENABLED")),
     "CUSTODIAN_INSTALL_METHOD": Field(
         _enum(INSTALL_METHODS), flag("CUSTODIAN_ENABLED")
     ),
@@ -346,7 +364,8 @@ SCHEMA: dict[str, Field] = {
     "CUSTODIAN_PREBUILT_PATH": Field(
         _path, both(flag("CUSTODIAN_ENABLED"), prebuilt("CUSTODIAN"))
     ),
-    "CUSTODIAN_SOCKET": Field(_path, flag("CUSTODIAN_ENABLED")),
+    # Always passed to Reth, so required even when Custodian is disabled.
+    "CUSTODIAN_SOCKET": Field(_path),
     "CUSTODIAN_COUNCIL_PORT": Field(_int(1, 65535), flag("CUSTODIAN_ENABLED")),
     "CUSTODIAN_COUNCIL_ADDRESS": Field(_eth_address, flag("CUSTODIAN_ENABLED")),
     "CUSTODIAN_CHAIN_ID": Field(_int(1, 2**63 - 1), flag("CUSTODIAN_ENABLED")),
@@ -356,7 +375,6 @@ SCHEMA: dict[str, Field] = {
     # Checkpointer
     "CHECKPOINTER_ENABLED": Field(_bool),
     "CHECKPOINTS_DIR": Field(_path, flag("CHECKPOINTER_ENABLED")),
-    "CHECKPOINTER_BIN": Field(_path, flag("CHECKPOINTER_ENABLED")),
     "CHECKPOINTER_INSTALL_METHOD": Field(
         _enum(INSTALL_METHODS), flag("CHECKPOINTER_ENABLED")
     ),
@@ -365,7 +383,6 @@ SCHEMA: dict[str, Field] = {
         _path, both(flag("CHECKPOINTER_ENABLED"), prebuilt("CHECKPOINTER"))
     ),
     "CHECKPOINTER_CONFIG_PATH": Field(_path, flag("CHECKPOINTER_ENABLED")),
-    "MDBX_COPY_BIN": Field(_path, flag("CHECKPOINTER_ENABLED")),
     # HTTPS endpoint
     "TLS_MODE": Field(_enum(TLS_MODES)),
     "DOMAIN": Field(_domain, tls_managed),
@@ -381,9 +398,6 @@ SCHEMA: dict[str, Field] = {
     "MONITORING_REMOTE_WRITE_URL": Field(_https_url, flag("MONITORING_ENABLED")),
     "MONITORING_TOKEN_PATH": Field(_path, flag("MONITORING_ENABLED")),
     "MONITORING_DATA_DIR": Field(_path, flag("MONITORING_ENABLED")),
-    # Runtime state
-    "CHECKPOINT_START_CONFIG": Field(_path),
-    "WEAK_SUBJECTIVITY_PATH": Field(_path),
 }
 
 # Keys whose conditions are evaluated must themselves be unconditional.
@@ -500,7 +514,50 @@ def _validate(raw: dict[str, str], source: Path | None) -> NodeEnv:
 
     env = NodeEnv(raw=dict(raw), values=values, source=source)
     _validate_layout(env)
+    _validate_derived(env)
     return env
+
+
+def _validate_derived(env: NodeEnv) -> None:
+    """Derived keys exist only because systemd cannot compute them; they must
+    agree with the values they are derived from."""
+    expected_source = "custodian" if env.flag("CUSTODIAN_ENABLED") else "built-in"
+    if env.string("RETH_PURPOSE_KEYS_SOURCE") != expected_source:
+        raise NodeEnvError(
+            f"node.env RETH_PURPOSE_KEYS_SOURCE must be {expected_source} "
+            f"when CUSTODIAN_ENABLED={env.raw['CUSTODIAN_ENABLED']}"
+        )
+
+    _require_flag_arg(
+        env, "RETH_BOOTNODES_ARG", "--bootnodes", env.string("RETH_BOOTNODE")
+    )
+    bootstrappers = env.optional_path("SUMMIT_BOOTSTRAPPERS_FILE")
+    _require_flag_arg(
+        env,
+        "SUMMIT_BOOTSTRAPPERS_ARG",
+        "--bootstrappers",
+        "" if bootstrappers is None else str(bootstrappers),
+    )
+
+    if env.role == "observer":
+        address = env.string("OBSERVER_PUBLIC_ADDRESS")
+        port = int(address.rpartition(":")[2])
+        if env.integer("OBSERVER_P2P_PORT") != port:
+            raise NodeEnvError(
+                f"node.env OBSERVER_P2P_PORT must be {port} to match OBSERVER_PUBLIC_ADDRESS"
+            )
+
+
+def _require_flag_arg(env: NodeEnv, key: str, flag_name: str, value: str) -> None:
+    # systemd splits an unquoted $KEY on whitespace, so the value must be a
+    # single word for the expansion to yield exactly two arguments.
+    if re.search(r"\s", value):
+        raise NodeEnvError(
+            f"node.env value for {key} must not contain whitespace: {value!r}"
+        )
+    expected = f"{flag_name} {value}" if value else ""
+    if env.string(key) != expected:
+        raise NodeEnvError(f"node.env {key} must be exactly {expected!r}")
 
 
 def _validate_layout(env: NodeEnv) -> None:

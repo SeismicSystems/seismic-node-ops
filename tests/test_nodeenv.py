@@ -99,10 +99,12 @@ OBSERVER = {
     "OBSERVER_PARENT_NODE_PUBLIC_KEY": "ab" * 32,
     "OBSERVER_INDEX": "3",
     "OBSERVER_PUBLIC_ADDRESS": "203.0.113.10:18551",
+    "OBSERVER_P2P_PORT": "18551",
 }
 
 CUSTODIAN = {
     "CUSTODIAN_ENABLED": "true",
+    "RETH_PURPOSE_KEYS_SOURCE": "custodian",
     "CUSTODIAN_COUNCIL_ADDRESS": "0x" + "ab" * 20,
     "CUSTODIAN_CHAIN_ID": "5124",
 }
@@ -145,9 +147,9 @@ class SchemaTests(unittest.TestCase):
 
     def test_missing_required_key_is_rejected(self):
         values = example_values()
-        del values["SUMMIT_BIN"]
+        del values["GENESIS_PATH"]
         with self.assertRaisesRegex(
-            nodeenv.NodeEnvError, "missing required keys: SUMMIT_BIN"
+            nodeenv.NodeEnvError, "missing required keys: GENESIS_PATH"
         ):
             nodeenv.validate(values)
 
@@ -197,7 +199,7 @@ class SchemaTests(unittest.TestCase):
             "SUMMIT_DATA_DIR": "/persistence/../summit",
             "RETH_RPC_BIND": "localhost",
             "TLS_MODE": "nginx",
-            "SUMMIT_BIN": "",
+            "GENESIS_PATH": "",
         }
         for key, value in cases.items():
             with (
@@ -218,6 +220,51 @@ class SchemaTests(unittest.TestCase):
                 self.assertRaisesRegex(nodeenv.NodeEnvError, key),
             ):
                 nodeenv.validate(example_values(**{**CUSTODIAN, key: value}))
+
+    def test_derived_keys_must_match_their_sources(self):
+        enode = "enode://ab@203.0.113.1:30303"
+        cases = {
+            "purpose keys without custodian": {"RETH_PURPOSE_KEYS_SOURCE": "custodian"},
+            "custodian without purpose keys": {
+                **CUSTODIAN,
+                "RETH_PURPOSE_KEYS_SOURCE": "built-in",
+            },
+            "bootnode without arg": {"RETH_BOOTNODE": enode},
+            "arg without bootnode": {"RETH_BOOTNODES_ARG": f"--bootnodes {enode}"},
+            "arg with wrong bootnode": {
+                "RETH_BOOTNODE": enode,
+                "RETH_BOOTNODES_ARG": "--bootnodes enode://cd@203.0.113.2:30303",
+            },
+            "bootstrappers without arg": {
+                "SUMMIT_BOOTSTRAPPERS_FILE": "/persistence/keys/summit/bootstrappers.toml"
+            },
+            "observer port mismatch": {**OBSERVER, "OBSERVER_P2P_PORT": "18552"},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(case=name), self.assertRaises(nodeenv.NodeEnvError):
+                nodeenv.validate(example_values(**overrides))
+
+        env = nodeenv.validate(
+            example_values(
+                RETH_BOOTNODE=enode,
+                RETH_BOOTNODES_ARG=f"--bootnodes {enode}",
+                SUMMIT_BOOTSTRAPPERS_FILE="/persistence/keys/summit/bootstrappers.toml",
+                SUMMIT_BOOTSTRAPPERS_ARG="--bootstrappers /persistence/keys/summit/bootstrappers.toml",
+            )
+        )
+        self.assertEqual(
+            env.string("RETH_BOOTNODES_ARG").split(), ["--bootnodes", enode]
+        )
+
+    def test_fixed_constants(self):
+        self.assertEqual(nodeenv.SERVICE_USER, "seismic")
+        self.assertEqual(
+            nodeenv.CHECKPOINT_START_CONFIG, Path("/etc/seismic/checkpoint-start.toml")
+        )
+        self.assertNotIn("SERVICE_USER", nodeenv.SCHEMA)
+        self.assertNotIn("RETH_BIN", nodeenv.SCHEMA)
+        self.assertTrue(all(p.is_absolute() for p in nodeenv.BINARIES.values()))
+        self.assertNotIn("CHECKPOINT_START_CONFIG", nodeenv.SCHEMA)
 
     def test_observer_type_errors(self):
         cases = {

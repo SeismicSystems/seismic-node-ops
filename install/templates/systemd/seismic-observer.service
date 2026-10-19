@@ -1,0 +1,42 @@
+# Seismic Summit consensus client, observer role, normal startup.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# Observers do not vote, so a restart cannot double-sign; Restart=on-failure
+# is safe here.
+
+[Unit]
+Description=Seismic Summit consensus client (observer)
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target seismic-reth.service
+Wants=network-online.target seismic-reth.service
+Conflicts=seismic-observer-checkpoint.service
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+RuntimeDirectory=seismic
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+LimitNOFILE=65536
+ExecStart=/usr/bin/flock --nonblock --no-fork ${SUMMIT_DATA_DIR}/.summit-process.lock \
+    /usr/local/bin/summit run \
+    --observer ${OBSERVER_INDEX} \
+    --ip ${OBSERVER_PUBLIC_ADDRESS} \
+    --port ${OBSERVER_P2P_PORT} \
+    --genesis-path ${GENESIS_PATH} \
+    --key-store-path ${SUMMIT_KEYS_DIR} \
+    --store-path ${SUMMIT_DATA_DIR} \
+    --engine-ipc-path ${RETH_ENGINE_IPC} \
+    --rpc-ip ${SUMMIT_RPC_BIND} --rpc-port 3030 --admin-rpc-port 3031 \
+    --prom-ip ${SUMMIT_RPC_BIND} --prom-port 9090 \
+    --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
+    $SUMMIT_BOOTSTRAPPERS_ARG
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,41 @@
+# Seismic Summit consensus client, validator role, normal startup.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# Restart= is deliberately absent until Summit's double-sign protection across
+# restarts is confirmed; until then a crashed validator stays down and must be
+# started explicitly, exactly as under Supervisor.
+
+[Unit]
+Description=Seismic Summit consensus client (validator)
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target seismic-reth.service
+Wants=network-online.target seismic-reth.service
+# Exactly one Summit process may own the key store and consensus state.
+Conflicts=seismic-summit-checkpoint.service seismic-deposit-rpc.service
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+RuntimeDirectory=seismic
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+LimitNOFILE=65536
+# flock takes the same kernel lock the seismic-node CLI holds while it moves
+# consensus state, so Summit can never start mid-operation.
+ExecStart=/usr/bin/flock --nonblock --no-fork ${SUMMIT_DATA_DIR}/.summit-process.lock \
+    /usr/local/bin/summit run \
+    --genesis-path ${GENESIS_PATH} \
+    --key-store-path ${SUMMIT_KEYS_DIR} \
+    --store-path ${SUMMIT_DATA_DIR} \
+    --engine-ipc-path ${RETH_ENGINE_IPC} \
+    --rpc-ip ${SUMMIT_RPC_BIND} --rpc-port 3030 --admin-rpc-port 3031 \
+    --prom-ip ${SUMMIT_RPC_BIND} --prom-port 9090 \
+    --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
+    $SUMMIT_BOOTSTRAPPERS_ARG
+TimeoutStopSec=120s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

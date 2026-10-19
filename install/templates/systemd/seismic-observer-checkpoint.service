@@ -1,0 +1,44 @@
+# Seismic Summit consensus client, observer role, startup from a checkpoint.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+# See seismic-summit-checkpoint.service for the runner's role.
+
+[Unit]
+Description=Seismic Summit consensus client (observer, checkpoint start)
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target seismic-reth.service
+Wants=network-online.target seismic-reth.service
+Conflicts=seismic-observer.service
+ConditionPathExists=/etc/seismic/checkpoint-start.toml
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+RuntimeDirectory=seismic
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+LimitNOFILE=65536
+ExecStart=/usr/local/libexec/seismic/summit-checkpoint-runner \
+    --config /etc/seismic/checkpoint-start.toml \
+    --lock-file ${SUMMIT_DATA_DIR}/.summit-process.lock \
+    -- \
+    /usr/local/bin/summit run \
+    --observer ${OBSERVER_INDEX} \
+    --ip ${OBSERVER_PUBLIC_ADDRESS} \
+    --port ${OBSERVER_P2P_PORT} \
+    --genesis-path ${GENESIS_PATH} \
+    --key-store-path ${SUMMIT_KEYS_DIR} \
+    --store-path ${SUMMIT_DATA_DIR} \
+    --engine-ipc-path ${RETH_ENGINE_IPC} \
+    --rpc-ip ${SUMMIT_RPC_BIND} --rpc-port 3030 --admin-rpc-port 3031 \
+    --prom-ip ${SUMMIT_RPC_BIND} --prom-port 9090 \
+    --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
+    $SUMMIT_BOOTSTRAPPERS_ARG
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

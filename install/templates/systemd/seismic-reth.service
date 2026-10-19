@@ -1,0 +1,42 @@
+# Seismic Reth execution client. Shared by validators and observers.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+
+[Unit]
+Description=Seismic Reth execution client
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target seismic-custodian.service seismic-observer-custodian.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+# /run/seismic holds the Engine API socket (and the Custodian socket when
+# enabled); preserved so sibling services keep access across restarts.
+RuntimeDirectory=seismic
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+LimitNOFILE=65536
+ExecStart=/usr/local/bin/seismic-reth node -vvv \
+    --datadir ${RETH_DATA_DIR} \
+    --p2p-secret-key ${RETH_P2P_KEY_PATH} \
+    --http --http.addr ${RETH_RPC_BIND} --http.port 8545 --http.api eth,net,web3 --http.corsdomain * \
+    --ws --ws.addr ${RETH_RPC_BIND} --ws.port 8546 --ws.api eth,net,web3 --ws.origins * \
+    --port 30303 \
+    --metrics 9001 \
+    --ipcdisable \
+    --auth-ipc --auth-ipc.path ${RETH_ENGINE_IPC} \
+    --seismic.purpose-keys-source ${RETH_PURPOSE_KEYS_SOURCE} \
+    --seismic.custodian.socket ${CUSTODIAN_SOCKET} \
+    --disable-discv4-discovery --disable-dns-discovery \
+    --enable-discv5-discovery --discovery.v5.port 30303 \
+    $RETH_BOOTNODES_ARG \
+    --ops.enable --ops.addr 127.0.0.1 --ops.port 8552
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
