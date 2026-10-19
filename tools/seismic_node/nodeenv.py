@@ -1,0 +1,586 @@
+"""Read and validate ``/etc/seismic/node.env``.
+
+``node.env`` is the single operator-authored configuration for a node. systemd
+units load it through ``EnvironmentFile=``; this module lets Python tooling
+read the same file and see exactly the values systemd sees.
+
+Parsing follows systemd's EnvironmentFile grammar, verified against systemd
+257 (``systemd-run -p EnvironmentFile=``):
+
+* Blank lines and lines whose first non-blank character is ``#`` or ``;`` are
+  comments.
+* ``KEY=value``; whitespace around ``=`` is ignored. Keys match
+  ``[A-Za-z_][A-Za-z0-9_]*``.
+* Bare values are trimmed. A backslash escapes the next character (the
+  backslash is dropped). A trailing backslash continues onto the next line
+  with no separator. ``#`` inside a value is *not* a comment.
+* Double-quoted values honour ``\\"`` and ``\\\\``; every other backslash is
+  literal (``"\\n"`` stays two characters). They may span lines.
+* Single-quoted values are fully literal and may span lines.
+
+Where systemd silently tolerates a construct whose outcome is surprising,
+this parser rejects it so the file can never contain something the two
+readers would interpret differently: invalid keys, missing ``=``, text after
+a closing quote, unterminated quotes, and duplicate keys are all errors.
+
+The schema deliberately has no defaults. systemd cannot derive one key from
+another, so the installer writes every applicable key and this module
+requires them. Defaults live only in ``install/templates/node.env.example``.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from seismic_node.checkpoint import (
+    PUBLIC_KEY,
+    CheckpointError,
+    require_absolute,
+    require_root_managed_file,
+    require_separate_paths,
+)
+
+DEFAULT_PATH = Path("/etc/seismic/node.env")
+
+KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+ROLES = ("validator", "observer")
+INSTALL_METHODS = ("download", "prebuilt", "source", "deferred")
+TLS_MODES = ("disabled", "custodian-only", "full", "external")
+MANAGED_TLS_MODES = ("custodian-only", "full")
+
+
+class NodeEnvError(CheckpointError):
+    """Raised for unreadable, malformed, or invalid node.env contents."""
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+
+def _fail(line_number: int, message: str) -> NodeEnvError:
+    return NodeEnvError(f"node.env line {line_number}: {message}")
+
+
+def _parse_bare(lines: list[str], index: int, raw: str) -> tuple[str, int]:
+    """Parse an unquoted value starting at ``raw``; return (value, next index)."""
+    out: list[str] = []
+    current = raw
+    while True:
+        position = 0
+        continued = False
+        while position < len(current):
+            char = current[position]
+            if char == "\\":
+                if position + 1 < len(current):
+                    out.append(current[position + 1])
+                    position += 2
+                    continue
+                continued = True
+                break
+            out.append(char)
+            position += 1
+        if not continued:
+            break
+        index += 1
+        if index >= len(lines):
+            # systemd drops a trailing continuation at EOF.
+            break
+        current = lines[index]
+    return "".join(out).rstrip(), index
+
+
+def _parse_quoted(
+    lines: list[str], index: int, raw: str, quote: str, start_line: int
+) -> tuple[str, int]:
+    """Parse a quoted value; ``raw`` begins just after the opening quote."""
+    out: list[str] = []
+    current = raw
+    while True:
+        position = 0
+        while position < len(current):
+            char = current[position]
+            if quote == '"' and char == "\\" and position + 1 < len(current):
+                following = current[position + 1]
+                if following in ('"', "\\"):
+                    out.append(following)
+                    position += 2
+                    continue
+            if char == quote:
+                remainder = current[position + 1 :].strip()
+                if remainder:
+                    raise _fail(
+                        start_line,
+                        f"unexpected text after closing quote: {remainder!r}",
+                    )
+                return "".join(out), index
+            out.append(char)
+            position += 1
+        index += 1
+        if index >= len(lines):
+            raise _fail(start_line, f"unterminated {quote} quote")
+        out.append("\n")
+        current = lines[index]
+
+
+def parse(text: str) -> dict[str, str]:
+    """Parse node.env text into an ordered mapping of key to value."""
+    values: dict[str, str] = {}
+    lines = text.split("\n")
+    index = 0
+    while index < len(lines):
+        line_number = index + 1
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped[0] in "#;":
+            index += 1
+            continue
+        if "=" not in stripped:
+            raise _fail(line_number, "expected KEY=value")
+        key, _, rest = stripped.partition("=")
+        key = key.strip()
+        if not KEY_PATTERN.fullmatch(key):
+            raise _fail(line_number, f"invalid key {key!r}")
+        if key in values:
+            raise _fail(line_number, f"duplicate key {key}")
+        rest = rest.lstrip()
+        if rest[:1] in ('"', "'"):
+            value, index = _parse_quoted(lines, index, rest[1:], rest[0], line_number)
+        else:
+            value, index = _parse_bare(lines, index, rest)
+        values[key] = value
+        index += 1
+    return values
+
+
+# ---------------------------------------------------------------------------
+# Schema
+# ---------------------------------------------------------------------------
+
+Validator = Callable[[str, str], Any]
+
+
+def _string(value: str, key: str) -> str:
+    if not value:
+        raise NodeEnvError(f"node.env {key} must not be empty")
+    return value
+
+
+def _optional_string(value: str, key: str) -> str:
+    return value
+
+
+def _path(value: str, key: str) -> Path:
+    if not value:
+        raise NodeEnvError(f"node.env {key} must not be empty")
+    path = Path(value)
+    require_absolute(path, f"node.env {key}")
+    return path
+
+
+def _optional_path(value: str, key: str) -> Path | None:
+    return _path(value, key) if value else None
+
+
+def _int(minimum: int, maximum: int) -> Validator:
+    def validate(value: str, key: str) -> int:
+        if not re.fullmatch(r"[0-9]+", value):
+            raise NodeEnvError(f"node.env {key} must be a non-negative integer")
+        number = int(value)
+        if not minimum <= number <= maximum:
+            raise NodeEnvError(
+                f"node.env {key} must be between {minimum} and {maximum}"
+            )
+        return number
+
+    return validate
+
+
+def _bool(value: str, key: str) -> bool:
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise NodeEnvError(f"node.env {key} must be exactly 'true' or 'false'")
+
+
+def _enum(choices: tuple[str, ...]) -> Validator:
+    def validate(value: str, key: str) -> str:
+        if value not in choices:
+            raise NodeEnvError(f"node.env {key} must be one of: {', '.join(choices)}")
+        return value
+
+    return validate
+
+
+def _bind_address(value: str, key: str) -> str:
+    if not re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,3}){3}", value):
+        raise NodeEnvError(f"node.env {key} must be an IPv4 address")
+    return value
+
+
+def _host_port(value: str, key: str) -> str:
+    host, _, port = value.rpartition(":")
+    if not host or not re.fullmatch(r"[0-9]+", port) or not 1 <= int(port) <= 65535:
+        raise NodeEnvError(f"node.env {key} must be host:port")
+    return value
+
+
+def _https_url(value: str, key: str) -> str:
+    if not re.fullmatch(r"https://[^\s/]+(/[^\s]*)?", value):
+        raise NodeEnvError(f"node.env {key} must be an https:// URL")
+    return value
+
+
+def _optional_url(value: str, key: str) -> str:
+    if value and not re.fullmatch(r"(https?|enode)://[^\s]+", value):
+        raise NodeEnvError(f"node.env {key} must be a URL or empty")
+    return value
+
+
+def _public_key(value: str, key: str) -> str:
+    if not PUBLIC_KEY.fullmatch(value):
+        raise NodeEnvError(f"node.env {key} must be 64 lowercase hex characters")
+    return value
+
+
+def _eth_address(value: str, key: str) -> str:
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
+        raise NodeEnvError(f"node.env {key} must be a 0x-prefixed 20-byte address")
+    return value
+
+
+def _domain(value: str, key: str) -> str:
+    if not re.fullmatch(
+        r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", value
+    ):
+        raise NodeEnvError(f"node.env {key} must be a lowercase DNS name")
+    return value
+
+
+# Conditions decide whether a key applies to this file. ``raw`` holds parsed
+# strings; conditions only inspect keys that are always required, so they are
+# safe to evaluate before full validation.
+Condition = Callable[[dict[str, str]], bool]
+
+
+def always(raw: dict[str, str]) -> bool:
+    return True
+
+
+def observer(raw: dict[str, str]) -> bool:
+    return raw.get("SEISMIC_ROLE") == "observer"
+
+
+def flag(name: str) -> Condition:
+    return lambda raw: raw.get(name) == "true"
+
+
+def both(*conditions: Condition) -> Condition:
+    return lambda raw: all(condition(raw) for condition in conditions)
+
+
+def prebuilt(component: str) -> Condition:
+    return lambda raw: raw.get(f"{component}_INSTALL_METHOD") == "prebuilt"
+
+
+def tls_managed(raw: dict[str, str]) -> bool:
+    return raw.get("TLS_MODE") in MANAGED_TLS_MODES
+
+
+def tls_external(raw: dict[str, str]) -> bool:
+    return raw.get("TLS_MODE") == "external"
+
+
+@dataclass(frozen=True)
+class Field:
+    validate: Validator
+    applies: Condition = always
+
+
+SCHEMA: dict[str, Field] = {
+    # Identity
+    "SEISMIC_ROLE": Field(_enum(ROLES)),
+    "SERVICE_USER": Field(_string),
+    "SERVICE_GROUP": Field(_string),
+    # Persistent layout
+    "RETH_DATA_DIR": Field(_path),
+    "SUMMIT_DATA_DIR": Field(_path),
+    "KEYS_DIR": Field(_path),
+    "RETH_P2P_KEY_PATH": Field(_path),
+    "SUMMIT_KEYS_DIR": Field(_path),
+    "SUMMIT_BOOTSTRAPPERS_FILE": Field(_optional_path),
+    "SUMMIT_CRITICAL_LOG_DIR": Field(_path),
+    # Binaries
+    "SUMMIT_BIN": Field(_path),
+    "RETH_BIN": Field(_path),
+    "SUMMIT_CHECKPOINT_RUNNER": Field(_path),
+    "SUMMIT_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
+    "RETH_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
+    "SUMMIT_VERSION": Field(_string),
+    "RETH_VERSION": Field(_string),
+    "SUMMIT_PREBUILT_PATH": Field(_path, prebuilt("SUMMIT")),
+    "RETH_PREBUILT_PATH": Field(_path, prebuilt("RETH")),
+    # Network
+    "GENESIS_PATH": Field(_path),
+    "RETH_BOOTNODE": Field(_optional_url),
+    "RETH_RPC_BIND": Field(_bind_address),
+    "SUMMIT_RPC_BIND": Field(_bind_address),
+    "RETH_ENGINE_IPC": Field(_path),
+    "OBSERVER_PARENT_NODE_PUBLIC_KEY": Field(_public_key, observer),
+    "OBSERVER_INDEX": Field(_int(0, 2**31 - 1), observer),
+    "OBSERVER_PUBLIC_ADDRESS": Field(_host_port, observer),
+    # Custodian
+    "CUSTODIAN_ENABLED": Field(_bool),
+    "CUSTODIAN_DATA_DIR": Field(_path, flag("CUSTODIAN_ENABLED")),
+    "CUSTODIAN_BIN": Field(_path, flag("CUSTODIAN_ENABLED")),
+    "CUSTODIAN_INSTALL_METHOD": Field(
+        _enum(INSTALL_METHODS), flag("CUSTODIAN_ENABLED")
+    ),
+    "CUSTODIAN_VERSION": Field(_string, flag("CUSTODIAN_ENABLED")),
+    "CUSTODIAN_PREBUILT_PATH": Field(
+        _path, both(flag("CUSTODIAN_ENABLED"), prebuilt("CUSTODIAN"))
+    ),
+    "CUSTODIAN_SOCKET": Field(_path, flag("CUSTODIAN_ENABLED")),
+    "CUSTODIAN_COUNCIL_PORT": Field(_int(1, 65535), flag("CUSTODIAN_ENABLED")),
+    "CUSTODIAN_COUNCIL_ADDRESS": Field(_eth_address, flag("CUSTODIAN_ENABLED")),
+    "CUSTODIAN_CHAIN_ID": Field(_int(1, 2**63 - 1), flag("CUSTODIAN_ENABLED")),
+    "CUSTODIAN_PARENT_URL": Field(
+        _https_url, both(flag("CUSTODIAN_ENABLED"), observer)
+    ),
+    # Checkpointer
+    "CHECKPOINTER_ENABLED": Field(_bool),
+    "CHECKPOINTS_DIR": Field(_path, flag("CHECKPOINTER_ENABLED")),
+    "CHECKPOINTER_BIN": Field(_path, flag("CHECKPOINTER_ENABLED")),
+    "CHECKPOINTER_INSTALL_METHOD": Field(
+        _enum(INSTALL_METHODS), flag("CHECKPOINTER_ENABLED")
+    ),
+    "CHECKPOINTER_VERSION": Field(_string, flag("CHECKPOINTER_ENABLED")),
+    "CHECKPOINTER_PREBUILT_PATH": Field(
+        _path, both(flag("CHECKPOINTER_ENABLED"), prebuilt("CHECKPOINTER"))
+    ),
+    "CHECKPOINTER_CONFIG_PATH": Field(_path, flag("CHECKPOINTER_ENABLED")),
+    "MDBX_COPY_BIN": Field(_path, flag("CHECKPOINTER_ENABLED")),
+    # HTTPS endpoint
+    "TLS_MODE": Field(_enum(TLS_MODES)),
+    "DOMAIN": Field(_domain, tls_managed),
+    "CUSTODIAN_PUBLIC_URL": Field(
+        _https_url, both(tls_external, flag("CUSTODIAN_ENABLED"))
+    ),
+    "RATE_LIMIT_RPS": Field(_int(1, 1_000_000), tls_managed),
+    "RATE_LIMIT_BURST": Field(_int(1, 1_000_000), tls_managed),
+    "OPENRESTY_JWT_SECRET_PATH": Field(_path, tls_managed),
+    # Monitoring
+    "MONITORING_ENABLED": Field(_bool),
+    "MONITORING_NODE_NAME": Field(_string, flag("MONITORING_ENABLED")),
+    "MONITORING_REMOTE_WRITE_URL": Field(_https_url, flag("MONITORING_ENABLED")),
+    "MONITORING_TOKEN_PATH": Field(_path, flag("MONITORING_ENABLED")),
+    "MONITORING_DATA_DIR": Field(_path, flag("MONITORING_ENABLED")),
+    # Runtime state
+    "CHECKPOINT_START_CONFIG": Field(_path),
+    "WEAK_SUBJECTIVITY_PATH": Field(_path),
+}
+
+# Keys whose conditions are evaluated must themselves be unconditional.
+_CONDITION_INPUTS = (
+    "SEISMIC_ROLE",
+    "CUSTODIAN_ENABLED",
+    "CHECKPOINTER_ENABLED",
+    "MONITORING_ENABLED",
+    "TLS_MODE",
+    "SUMMIT_INSTALL_METHOD",
+    "RETH_INSTALL_METHOD",
+    "CUSTODIAN_INSTALL_METHOD",
+    "CHECKPOINTER_INSTALL_METHOD",
+)
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class NodeEnv:
+    """Validated node configuration with typed accessors."""
+
+    raw: dict[str, str]
+    values: dict[str, Any]
+    source: Path | None = None
+
+    @property
+    def role(self) -> str:
+        return self.values["SEISMIC_ROLE"]
+
+    def applies(self, key: str) -> bool:
+        return key in self.values
+
+    def get(self, key: str) -> Any:
+        try:
+            return self.values[key]
+        except KeyError:
+            raise NodeEnvError(
+                f"node.env {key} does not apply to this configuration"
+            ) from None
+
+    def path(self, key: str) -> Path:
+        value = self.get(key)
+        if not isinstance(value, Path):
+            raise NodeEnvError(f"node.env {key} is not a path")
+        return value
+
+    def optional_path(self, key: str) -> Path | None:
+        value = self.get(key)
+        if value is not None and not isinstance(value, Path):
+            raise NodeEnvError(f"node.env {key} is not a path")
+        return value
+
+    def string(self, key: str) -> str:
+        value = self.get(key)
+        if not isinstance(value, str):
+            raise NodeEnvError(f"node.env {key} is not a string")
+        return value
+
+    def integer(self, key: str) -> int:
+        value = self.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise NodeEnvError(f"node.env {key} is not an integer")
+        return value
+
+    def flag(self, key: str) -> bool:
+        value = self.get(key)
+        if not isinstance(value, bool):
+            raise NodeEnvError(f"node.env {key} is not a boolean")
+        return value
+
+
+def validate(raw: dict[str, str], *, source: Path | None = None) -> NodeEnv:
+    """Validate parsed values against the schema and cross-key rules."""
+    try:
+        return _validate(raw, source)
+    except NodeEnvError:
+        raise
+    except CheckpointError as error:
+        raise NodeEnvError(str(error)) from error
+
+
+def _validate(raw: dict[str, str], source: Path | None) -> NodeEnv:
+    unknown = sorted(set(raw) - set(SCHEMA))
+    if unknown:
+        raise NodeEnvError(f"node.env has unknown keys: {', '.join(unknown)}")
+
+    # Condition inputs are validated first so conditions see sane values.
+    values: dict[str, Any] = {}
+    for key in _CONDITION_INPUTS:
+        field = SCHEMA[key]
+        if key not in raw:
+            if field.applies(raw):
+                raise NodeEnvError(f"node.env is missing required key {key}")
+            continue
+        if field.applies(raw):
+            values[key] = field.validate(raw[key], key)
+
+    missing: list[str] = []
+    for key, field in SCHEMA.items():
+        if key in values:
+            continue
+        if not field.applies(raw):
+            continue
+        if key not in raw:
+            missing.append(key)
+            continue
+        values[key] = field.validate(raw[key], key)
+    if missing:
+        raise NodeEnvError(f"node.env is missing required keys: {', '.join(missing)}")
+
+    env = NodeEnv(raw=dict(raw), values=values, source=source)
+    _validate_layout(env)
+    return env
+
+
+def _validate_layout(env: NodeEnv) -> None:
+    """Enforce path relationships the units and tooling rely on."""
+    keys_dir = env.path("KEYS_DIR")
+    for key in ("RETH_P2P_KEY_PATH", "SUMMIT_KEYS_DIR"):
+        if not _within(env.path(key), keys_dir):
+            raise NodeEnvError(
+                f"node.env {key} must be inside KEYS_DIR: {env.path(key)}"
+            )
+    if not _within(env.path("SUMMIT_CRITICAL_LOG_DIR"), env.path("SUMMIT_DATA_DIR")):
+        raise NodeEnvError(
+            "node.env SUMMIT_CRITICAL_LOG_DIR must be inside SUMMIT_DATA_DIR"
+        )
+
+    top_level = {
+        "RETH_DATA_DIR": env.path("RETH_DATA_DIR"),
+        "SUMMIT_DATA_DIR": env.path("SUMMIT_DATA_DIR"),
+        "KEYS_DIR": keys_dir,
+    }
+    for key in ("CUSTODIAN_DATA_DIR", "CHECKPOINTS_DIR", "MONITORING_DATA_DIR"):
+        if env.applies(key):
+            top_level[key] = env.path(key)
+    require_separate_paths(top_level)
+
+    require_separate_paths(
+        {
+            "RETH_P2P_KEY_PATH": env.path("RETH_P2P_KEY_PATH"),
+            "SUMMIT_KEYS_DIR": env.path("SUMMIT_KEYS_DIR"),
+        }
+    )
+
+    bootstrappers = env.optional_path("SUMMIT_BOOTSTRAPPERS_FILE")
+    if bootstrappers is not None and not _within(
+        bootstrappers, env.path("SUMMIT_KEYS_DIR")
+    ):
+        raise NodeEnvError(
+            "node.env SUMMIT_BOOTSTRAPPERS_FILE must be inside SUMMIT_KEYS_DIR"
+        )
+
+
+def _within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return path != parent
+
+
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
+
+
+def read_text(path: Path) -> str:
+    """Read node.env with the same ownership policy as other root-managed files."""
+    require_root_managed_file(path, "node.env")
+    try:
+        file_descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise NodeEnvError(
+            f"Could not safely open node.env: {path}: {error}"
+        ) from error
+    try:
+        with os.fdopen(file_descriptor, "rb") as file:
+            data = file.read()
+    except OSError as error:
+        raise NodeEnvError(f"Could not read node.env: {path}: {error}") from error
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise NodeEnvError(f"node.env is not valid UTF-8: {path}") from error
+
+
+def load(path: Path = DEFAULT_PATH) -> NodeEnv:
+    """Read, parse, and validate node.env."""
+    try:
+        text = read_text(path)
+    except NodeEnvError:
+        raise
+    except CheckpointError as error:
+        raise NodeEnvError(str(error)) from error
+    return validate(parse(text), source=path)
