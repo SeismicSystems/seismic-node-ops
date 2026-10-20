@@ -396,7 +396,6 @@ SCHEMA: dict[str, Field] = {
     "MONITORING_ENABLED": Field(_bool),
     "MONITORING_NODE_NAME": Field(_string, flag("MONITORING_ENABLED")),
     "MONITORING_REMOTE_WRITE_URL": Field(_https_url, flag("MONITORING_ENABLED")),
-    "MONITORING_TOKEN_PATH": Field(_path, flag("MONITORING_ENABLED")),
     "MONITORING_DATA_DIR": Field(_path, flag("MONITORING_ENABLED")),
 }
 

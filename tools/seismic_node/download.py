@@ -424,8 +424,7 @@ def resolve_weak_subjectivity(
 
 def create_download_work_dir(args: Any, role: str) -> Path:
     """Create a root-only temporary directory on the node-state filesystem."""
-    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS[role]
-    inventory = checkpoint.load_inventory(role, inventory_path)
+    inventory = checkpoint.load_node(role, checkpoint.node_env_path(args))
     download_root = inventory["reth_data_dir"].parent / ".seismic-node-downloads"
     checkpoint.ensure_root_parent(download_root / "placeholder", mode=0o700)
     download_root.mkdir(mode=0o700, exist_ok=True)

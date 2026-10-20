@@ -27,9 +27,10 @@ from seismic_node import (
     checkpoint,
     download,
     fsutil,
+    nodeenv,
     observer,
     rpc,
-    supervisor,
+    systemd,
     validator,
 )
 from seismic_node.errors import NodeError
@@ -197,7 +198,7 @@ class NetworkTests(unittest.TestCase):
                 f"http://localhost:{self.server.server_port}/summit"
             ),
             weak_subjectivity_bearer_token_file=None,
-            inventory=None,
+            node_env=None,
             snapshot_wait_timeout=1.0,
             snapshot_poll_interval=0.01,
             http_timeout=5.0,
@@ -415,7 +416,7 @@ class ValidatorTests(unittest.TestCase):
     def test_deposit_generation_uses_fixed_request_and_stops_rpc(self) -> None:
         response = self.deposit_response()
         args = SimpleNamespace(
-            inventory=None,
+            node_env=None,
             output=Path("/tmp/deposit-signature.json"),
             overwrite=False,
             startup_timeout=10.0,
@@ -437,7 +438,6 @@ class ValidatorTests(unittest.TestCase):
 
         def fake_deposit_start(
             name: str,
-            timeout: float,
             *,
             on_start_requested: Callable[[], None],
         ) -> bool:
@@ -446,17 +446,17 @@ class ValidatorTests(unittest.TestCase):
 
         with (
             mock.patch.object(fsutil, "require_root"),
-            mock.patch.object(checkpoint, "load_inventory"),
+            mock.patch.object(checkpoint, "load_node"),
             mock.patch.object(fsutil, "require_absolute"),
             mock.patch.object(validator, "confirm_output_overwrite"),
-            mock.patch.object(supervisor, "prepare_supervisor") as prepare,
-            mock.patch.object(supervisor, "require_stopped"),
+            mock.patch.object(systemd, "reload_units") as prepare,
+            mock.patch.object(systemd, "require_stopped"),
             mock.patch.object(
-                supervisor,
-                "start_program",
+                systemd,
+                "start_service",
                 side_effect=fake_deposit_start,
             ),
-            mock.patch.object(supervisor, "stop_program", side_effect=stopped.append),
+            mock.patch.object(systemd, "stop_service", side_effect=stopped.append),
             mock.patch.object(rpc, "json_rpc_response", side_effect=fake_rpc),
             mock.patch.object(checkpoint, "atomic_write"),
         ):
@@ -476,7 +476,7 @@ class ValidatorTests(unittest.TestCase):
 
     def test_deposit_json_rpc_error_fails_without_retrying(self) -> None:
         args = SimpleNamespace(
-            inventory=None,
+            node_env=None,
             output=Path("/tmp/deposit-signature.json"),
             overwrite=False,
             startup_timeout=10.0,
@@ -486,7 +486,6 @@ class ValidatorTests(unittest.TestCase):
 
         def fake_deposit_start(
             name: str,
-            timeout: float,
             *,
             on_start_requested: Callable[[], None],
         ) -> bool:
@@ -495,17 +494,17 @@ class ValidatorTests(unittest.TestCase):
 
         with (
             mock.patch.object(fsutil, "require_root"),
-            mock.patch.object(checkpoint, "load_inventory"),
+            mock.patch.object(checkpoint, "load_node"),
             mock.patch.object(fsutil, "require_absolute"),
             mock.patch.object(validator, "confirm_output_overwrite"),
-            mock.patch.object(supervisor, "prepare_supervisor"),
-            mock.patch.object(supervisor, "require_stopped"),
+            mock.patch.object(systemd, "reload_units"),
+            mock.patch.object(systemd, "require_stopped"),
             mock.patch.object(
-                supervisor,
-                "start_program",
+                systemd,
+                "start_service",
                 side_effect=fake_deposit_start,
             ),
-            mock.patch.object(supervisor, "stop_program", side_effect=stopped.append),
+            mock.patch.object(systemd, "stop_service", side_effect=stopped.append),
             mock.patch.object(
                 rpc,
                 "json_rpc_response",
@@ -623,8 +622,8 @@ class ValidatorTests(unittest.TestCase):
                 validator.wait_for_start_authorization(args, "11" * 32).start
             )
 
-    def test_checkpoint_start_prepares_supervisor_before_programs(self) -> None:
-        args = SimpleNamespace(startup_timeout=30.0, inventory=None, mode="checkpoint")
+    def test_checkpoint_start_reloads_units_before_services(self) -> None:
+        args = SimpleNamespace(startup_timeout=30.0, node_env=None, mode="checkpoint")
         events: list[str] = []
         with (
             mock.patch.object(
@@ -633,17 +632,17 @@ class ValidatorTests(unittest.TestCase):
                 return_value=validator.StartDecision(start=True),
             ),
             mock.patch.object(checkpoint, "validate_checkpoint_start_configuration"),
-            mock.patch.object(checkpoint, "load_inventory"),
+            mock.patch.object(checkpoint, "load_node"),
             mock.patch.object(
                 validator, "installed_node_public_key", return_value="11" * 32
             ),
             mock.patch.object(
-                supervisor,
-                "prepare_supervisor",
+                systemd,
+                "reload_units",
                 side_effect=lambda: events.append("prepare"),
             ) as prepare,
             mock.patch.object(
-                supervisor,
+                systemd,
                 "start_node",
                 side_effect=lambda *args, **kwargs: events.append("start"),
             ) as start_node,
@@ -655,22 +654,16 @@ class ValidatorTests(unittest.TestCase):
             )
         self.assertEqual(events, ["prepare", "start"])
         prepare.assert_called_once_with()
-        start_node.assert_called_once_with(
-            "summit-checkpoint",
-            "summit",
-            startup_timeout=30.0,
-        )
+        start_node.assert_called_once_with("summit-checkpoint", "summit")
 
     def test_stop_validates_inventory_and_stops_all_validator_modes(self) -> None:
-        args = SimpleNamespace(inventory=None)
+        args = SimpleNamespace(node_env=None)
         with (
-            mock.patch.object(checkpoint, "load_inventory") as load_inventory,
-            mock.patch.object(supervisor, "stop_node") as stop_node,
+            mock.patch.object(checkpoint, "load_node") as load_inventory,
+            mock.patch.object(systemd, "stop_node") as stop_node,
         ):
             validator.stop_validator(args)
-        load_inventory.assert_called_once_with(
-            "validator", checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
-        )
+        load_inventory.assert_called_once_with("validator", nodeenv.DEFAULT_PATH)
         stop_node.assert_called_once_with(
             ("summit-deposit-rpc", "summit", "summit-checkpoint")
         )
@@ -680,7 +673,7 @@ class ValidatorTests(unittest.TestCase):
             args = node_cli.parse_args()
         self.assertEqual(args.command, "validator")
         self.assertEqual(args.validator_command, "stop")
-        self.assertIsNone(args.inventory)
+        self.assertIsNone(args.node_env)
 
 
 class InstalledValidatorIdentityTests(unittest.TestCase):
@@ -798,7 +791,7 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.output = io.StringIO()
         self.stack.enter_context(contextlib.redirect_stdout(self.output))
-        self.inventory = self.patch(checkpoint, "load_inventory")
+        self.inventory = self.patch(checkpoint, "load_node")
         self.identity = self.patch(
             validator, "installed_node_public_key", return_value="11" * 32
         )
@@ -809,8 +802,8 @@ class ValidatorOnboardTests(unittest.TestCase):
             checkpoint, "validate_checkpoint_start_configuration"
         )
         self.install = self.patch(node_cli, "install_from_resolved_inputs")
-        self.prepare = self.patch(supervisor, "prepare_supervisor")
-        self.start = self.patch(supervisor, "start_node")
+        self.prepare = self.patch(systemd, "reload_units")
+        self.start = self.patch(systemd, "start_node")
         self.account = self.patch(
             validator, "validator_account", return_value=self.status("Joining")
         )
@@ -863,16 +856,14 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.prepare.side_effect = lambda: events.append("prepare")
         self.start.side_effect = lambda *a, **kw: events.append("start")
         node_cli.handle_validator(
-            self.args("--mode", "normal", "--inventory", "/etc/seismic/custom.toml")
+            self.args("--mode", "normal", "--node-env", "/etc/seismic/custom.env")
         )
         self.assertEqual(events, ["wait", "wait", "prepare", "start"])
         self.assertEqual(self.account.call_count, 4)
         self.inventory.assert_has_calls(
-            [mock.call("validator", Path("/etc/seismic/custom.toml"))] * 2
+            [mock.call("validator", Path("/etc/seismic/custom.env"))] * 2
         )
-        self.start.assert_called_once_with(
-            "summit", "summit-checkpoint", startup_timeout=30.0
-        )
+        self.start.assert_called_once_with("summit", "summit-checkpoint")
         self.validate_checkpoint.assert_not_called()
         self.install.assert_not_called()
 
@@ -943,9 +934,7 @@ class ValidatorOnboardTests(unittest.TestCase):
         node_cli.handle_validator(args)
         self.validate_checkpoint.assert_has_calls([mock.call("validator")] * 2)
         self.install.assert_not_called()
-        self.start.assert_called_once_with(
-            "summit-checkpoint", "summit", startup_timeout=30.0
-        )
+        self.start.assert_called_once_with("summit-checkpoint", "summit")
 
     def test_checkpoint_download_follows_authorization(self) -> None:
         self.account.side_effect = [
@@ -959,9 +948,7 @@ class ValidatorOnboardTests(unittest.TestCase):
             self.args("--snapshot-api-url", "https://snapshot.example")
         )
         self.install.assert_called_once()
-        self.start.assert_called_once_with(
-            "summit-checkpoint", "summit", startup_timeout=30.0
-        )
+        self.start.assert_called_once_with("summit-checkpoint", "summit")
 
     def test_normal_rejects_checkpoint_sources_and_install_modifiers(self) -> None:
         for options in (
@@ -1088,10 +1075,10 @@ class ValidatorOnboardTests(unittest.TestCase):
     def test_checkpoint_startup_failure_still_reports_rollback(self) -> None:
         backup = Path("/persistence/rollback/fixture")
         self.install.return_value = backup
-        self.start.side_effect = supervisor.SupervisorError("Startup failed")
+        self.start.side_effect = systemd.ServiceError("Startup failed")
         with (
             mock.patch.object(node_cli, "print_startup_rollback") as rollback,
-            self.assertRaisesRegex(supervisor.SupervisorError, "Startup failed"),
+            self.assertRaisesRegex(systemd.ServiceError, "Startup failed"),
         ):
             node_cli.handle_validator(
                 self.args("--snapshot-api-url", "https://snapshot.example")
@@ -1099,10 +1086,10 @@ class ValidatorOnboardTests(unittest.TestCase):
         rollback.assert_called_once_with(backup)
 
     def test_normal_startup_failure_has_no_checkpoint_rollback(self) -> None:
-        self.start.side_effect = supervisor.SupervisorError("Startup failed")
+        self.start.side_effect = systemd.ServiceError("Startup failed")
         with (
             mock.patch.object(node_cli, "print_startup_rollback") as rollback,
-            self.assertRaisesRegex(supervisor.SupervisorError, "Startup failed"),
+            self.assertRaisesRegex(systemd.ServiceError, "Startup failed"),
         ):
             node_cli.handle_validator(self.args("--mode", "normal"))
         rollback.assert_not_called()
@@ -1111,43 +1098,35 @@ class ValidatorOnboardTests(unittest.TestCase):
 
 class ValidatorStartTests(unittest.TestCase):
     def start_args(self, mode: str) -> SimpleNamespace:
-        return SimpleNamespace(inventory=None, mode=mode, startup_timeout=30.0)
+        return SimpleNamespace(node_env=None, mode=mode, startup_timeout=30.0)
 
     def test_normal_start_ignores_installed_checkpoint_config(self) -> None:
         with (
-            mock.patch.object(checkpoint, "load_inventory"),
-            mock.patch.object(supervisor, "prepare_supervisor"),
-            mock.patch.object(supervisor, "start_node") as start_node,
+            mock.patch.object(checkpoint, "load_node"),
+            mock.patch.object(systemd, "reload_units"),
+            mock.patch.object(systemd, "start_node") as start_node,
         ):
             validator.start_validator(self.start_args("normal"))
-        start_node.assert_called_once_with(
-            "summit",
-            "summit-checkpoint",
-            startup_timeout=30.0,
-        )
+        start_node.assert_called_once_with("summit", "summit-checkpoint")
 
     def test_checkpoint_start_validates_installed_configuration(self) -> None:
         with (
-            mock.patch.object(checkpoint, "load_inventory"),
+            mock.patch.object(checkpoint, "load_node"),
             mock.patch.object(
                 checkpoint, "validate_checkpoint_start_configuration"
             ) as validate,
-            mock.patch.object(supervisor, "prepare_supervisor"),
-            mock.patch.object(supervisor, "start_node") as start_node,
+            mock.patch.object(systemd, "reload_units"),
+            mock.patch.object(systemd, "start_node") as start_node,
         ):
             validator.start_validator(self.start_args("checkpoint"))
         validate.assert_called_once_with("validator")
-        start_node.assert_called_once_with(
-            "summit-checkpoint",
-            "summit",
-            startup_timeout=30.0,
-        )
+        start_node.assert_called_once_with("summit-checkpoint", "summit")
 
 
 class ObserverTests(unittest.TestCase):
     def test_normal_start_ignores_installed_checkpoint_config(self) -> None:
         args = SimpleNamespace(
-            inventory=None,
+            node_env=None,
             mode="normal",
             startup_timeout=30.0,
         )
@@ -1156,18 +1135,17 @@ class ObserverTests(unittest.TestCase):
             checkpoint_config = Path(temporary_directory) / "observer-checkpoint.toml"
             checkpoint_config.write_text("checkpoint_path = '/unused'\n")
             with (
-                mock.patch.dict(
-                    checkpoint.CHECKPOINT_CONFIG_PATHS,
-                    {"observer": checkpoint_config},
-                ),
-                mock.patch.object(checkpoint, "load_inventory"),
                 mock.patch.object(
-                    supervisor,
-                    "prepare_supervisor",
+                    checkpoint, "CHECKPOINT_CONFIG_PATH", checkpoint_config
+                ),
+                mock.patch.object(checkpoint, "load_node"),
+                mock.patch.object(
+                    systemd,
+                    "reload_units",
                     side_effect=lambda: events.append("prepare"),
                 ) as prepare,
                 mock.patch.object(
-                    supervisor,
+                    systemd,
                     "start_node",
                     side_effect=lambda *args, **kwargs: events.append("start"),
                 ) as start_node,
@@ -1178,21 +1156,20 @@ class ObserverTests(unittest.TestCase):
         start_node.assert_called_once_with(
             "summit-observer",
             "summit-observer-checkpoint",
-            startup_timeout=30.0,
+            custodian_program="observer-custodian",
         )
 
     def test_stop_validates_inventory_and_stops_both_observer_modes(self) -> None:
-        args = SimpleNamespace(inventory=None)
+        args = SimpleNamespace(node_env=None)
         with (
-            mock.patch.object(checkpoint, "load_inventory") as load_inventory,
-            mock.patch.object(supervisor, "stop_node") as stop_node,
+            mock.patch.object(checkpoint, "load_node") as load_inventory,
+            mock.patch.object(systemd, "stop_node") as stop_node,
         ):
             observer.stop_observer(args)
-        load_inventory.assert_called_once_with(
-            "observer", checkpoint.DEFAULT_INVENTORY_PATHS["observer"]
-        )
+        load_inventory.assert_called_once_with("observer", nodeenv.DEFAULT_PATH)
         stop_node.assert_called_once_with(
-            ("summit-observer", "summit-observer-checkpoint")
+            ("summit-observer", "summit-observer-checkpoint"),
+            custodian_program="observer-custodian",
         )
 
     def test_cli_accepts_observer_stop_without_mode(self) -> None:
@@ -1200,229 +1177,7 @@ class ObserverTests(unittest.TestCase):
             args = node_cli.parse_args()
         self.assertEqual(args.command, "observer")
         self.assertEqual(args.observer_command, "stop")
-        self.assertIsNone(args.inventory)
-
-
-class SupervisorTests(unittest.TestCase):
-    def test_prepare_supervisor_enables_rereads_and_updates(self) -> None:
-        success = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with (
-            mock.patch.object(
-                supervisor, "run_systemctl", return_value=success
-            ) as systemctl,
-            mock.patch.object(
-                supervisor, "run_supervisorctl", return_value=success
-            ) as supervisorctl,
-        ):
-            supervisor.prepare_supervisor()
-        systemctl.assert_called_once_with("enable", "--now", "supervisor")
-        self.assertEqual(
-            supervisorctl.call_args_list,
-            [mock.call("reread"), mock.call("update")],
-        )
-
-    def test_status_accepts_supervisor_not_running_exit_code(self) -> None:
-        result = subprocess.CompletedProcess(
-            ["supervisorctl", "status", "reth"],
-            3,
-            stdout="reth STOPPED Not started\n",
-            stderr="",
-        )
-        with mock.patch.object(supervisor, "run_supervisorctl", return_value=result):
-            status = supervisor.status("reth")
-        self.assertEqual(status.state, "STOPPED")
-        self.assertFalse(status.running)
-
-    def test_start_program_accepts_stopped_precheck_exit_code(self) -> None:
-        results = iter(
-            (
-                subprocess.CompletedProcess(
-                    ["supervisorctl", "status", "reth"],
-                    3,
-                    stdout="reth STOPPED Not started\n",
-                    stderr="",
-                ),
-                subprocess.CompletedProcess(
-                    ["supervisorctl", "start", "reth"],
-                    0,
-                    stdout="reth: started\n",
-                    stderr="",
-                ),
-                subprocess.CompletedProcess(
-                    ["supervisorctl", "status", "reth"],
-                    0,
-                    stdout="reth RUNNING pid 123, uptime 0:00:01\n",
-                    stderr="",
-                ),
-            )
-        )
-        requested: list[str] = []
-        with mock.patch.object(
-            supervisor,
-            "run_supervisorctl",
-            side_effect=lambda *arguments: next(results),
-        ):
-            self.assertTrue(
-                supervisor.start_program(
-                    "reth",
-                    10.0,
-                    on_start_requested=lambda: requested.append("reth"),
-                )
-            )
-        self.assertEqual(requested, ["reth"])
-
-    def test_backoff_is_not_a_safe_stopped_state(self) -> None:
-        with (
-            mock.patch.object(
-                supervisor,
-                "status",
-                return_value=supervisor.ProgramStatus("reth", "BACKOFF", "retrying"),
-            ),
-            self.assertRaisesRegex(supervisor.SupervisorError, "reth=BACKOFF"),
-        ):
-            supervisor.require_stopped(("reth",))
-
-    def test_checkpoint_uses_shared_supervisor_state_parser(self) -> None:
-        with mock.patch.object(
-            supervisor,
-            "status",
-            return_value=supervisor.ProgramStatus("reth", "STOPPED", ""),
-        ):
-            self.assertFalse(checkpoint.supervisor_program_running("reth"))
-        with mock.patch.object(
-            supervisor,
-            "status",
-            return_value=supervisor.ProgramStatus("reth", "BACKOFF", "retrying"),
-        ):
-            self.assertTrue(checkpoint.supervisor_program_running("reth"))
-
-    def test_checkpoint_start_order(self) -> None:
-        statuses = {
-            name: supervisor.ProgramStatus(name, "STOPPED", "")
-            for name in (
-                "summit",
-                "summit-deposit-rpc",
-                "reth",
-                "summit-checkpoint",
-                "custodian",
-                "checkpointer",
-            )
-        }
-        started: list[str] = []
-
-        def fake_successful_start(
-            name: str,
-            timeout: float,
-            *,
-            on_start_requested: Callable[[], None],
-        ) -> bool:
-            on_start_requested()
-            started.append(name)
-            return True
-
-        with (
-            mock.patch.object(supervisor, "status", side_effect=statuses.__getitem__),
-            mock.patch.object(
-                supervisor,
-                "start_program",
-                side_effect=fake_successful_start,
-            ),
-        ):
-            supervisor.start_node(
-                "summit-checkpoint",
-                "summit",
-                startup_timeout=10.0,
-            )
-        self.assertEqual(
-            started,
-            ["custodian", "reth", "summit-checkpoint", "checkpointer"],
-        )
-
-    def test_stop_node_uses_reverse_dependency_order(self) -> None:
-        requested: list[str] = []
-
-        def fake_stop(name: str) -> bool:
-            requested.append(name)
-            return name != "summit-observer-checkpoint"
-
-        with mock.patch.object(supervisor, "stop_program", side_effect=fake_stop):
-            stopped = supervisor.stop_node(
-                ("summit-observer", "summit-observer-checkpoint")
-            )
-        self.assertEqual(
-            requested,
-            [
-                "checkpointer",
-                "summit-observer",
-                "summit-observer-checkpoint",
-                "reth",
-                "custodian",
-            ],
-        )
-        self.assertEqual(
-            stopped,
-            ["checkpointer", "summit-observer", "reth", "custodian"],
-        )
-
-    def test_stop_failure_preserves_lower_level_dependencies(self) -> None:
-        requested: list[str] = []
-
-        def fake_stop(name: str) -> bool:
-            requested.append(name)
-            if name == "summit-observer":
-                raise supervisor.SupervisorError("failed")
-            return True
-
-        with (
-            mock.patch.object(supervisor, "stop_program", side_effect=fake_stop),
-            self.assertRaisesRegex(supervisor.SupervisorError, "failed"),
-        ):
-            supervisor.stop_node(("summit-observer", "summit-observer-checkpoint"))
-        self.assertEqual(requested, ["checkpointer", "summit-observer"])
-
-    def test_partial_start_failure_stops_only_started_programs_in_reverse(self) -> None:
-        statuses = {
-            "summit": supervisor.ProgramStatus("summit", "STOPPED", ""),
-            "summit-deposit-rpc": supervisor.ProgramStatus(
-                "summit-deposit-rpc", "STOPPED", ""
-            ),
-            "reth": supervisor.ProgramStatus("reth", "STOPPED", ""),
-            "summit-checkpoint": supervisor.ProgramStatus(
-                "summit-checkpoint", "STOPPED", ""
-            ),
-            "custodian": supervisor.ProgramStatus("custodian", "STOPPED", ""),
-            "checkpointer": supervisor.ProgramStatus(
-                "checkpointer", "MISSING", "", False
-            ),
-        }
-        stopped: list[str] = []
-
-        def fake_status(name: str) -> supervisor.ProgramStatus:
-            return statuses[name]
-
-        def fake_start(
-            name: str,
-            timeout: float,
-            *,
-            on_start_requested: Callable[[], None],
-        ) -> bool:
-            on_start_requested()
-            if name == "summit-checkpoint":
-                raise supervisor.SupervisorError("failed")
-            return True
-
-        with (
-            mock.patch.object(supervisor, "status", side_effect=fake_status),
-            mock.patch.object(supervisor, "start_program", side_effect=fake_start),
-            mock.patch.object(supervisor, "stop_program", side_effect=stopped.append),
-            self.assertRaisesRegex(supervisor.SupervisorError, "failed"),
-        ):
-            supervisor.start_node(
-                "summit-checkpoint",
-                "summit",
-                startup_timeout=10.0,
-            )
-        self.assertEqual(stopped, ["summit-checkpoint", "reth", "custodian"])
+        self.assertIsNone(args.node_env)
 
 
 if __name__ == "__main__":

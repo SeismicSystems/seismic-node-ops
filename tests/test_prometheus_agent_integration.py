@@ -2,14 +2,15 @@
 
 All listeners use ephemeral loopback ports, all data is temporary, and only the
 binary explicitly supplied in PROMETHEUS_AGENT_BIN is executed. No installer,
-Supervisor or live validator is contacted.
+systemd or live validator is contacted. The agent command line is taken from
+the shipped seismic-prometheus-agent.service unit so the unit is exercised too.
 """
 
 from __future__ import annotations
 
-import configparser
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -25,9 +26,17 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from test_prometheus_agent import agent, settings
+from test_prometheus_agent import ROOT, agent, env
 
 BINARY = os.environ.get("PROMETHEUS_AGENT_BIN")
+UNIT = ROOT / "install/templates/systemd/seismic-prometheus-agent.service"
+NODE = "validator-0.example.com"
+
+
+def unit_exec_start() -> list[str]:
+    text = re.sub(r"\\\n\s*", " ", UNIT.read_text())
+    line = next(l for l in text.splitlines() if l.startswith("ExecStart="))
+    return shlex.split(line.partition("=")[2])
 
 
 def free_port():
@@ -192,7 +201,13 @@ class AgentIntegrationTests(unittest.TestCase):
                 ]
                 token = root / "token"
                 token.write_text("a" * 64)
-                config, service = agent.render(settings(), token)
+                values = agent.settings(
+                    env(
+                        MONITORING_NODE_NAME=NODE,
+                        MONITORING_REMOTE_WRITE_URL="https://metrics.example.com/api/v1/write",
+                    )
+                )
+                config = agent.render(values).replace(str(agent.TOKEN), str(token))
                 # Production requires HTTPS:443; fixture transport is HTTPS on a
                 # high loopback port with an explicitly trusted temporary CA.
                 config = config.replace(
@@ -213,16 +228,15 @@ class AgentIntegrationTests(unittest.TestCase):
                 )
                 config_path = root / "agent.yml"
                 config_path.write_text(config)
-                parser = configparser.ConfigParser(interpolation=None)
-                parser.read_string(service)
-                command = shlex.split(parser["program:prometheus-agent"]["command"])
+                command = unit_exec_start()
                 command[0] = BINARY
                 command = [
                     part.replace(str(agent.CONFIG), str(config_path))
-                    .replace(settings()["data_dir"], str(root / "agent-data"))
+                    .replace("${MONITORING_DATA_DIR}", str(root / "agent-data"))
                     .replace("127.0.0.1:9091", f"127.0.0.1:{agent_port}")
                     for part in command
                 ]
+                self.assertFalse(any("$" in part for part in command), command)
                 commands.append(command)
                 for number, command in enumerate(commands):
                     output = (root / f"process-{number}.log").open("wb")

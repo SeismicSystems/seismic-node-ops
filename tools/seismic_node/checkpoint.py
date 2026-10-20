@@ -25,22 +25,13 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import fsutil
-from . import supervisor as supervisor_control
+from . import fsutil, nodeenv, systemd
 from .errors import NodeError
 
-INVENTORY_VERSION = 1
 MANIFEST_VERSION = 1
 WEAK_SUBJECTIVITY_MAX_AGE_EPOCHS = 5
-DEFAULT_INSTALLED_WEAK_SUBJECTIVITY_PATH = Path("/etc/seismic/weak-subjectivity.toml")
-CHECKPOINT_CONFIG_PATHS = {
-    "validator": Path("/etc/seismic/validator-checkpoint-start.toml"),
-    "observer": Path("/etc/seismic/observer-checkpoint-start.toml"),
-}
-DEFAULT_INVENTORY_PATHS = {
-    "validator": Path("/etc/seismic/validator-installation.toml"),
-    "observer": Path("/etc/seismic/observer-installation.toml"),
-}
+DEFAULT_INSTALLED_WEAK_SUBJECTIVITY_PATH = nodeenv.WEAK_SUBJECTIVITY_PATH
+CHECKPOINT_CONFIG_PATH = nodeenv.CHECKPOINT_START_CONFIG
 SERVICE_PROGRAMS = {
     "validator": (
         "custodian",
@@ -51,87 +42,48 @@ SERVICE_PROGRAMS = {
         "checkpointer",
     ),
     "observer": (
-        "custodian",
+        "observer-custodian",
         "reth",
         "summit-observer",
         "summit-observer-checkpoint",
         "checkpointer",
     ),
 }
-COMMON_INVENTORY_KEYS = {
-    "schema_version",
-    "reth_data_dir",
-    "reth_p2p_key_path",
-    "summit_data_dir",
-    "summit_keys_dir",
-}
-OBSERVER_INVENTORY_KEYS = {
-    "observer_parent_node_public_key",
-    "observer_index",
-}
 LOCK_FILE_NAME = ".summit-process.lock"
 RECEIPT_FILE_NAME = "rollback-manifest.json"
 
 
-def inventory_path_value(inventory: dict[str, Any], key: str) -> Path:
-    """Convert one inventory string into a validated absolute path."""
-    value = inventory[key]
-    if not isinstance(value, str) or not value:
-        raise NodeError(f"Installation inventory {key} must be a non-empty string")
-    path = Path(value)
-    fsutil.require_absolute(path, f"Installation inventory {key}")
+def node_env_path(args: Any) -> Path:
+    """Return the node.env path, honouring an explicit --node-env override."""
+    path = getattr(args, "node_env", None) or nodeenv.DEFAULT_PATH
+    fsutil.require_absolute(path, "node.env path")
     return path
 
 
-def load_inventory(role: str, path: Path) -> dict[str, Any]:
-    """Load the installer's minimal inventory and verify on-disk identity."""
-    inventory = fsutil.read_toml(path, "Installation inventory", root_managed=True)
-    expected = COMMON_INVENTORY_KEYS | (
-        OBSERVER_INVENTORY_KEYS if role == "observer" else set()
-    )
-    # Optional telemetry metadata must not make old inventories incompatible.
-    # Its validation is deferred to best-effort monitoring startup so a broken
-    # agent configuration cannot prevent otherwise valid node startup.
-    if "monitoring" in inventory:
-        expected = expected | {"monitoring"}
-    fsutil.require_exact_keys(inventory, expected, "Installation inventory")
-    if inventory["schema_version"] != INVENTORY_VERSION:
+def load_node(role: str, path: Path = nodeenv.DEFAULT_PATH) -> dict[str, Any]:
+    """Load node.env for the expected role and verify on-disk identity.
+
+    Returns the subset of settings the checkpoint and lifecycle code relies on,
+    keyed as before so callers are unchanged, with the full ``NodeEnv`` under
+    ``"env"``.
+    """
+    env = nodeenv.load(path)
+    if env.role != role:
         raise NodeError(
-            f"Unsupported installation inventory schema_version: "
-            f"{inventory['schema_version']!r}"
+            f"This command is for a {role} but {path} configures a {env.role}"
         )
-
-    for key in (
-        "reth_data_dir",
-        "reth_p2p_key_path",
-        "summit_data_dir",
-        "summit_keys_dir",
-    ):
-        inventory[key] = inventory_path_value(inventory, key)
-
-    fsutil.require_separate_paths(
-        {
-            "Reth data directory": inventory["reth_data_dir"],
-            "Reth P2P key": inventory["reth_p2p_key_path"],
-            "Summit data directory": inventory["summit_data_dir"],
-            "Summit keys directory": inventory["summit_keys_dir"],
-        }
-    )
-
+    inventory: dict[str, Any] = {
+        "env": env,
+        "reth_data_dir": env.path("RETH_DATA_DIR"),
+        "reth_p2p_key_path": env.path("RETH_P2P_KEY_PATH"),
+        "summit_data_dir": env.path("SUMMIT_DATA_DIR"),
+        "summit_keys_dir": env.path("SUMMIT_KEYS_DIR"),
+    }
     if role == "observer":
-        parent_key = inventory["observer_parent_node_public_key"]
-        if not isinstance(parent_key, str):
-            raise NodeError("Observer parent node public key must be a string")
-        parent_key = parent_key.removeprefix("0x").lower()
-        if not fsutil.PUBLIC_KEY.fullmatch(parent_key):
-            raise NodeError("Observer parent node public key must be 32-byte hex")
-        observer_index = inventory["observer_index"]
-        if isinstance(observer_index, bool) or not isinstance(observer_index, int):
-            raise NodeError("Observer index must be an integer")
-        if not 0 <= observer_index <= 255:
-            raise NodeError("Observer index must be in the range 0-255")
-        inventory["observer_parent_node_public_key"] = parent_key
-
+        inventory["observer_parent_node_public_key"] = env.string(
+            "OBSERVER_PARENT_NODE_PUBLIC_KEY"
+        )
+        inventory["observer_index"] = env.integer("OBSERVER_INDEX")
     validate_installed_identity(role, inventory)
     return inventory
 
@@ -408,23 +360,18 @@ def load_weak_subjectivity(path: Path, checkpoint_epoch: int) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def supervisor_program_running(program: str) -> bool:
-    """Return whether Supervisor reports a process that may run or resume."""
-    try:
-        value = supervisor_control.status(program)
-    except supervisor_control.SupervisorError as error:
-        raise NodeError(str(error)) from error
+def service_running(program: str) -> bool:
+    """Return whether systemd reports a process that may run or resume."""
+    value = systemd.status(program)
     if not value.exists:
         return False
-    return value.state not in supervisor_control.STOPPED_STATES
+    return value.state not in systemd.STOPPED_STATES
 
 
 def require_services_stopped(role: str) -> None:
     """Refuse state mutation while any role-related program may run or resume."""
     running = [
-        program
-        for program in SERVICE_PROGRAMS[role]
-        if supervisor_program_running(program)
+        program for program in SERVICE_PROGRAMS[role] if service_running(program)
     ]
     if running:
         raise NodeError(
@@ -571,7 +518,6 @@ def validate_existing_replacement_targets(
 def create_backup(
     role: str,
     epoch: int,
-    inventory_path: Path,
     inventory: dict[str, Any],
     checkpoint_path: Path,
     weak_subjectivity_path: Path,
@@ -595,20 +541,20 @@ def create_backup(
     reth_metadata = inventory["reth_data_dir"].stat()
     summit_metadata = inventory["summit_data_dir"].stat()
     receipt: dict[str, Any] = {
-        "version": 1,
+        "version": 2,
         "state": "installing",
         "role": role,
         "epoch": epoch,
         "created_at": dt.datetime.now(dt.UTC).isoformat(),
         "updated_at": dt.datetime.now(dt.UTC).isoformat(),
         "hostname": os.uname().nodename,
-        "inventory_path": str(inventory_path),
+        "node_env_path": str(inventory["env"].source or nodeenv.DEFAULT_PATH),
         "paths": {
             "reth_data_dir": str(inventory["reth_data_dir"]),
             "summit_data_dir": str(inventory["summit_data_dir"]),
             "summit_keys_dir": str(inventory["summit_keys_dir"]),
             "checkpoint_path": str(checkpoint_path),
-            "checkpoint_config_path": str(CHECKPOINT_CONFIG_PATHS[role]),
+            "checkpoint_config_path": str(CHECKPOINT_CONFIG_PATH),
             "weak_subjectivity_path": str(weak_subjectivity_path),
         },
         "ownership": {
@@ -627,7 +573,7 @@ def create_backup(
             "reth_db": (inventory["reth_data_dir"] / "db").exists(),
             "reth_static_files": (inventory["reth_data_dir"] / "static_files").exists(),
             "checkpoint": checkpoint_path.exists(),
-            "checkpoint_config": CHECKPOINT_CONFIG_PATHS[role].exists(),
+            "checkpoint_config": CHECKPOINT_CONFIG_PATH.exists(),
             "weak_subjectivity": weak_subjectivity_path.exists(),
         },
     }
@@ -798,7 +744,7 @@ def validate_rollback_receipt(receipt: dict[str, Any]) -> str:
             "epoch",
             "created_at",
             "hostname",
-            "inventory_path",
+            "node_env_path",
             "paths",
             "ownership",
             "previous",
@@ -806,7 +752,7 @@ def validate_rollback_receipt(receipt: dict[str, Any]) -> str:
         },
         "Rollback manifest",
     )
-    if receipt["version"] != 1:
+    if receipt["version"] != 2:
         raise NodeError(
             f"Unsupported rollback manifest version: {receipt['version']!r}"
         )
@@ -839,7 +785,7 @@ def validate_rollback_receipt(receipt: dict[str, Any]) -> str:
         parsed_path = Path(value)
         fsutil.require_absolute(parsed_path, f"Rollback path {key}")
         parsed_paths[key] = parsed_path
-    if parsed_paths["checkpoint_config_path"] != CHECKPOINT_CONFIG_PATHS[role]:
+    if parsed_paths["checkpoint_config_path"] != CHECKPOINT_CONFIG_PATH:
         raise NodeError("Rollback checkpoint config path does not match the role")
     fsutil.require_separate_paths(
         {
@@ -949,9 +895,7 @@ def install_checkpoint(args: argparse.Namespace) -> Path:
     """Verify, back up, and atomically install matching Reth/Summit state."""
     fsutil.require_root()
     role = args.role
-    inventory_path = args.inventory or DEFAULT_INVENTORY_PATHS[role]
-    fsutil.require_absolute(inventory_path, "Installation inventory path")
-    inventory = load_inventory(role, inventory_path)
+    inventory = load_node(role, node_env_path(args))
     manifest = load_manifest(args.manifest)
     verify_archive_identity(args.archive, manifest)
     anchor = load_weak_subjectivity(args.weak_subjectivity_path, manifest["epoch"])
@@ -976,7 +920,7 @@ def install_checkpoint(args: argparse.Namespace) -> Path:
             "Summit data directory": inventory["summit_data_dir"],
             "Summit keys directory": inventory["summit_keys_dir"],
             "Checkpoint destination": checkpoint_path,
-            "Checkpoint-start config": CHECKPOINT_CONFIG_PATHS[role],
+            "Checkpoint-start config": CHECKPOINT_CONFIG_PATH,
             "Weak-subjectivity path": weak_path,
             "Checkpoint rollback root": backup_root,
         }
@@ -992,7 +936,7 @@ def install_checkpoint(args: argparse.Namespace) -> Path:
     validate_existing_replacement_targets(
         inventory,
         checkpoint_path,
-        CHECKPOINT_CONFIG_PATHS[role],
+        CHECKPOINT_CONFIG_PATH,
         weak_path,
     )
 
@@ -1029,7 +973,6 @@ def install_checkpoint(args: argparse.Namespace) -> Path:
         backup, receipt = create_backup(
             role,
             manifest["epoch"],
-            inventory_path,
             inventory,
             checkpoint_path,
             weak_path,
@@ -1084,17 +1027,15 @@ def install_checkpoint(args: argparse.Namespace) -> Path:
 
 
 def discover_backup_roots() -> list[Path]:
-    """Derive the default rollback roots from the installed inventories."""
-    roots: list[Path] = []
-    for role, inventory_path in DEFAULT_INVENTORY_PATHS.items():
-        try:
-            inventory = load_inventory(role, inventory_path)
-        except NodeError:
-            continue
-        root = inventory["reth_data_dir"].parent / "checkpoint-rollback"
-        if root not in roots and root.is_dir() and not root.is_symlink():
-            roots.append(root)
-    return roots
+    """Derive the default rollback root from the installed node.env."""
+    try:
+        env = nodeenv.load()
+    except NodeError:
+        return []
+    root = env.path("RETH_DATA_DIR").parent / "checkpoint-rollback"
+    if root.is_dir() and not root.is_symlink():
+        return [root]
+    return []
 
 
 def describe_backup(backup: Path) -> str:
@@ -1211,7 +1152,7 @@ def rollback_checkpoint(args: argparse.Namespace) -> None:
 
 def validate_checkpoint_start_configuration(role: str) -> tuple[Path, Path]:
     """Revalidate installed checkpoint and anchor files immediately before start."""
-    config_path = CHECKPOINT_CONFIG_PATHS[role]
+    config_path = CHECKPOINT_CONFIG_PATH
     config = fsutil.read_toml(
         config_path, "Checkpoint-start configuration", root_managed=True
     )

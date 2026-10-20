@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import checkpoint, fsutil, monitoring, rpc, supervisor
+from . import checkpoint, fsutil, monitoring, rpc, systemd
 from .errors import NodeError
 
 DEPOSIT_AMOUNT_GWEI = 32_000_000_000
@@ -171,17 +171,15 @@ def confirm_output_overwrite(path: Path, overwrite: bool) -> None:
 def generate_deposit_signature(args: Any) -> None:
     """Run the deposit RPC briefly, write one response, and always stop it."""
     fsutil.require_root()
-    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
-    checkpoint.load_inventory("validator", inventory_path)
+    checkpoint.load_node("validator", checkpoint.node_env_path(args))
     output = args.output
     fsutil.require_absolute(output, "Deposit-signature output")
     confirm_output_overwrite(output, args.overwrite)
-    # Load the installed program definitions so this works on a freshly
-    # installed host; everything is autostart=false, so nothing starts here.
-    supervisor.prepare_supervisor()
+    # Pick up freshly installed units; nothing is enabled, so nothing starts.
+    systemd.reload_units()
     # Deposit signing uses the same keys and state as Summit, so no other node
     # service may be active during this short-lived RPC operation.
-    supervisor.require_stopped(
+    systemd.require_stopped(
         (
             "custodian",
             "reth",
@@ -195,9 +193,8 @@ def generate_deposit_signature(args: Any) -> None:
     started: list[str] = []
     operation_error: BaseException | None = None
     try:
-        supervisor.start_program(
+        systemd.start_service(
             "summit-deposit-rpc",
-            args.startup_timeout,
             on_start_requested=lambda: started.append("summit-deposit-rpc"),
         )
         deadline = time.monotonic() + args.startup_timeout
@@ -232,8 +229,8 @@ def generate_deposit_signature(args: Any) -> None:
         # has been produced, including when validation or writing fails.
         if started:
             try:
-                supervisor.stop_program("summit-deposit-rpc")
-            except supervisor.SupervisorError:
+                systemd.stop_service("summit-deposit-rpc")
+            except systemd.ServiceError:
                 if operation_error is None:
                     raise
                 print(
@@ -452,8 +449,7 @@ def start_validator(args: Any, *, expected_node_public_key: str | None = None) -
     restarts an already onboarded validator from its persisted normal state or
     from the installed checkpoint inputs.
     """
-    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
-    inventory = checkpoint.load_inventory("validator", inventory_path)
+    inventory = checkpoint.load_node("validator", checkpoint.node_env_path(args))
     if (
         expected_node_public_key is not None
         and installed_node_public_key(inventory) != expected_node_public_key
@@ -467,24 +463,19 @@ def start_validator(args: Any, *, expected_node_public_key: str | None = None) -
         summit_program = "summit-checkpoint"
         conflicting_program = "summit"
     else:
-        # The normal Supervisor program does not read checkpoint-start config.
-        # Mutual exclusion is enforced against the checkpoint program instead.
+        # The normal unit does not read checkpoint-start config. Mutual
+        # exclusion is enforced against the checkpoint unit instead.
         summit_program = "summit"
         conflicting_program = "summit-checkpoint"
-    supervisor.prepare_supervisor()
-    supervisor.start_node(
-        summit_program,
-        conflicting_program,
-        startup_timeout=args.startup_timeout,
-    )
-    monitoring.ensure_running(inventory, "validator", args.startup_timeout)
+    systemd.reload_units()
+    systemd.start_node(summit_program, conflicting_program)
+    monitoring.ensure_running(inventory, "validator")
     print(f"Validator {args.mode} startup requested successfully.")
 
 
 def stop_validator(args: Any) -> None:
-    """Validate validator identity and stop its programs in dependency order."""
-    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
-    checkpoint.load_inventory("validator", inventory_path)
-    supervisor.stop_node(("summit-deposit-rpc", "summit", "summit-checkpoint"))
+    """Validate validator identity and stop its services in dependency order."""
+    checkpoint.load_node("validator", checkpoint.node_env_path(args))
+    systemd.stop_node(("summit-deposit-rpc", "summit", "summit-checkpoint"))
     print("Validator services stopped successfully.")
-    print("Supervisor, OpenResty and any running Prometheus Agent remain running.")
+    print("OpenResty and any running Prometheus Agent remain running.")
