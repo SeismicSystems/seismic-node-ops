@@ -37,9 +37,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from seismic_node.checkpoint import (
+from .errors import NodeError
+from .fsutil import (
     PUBLIC_KEY,
-    CheckpointError,
     require_absolute,
     require_root_managed_file,
     require_separate_paths,
@@ -74,7 +74,7 @@ TLS_MODES = ("disabled", "custodian-only", "full", "external")
 MANAGED_TLS_MODES = ("custodian-only", "full")
 
 
-class NodeEnvError(CheckpointError):
+class NodeEnvError(NodeError):
     """Raised for unreadable, malformed, or invalid node.env contents."""
 
 
@@ -479,7 +479,7 @@ def validate(raw: dict[str, str], *, source: Path | None = None) -> NodeEnv:
         return _validate(raw, source)
     except NodeEnvError:
         raise
-    except CheckpointError as error:
+    except NodeError as error:
         raise NodeEnvError(str(error)) from error
 
 
@@ -638,6 +638,6 @@ def load(path: Path = DEFAULT_PATH) -> NodeEnv:
         text = read_text(path)
     except NodeEnvError:
         raise
-    except CheckpointError as error:
+    except NodeError as error:
         raise NodeEnvError(str(error)) from error
     return validate(parse(text), source=path)

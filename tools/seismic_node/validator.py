@@ -16,7 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import checkpoint, monitoring, rpc, supervisor
+from . import checkpoint, fsutil, monitoring, rpc, supervisor
+from .errors import NodeError
 
 DEPOSIT_AMOUNT_GWEI = 32_000_000_000
 WITHDRAWAL_ADDRESS = "0xd412c5ecd343e264381ff15afc0ad78a67b79f35"
@@ -44,22 +45,16 @@ def require_byte_array(value: Any, length: int, description: str) -> list[int]:
             for item in value
         )
     ):
-        raise checkpoint.CheckpointError(
-            f"{description} must contain exactly {length} bytes"
-        )
+        raise NodeError(f"{description} must contain exactly {length} bytes")
     return value
 
 
 def validate_deposit_response(response: dict[str, Any]) -> str:
     """Validate the exact deposit response and return its node public key."""
     if set(response) != {"jsonrpc", "result", "id"}:
-        raise checkpoint.CheckpointError(
-            "Deposit RPC returned an invalid JSON-RPC schema"
-        )
+        raise NodeError("Deposit RPC returned an invalid JSON-RPC schema")
     if response["jsonrpc"] != "2.0" or response["id"] != 1:
-        raise checkpoint.CheckpointError(
-            "Deposit RPC returned an invalid JSON-RPC envelope"
-        )
+        raise NodeError("Deposit RPC returned an invalid JSON-RPC envelope")
     result = response["result"]
     if not isinstance(result, dict) or set(result) != {
         "node_pubkey",
@@ -69,9 +64,7 @@ def validate_deposit_response(response: dict[str, Any]) -> str:
         "consensus_signature",
         "deposit_data_root",
     }:
-        raise checkpoint.CheckpointError(
-            "Deposit RPC returned an invalid result schema"
-        )
+        raise NodeError("Deposit RPC returned an invalid result schema")
     node_public_key = require_byte_array(
         result["node_pubkey"], 32, "Deposit response node_pubkey"
     )
@@ -98,7 +91,7 @@ def validate_deposit_response(response: dict[str, Any]) -> str:
         or bytes(withdrawal_credentials[1:12]) != bytes(11)
         or bytes(withdrawal_credentials[12:]) != expected_withdrawal
     ):
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Deposit response withdrawal credentials do not match the required address"
         )
     return bytes(node_public_key).hex()
@@ -106,18 +99,16 @@ def validate_deposit_response(response: dict[str, Any]) -> str:
 
 def load_deposit_response(path: Path) -> tuple[dict[str, Any], str]:
     """Read a root-managed deposit response and extract the validator identity."""
-    response = checkpoint.read_json(
-        path, "Deposit-signature response", root_managed=True
-    )
+    response = fsutil.read_json(path, "Deposit-signature response", root_managed=True)
     return response, validate_deposit_response(response)
 
 
 def installed_node_public_key(inventory: dict[str, Any]) -> str:
     """Read public identity using Summit's read-only command, never print secrets."""
     keys_dir = inventory["summit_keys_dir"]
-    checkpoint.require_directory(keys_dir, "Summit keys directory")
+    fsutil.require_directory(keys_dir, "Summit keys directory")
     for name in ("node_key.pem", "consensus_key.pem"):
-        checkpoint.require_regular_file(keys_dir / name, f"Summit {name}")
+        fsutil.require_regular_file(keys_dir / name, f"Summit {name}")
     try:
         result = subprocess.run(
             [str(SUMMIT), "keys", "show", "--key-store-path", str(keys_dir)],
@@ -131,7 +122,7 @@ def installed_node_public_key(inventory: dict[str, Any]) -> str:
     except (OSError, subprocess.SubprocessError, UnicodeError):
         # Do not surface subprocess output: key-decoding failures could include
         # sensitive input. Only the validated public key may leave this helper.
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             f"Could not read installed validator identity with {SUMMIT} keys show; "
             "check the Summit executable and installed key files"
         ) from None
@@ -141,7 +132,7 @@ def installed_node_public_key(inventory: dict[str, Any]) -> str:
         re.MULTILINE,
     )
     if len(public_keys) != 1:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Summit keys show did not return exactly one valid ed25519 node public key"
         )
     return public_keys[0].lower()
@@ -152,7 +143,7 @@ def prompt_operator(message: str) -> str:
     try:
         return input(message)
     except EOFError as error:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Interactive input is unavailable; provide an explicit option"
         ) from error
 
@@ -161,11 +152,11 @@ def confirm_output_overwrite(path: Path, overwrite: bool) -> None:
     """Protect an existing signature handoff file from accidental replacement."""
     if not path.exists() and not path.is_symlink():
         return
-    checkpoint.require_root_managed_file(path, "Existing deposit-signature output")
+    fsutil.require_root_managed_file(path, "Existing deposit-signature output")
     if overwrite:
         return
     if not sys.stdin.isatty():
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             f"Deposit-signature output already exists; use --overwrite to replace it: {path}"
         )
     response = (
@@ -174,16 +165,16 @@ def confirm_output_overwrite(path: Path, overwrite: bool) -> None:
         .lower()
     )
     if response not in {"y", "yes"}:
-        raise checkpoint.CheckpointError("Deposit-signature output was not replaced")
+        raise NodeError("Deposit-signature output was not replaced")
 
 
 def generate_deposit_signature(args: Any) -> None:
     """Run the deposit RPC briefly, write one response, and always stop it."""
-    checkpoint.require_root()
+    fsutil.require_root()
     inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
     checkpoint.load_inventory("validator", inventory_path)
     output = args.output
-    checkpoint.require_absolute(output, "Deposit-signature output")
+    fsutil.require_absolute(output, "Deposit-signature output")
     confirm_output_overwrite(output, args.overwrite)
     # Load the installed program definitions so this works on a freshly
     # installed host; everything is autostart=false, so nothing starts here.
@@ -220,12 +211,10 @@ def generate_deposit_signature(args: Any) -> None:
                 )
                 break
             except rpc.JsonRpcError as error:
-                raise checkpoint.CheckpointError(
-                    f"Deposit RPC rejected the request: {error}"
-                ) from error
+                raise NodeError(f"Deposit RPC rejected the request: {error}") from error
             except rpc.NetworkError as error:
                 if time.monotonic() >= deadline:
-                    raise checkpoint.CheckpointError(
+                    raise NodeError(
                         f"Deposit RPC did not become ready: {error}"
                     ) from error
                 time.sleep(0.5)
@@ -276,9 +265,9 @@ def validator_account(
     except rpc.JsonRpcError as error:
         if error.code == 3000:
             return None
-        raise checkpoint.CheckpointError(str(error)) from error
+        raise NodeError(str(error)) from error
     except rpc.NetworkError as error:
-        raise checkpoint.CheckpointError(str(error)) from error
+        raise NodeError(str(error)) from error
     expected = {
         "consensus_public_key",
         "withdrawal_credentials",
@@ -288,9 +277,7 @@ def validator_account(
         "last_deposit_index",
     }
     if not isinstance(result, dict) or set(result) != expected:
-        raise checkpoint.CheckpointError(
-            "getValidatorAccount returned an invalid result schema"
-        )
+        raise NodeError("getValidatorAccount returned an invalid result schema")
     require_byte_array(
         result["consensus_public_key"],
         48,
@@ -303,20 +290,18 @@ def validator_account(
     )
     expected_withdrawal = bytes.fromhex(WITHDRAWAL_ADDRESS.removeprefix("0x"))
     if bytes(withdrawal_credentials) != expected_withdrawal:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Validator account withdrawal credentials do not match the required address"
         )
     if not isinstance(result["status"], str):
-        raise checkpoint.CheckpointError("Validator account status must be a string")
+        raise NodeError("Validator account status must be a string")
     for key in ("balance", "joining_epoch", "last_deposit_index"):
         if (
             isinstance(result[key], bool)
             or not isinstance(result[key], int)
             or result[key] < 0
         ):
-            raise checkpoint.CheckpointError(
-                f"Validator account {key} must be a non-negative integer"
-            )
+            raise NodeError(f"Validator account {key} must be a non-negative integer")
     return result
 
 
@@ -330,7 +315,7 @@ def choose_pre_joining_action(status: str, policy: str | None) -> str:
     if policy is not None:
         return policy
     if not sys.stdin.isatty():
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Validator is not Joining; non-interactive use requires "
             "--pre-joining-policy"
         )
@@ -359,9 +344,7 @@ def choose_pre_joining_action(status: str, policy: str | None) -> str:
                 .lower()
             )
             if confirmation not in {"y", "yes"}:
-                raise checkpoint.CheckpointError(
-                    "Pre-Joining validator startup was not confirmed"
-                )
+                raise NodeError("Pre-Joining validator startup was not confirmed")
             return "start"
         if response in {"3", "leave-stopped", "leave", "l"}:
             return "leave-stopped"
@@ -407,11 +390,11 @@ def wait_for_start_authorization(
             )
             return StartDecision(start=True)
         if current_status in REFUSED_STATUSES:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 f"Refusing to start validator in lifecycle state {current_status}"
             )
         if current_status not in PRE_JOINING_STATUSES:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 f"Refusing unknown validator lifecycle state {current_status!r}"
             )
 
@@ -431,7 +414,7 @@ def wait_for_start_authorization(
             return StartDecision(start=False)
         policy = "wait"
         if deadline is not None and time.monotonic() >= deadline:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 "Timed out waiting for validator status Joining; services remain stopped"
             )
         time.sleep(args.validator_poll_interval)
@@ -475,7 +458,7 @@ def start_validator(args: Any, *, expected_node_public_key: str | None = None) -
         expected_node_public_key is not None
         and installed_node_public_key(inventory) != expected_node_public_key
     ):
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Installed validator node public key changed during onboarding; "
             "refusing to start"
         )

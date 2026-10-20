@@ -22,7 +22,8 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from seismic_node import checkpoint, monitoring, observer, supervisor, validator
+from seismic_node import checkpoint, fsutil, monitoring, observer, supervisor, validator
+from seismic_node.errors import NodeError
 
 
 def load(name, path):
@@ -634,7 +635,7 @@ class LifecycleTests(unittest.TestCase):
                 args = cli.parse_args()
             with (
                 mock.patch.object(
-                    checkpoint,
+                    fsutil,
                     "read_toml",
                     return_value={"monitoring": settings(role="observer")},
                 ) as read,
@@ -675,7 +676,7 @@ class LifecycleTests(unittest.TestCase):
             "monitoring": settings(),
         }
         with (
-            mock.patch.object(checkpoint, "read_toml", return_value=data),
+            mock.patch.object(fsutil, "read_toml", return_value=data),
             mock.patch.object(checkpoint, "validate_installed_identity") as identity,
         ):
             loaded = checkpoint.load_inventory("validator", Path("/inventory.toml"))
@@ -683,8 +684,8 @@ class LifecycleTests(unittest.TestCase):
             identity.assert_called_once()
         data["unexpected"] = True
         with (
-            mock.patch.object(checkpoint, "read_toml", return_value=data),
-            self.assertRaises(checkpoint.CheckpointError),
+            mock.patch.object(fsutil, "read_toml", return_value=data),
+            self.assertRaises(NodeError),
         ):
             checkpoint.load_inventory("validator", Path("/inventory.toml"))
 

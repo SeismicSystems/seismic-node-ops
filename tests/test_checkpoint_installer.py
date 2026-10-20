@@ -18,13 +18,14 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "tools"))
 
 from seismic_node import checkpoint as installer
+from seismic_node import fsutil
 
 
 class CheckpointInstallerTests(unittest.TestCase):
     def assert_checkpoint_error(
         self, expected: str, callback: Callable[[], object]
     ) -> None:
-        with self.assertRaisesRegex(installer.CheckpointError, expected):
+        with self.assertRaisesRegex(installer.NodeError, expected):
             callback()
 
     def validate_tar_members(self, members: list[tarfile.TarInfo]) -> None:
@@ -64,7 +65,7 @@ class CheckpointInstallerTests(unittest.TestCase):
 
     def test_weak_subjectivity_anchor_must_be_recent(self) -> None:
         value = {"epoch": 1, "header_digest": "0x" + "11" * 32}
-        with mock.patch.object(installer, "read_toml", return_value=value):
+        with mock.patch.object(fsutil, "read_toml", return_value=value):
             self.assert_checkpoint_error(
                 "more than 5 epochs",
                 lambda: installer.load_weak_subjectivity(Path("/unused"), 7),
@@ -73,7 +74,7 @@ class CheckpointInstallerTests(unittest.TestCase):
     def test_replacement_paths_must_not_be_nested(self) -> None:
         self.assert_checkpoint_error(
             "must not be identical or nested",
-            lambda: installer.require_separate_paths(
+            lambda: fsutil.require_separate_paths(
                 {"Reth": Path("/state"), "Summit": Path("/state/summit")}
             ),
         )
@@ -186,7 +187,7 @@ class CheckpointInstallerTests(unittest.TestCase):
                 mock.patch.object(
                     installer, "discover_backup_roots", return_value=[root]
                 ),
-                mock.patch.object(installer, "read_json", return_value=receipt),
+                mock.patch.object(fsutil, "read_json", return_value=receipt),
                 mock.patch.object(installer.sys.stdin, "isatty", return_value=True),
                 mock.patch("builtins.input", return_value="2"),
                 contextlib.redirect_stdout(io.StringIO()) as output,

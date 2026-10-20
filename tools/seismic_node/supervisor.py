@@ -15,6 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import NodeError
+
 SYSTEMCTL = Path("/usr/bin/systemctl")
 SUPERVISORCTL = Path("/usr/bin/supervisorctl")
 # BACKOFF and STARTING can still spawn or transition to RUNNING. Only terminal
@@ -27,7 +29,7 @@ STATUS_EXIT_RUNNING = 0
 STATUS_EXIT_NOT_RUNNING = 3
 
 
-class SupervisorError(Exception):
+class SupervisorError(NodeError):
     """Supervisor state or process control was unsafe or unsuccessful."""
 
 

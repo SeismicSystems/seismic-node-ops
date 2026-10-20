@@ -15,6 +15,9 @@ boundary can be reviewed and tested independently.
 
 | Module          | Responsibility                                                                                                                                                                                                     |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `errors.py`     | Defines `NodeError`, the base class for every operator-facing failure.                                                                                                                                             |
+| `fsutil.py`     | Validates paths and file ownership, and reads TOML/JSON files with `O_NOFOLLOW` and exact-schema checks; shared by every module.                                                                                   |
+| `nodeenv.py`    | Parses `/etc/seismic/node.env` with systemd `EnvironmentFile=` semantics and validates it against the node configuration schema.                                                                                   |
 | `checkpoint.py` | Validates inventories, manifests, archives, and weak-subjectivity files; installs and rolls back matching Reth/Summit state; validates installed checkpoint inputs; deletes explicitly confirmed rollback backups. |
 | `download.py`   | Selects a completed checkpoint epoch, polls remote manifests, downloads verified archives, and resolves local, URL, or Summit-RPC weak-subjectivity anchors.                                                       |
 | `rpc.py`        | Provides strict standard-library HTTP and JSON-RPC helpers with URL, redirect, response-size, token-file, archive-size, and SHA-256 checks.                                                                        |
@@ -217,15 +220,16 @@ Keep these properties when changing the package:
 
 ## Error handling
 
-Package modules raise one of these operator-facing exceptions:
+Package modules raise `errors.NodeError` or one of its subclasses:
 
-- `checkpoint.CheckpointError`
-- `rpc.NetworkError`
-- `supervisor.SupervisorError`
+- `nodeenv.NodeEnvError` for an unreadable or invalid `node.env`
+- `rpc.NetworkError` (and `HttpStatusError`, `JsonRpcError`) for HTTP and
+  JSON-RPC failures
+- `supervisor.SupervisorError` for service-manager failures
 
-`tools/seismic-node.py` catches them, prints a concise error, and exits with
-status 1. Unexpected programming errors are not hidden behind a generic catch.
-Keyboard interruption exits with status 130.
+`tools/seismic-node.py` catches `NodeError`, prints a concise error, and exits
+with status 1. Unexpected programming errors are not hidden behind a generic
+catch. Keyboard interruption exits with status 130.
 
 ## Tests and checks
 

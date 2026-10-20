@@ -23,7 +23,16 @@ from unittest import mock
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
-from seismic_node import checkpoint, download, observer, rpc, supervisor, validator
+from seismic_node import (
+    checkpoint,
+    download,
+    fsutil,
+    observer,
+    rpc,
+    supervisor,
+    validator,
+)
+from seismic_node.errors import NodeError
 
 CLI_SPEC = importlib.util.spec_from_file_location(
     "seismic_node_cli", TOOLS / "seismic-node.py"
@@ -201,9 +210,9 @@ class NetworkTests(unittest.TestCase):
                     download, "create_download_work_dir", return_value=work_dir
                 ),
                 mock.patch.object(
-                    checkpoint,
+                    fsutil,
                     "require_root_managed_file",
-                    side_effect=checkpoint.require_regular_file,
+                    side_effect=fsutil.require_regular_file,
                 ),
                 download.resolve_checkpoint_inputs(
                     args,
@@ -263,7 +272,7 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(
             download.choose_newer_checkpoint(12, 13, "latest-available"), 13
         )
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "Checkpoint 13"):
+        with self.assertRaisesRegex(NodeError, "Checkpoint 13"):
             download.choose_newer_checkpoint(12, 13, "fail-if-newer")
 
     def test_weak_subjectivity_rpc_is_converted_to_toml(self) -> None:
@@ -290,7 +299,7 @@ class NetworkTests(unittest.TestCase):
             mock.patch.object(sys.stdin, "isatty", return_value=False),
             redirect_stderr(warnings),
             self.assertRaisesRegex(
-                checkpoint.CheckpointError,
+                NodeError,
                 "--allow-same-origin-weak-subjectivity",
             ),
         ):
@@ -370,7 +379,7 @@ class CliTests(unittest.TestCase):
                 source_requested = node_cli.checkpoint_source_requested(args)
                 self.assertFalse(source_requested)
                 with self.assertRaisesRegex(
-                    checkpoint.CheckpointError,
+                    NodeError,
                     "require --snapshot-api-url or local --archive and --manifest",
                 ):
                     node_cli.require_checkpoint_source_for_install_options(
@@ -400,7 +409,7 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual(public_key, "01" * 32)
         invalid = self.deposit_response()
         invalid["result"]["withdrawal_credentials"][-1] ^= 1  # type: ignore[index]
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "required address"):
+        with self.assertRaisesRegex(NodeError, "required address"):
             validator.validate_deposit_response(invalid)
 
     def test_deposit_generation_uses_fixed_request_and_stops_rpc(self) -> None:
@@ -436,9 +445,9 @@ class ValidatorTests(unittest.TestCase):
             return True
 
         with (
-            mock.patch.object(checkpoint, "require_root"),
+            mock.patch.object(fsutil, "require_root"),
             mock.patch.object(checkpoint, "load_inventory"),
-            mock.patch.object(checkpoint, "require_absolute"),
+            mock.patch.object(fsutil, "require_absolute"),
             mock.patch.object(validator, "confirm_output_overwrite"),
             mock.patch.object(supervisor, "prepare_supervisor") as prepare,
             mock.patch.object(supervisor, "require_stopped"),
@@ -485,9 +494,9 @@ class ValidatorTests(unittest.TestCase):
             return True
 
         with (
-            mock.patch.object(checkpoint, "require_root"),
+            mock.patch.object(fsutil, "require_root"),
             mock.patch.object(checkpoint, "load_inventory"),
-            mock.patch.object(checkpoint, "require_absolute"),
+            mock.patch.object(fsutil, "require_absolute"),
             mock.patch.object(validator, "confirm_output_overwrite"),
             mock.patch.object(supervisor, "prepare_supervisor"),
             mock.patch.object(supervisor, "require_stopped"),
@@ -502,7 +511,7 @@ class ValidatorTests(unittest.TestCase):
                 "json_rpc_response",
                 side_effect=rpc.JsonRpcError(4000, "invalid request"),
             ) as request,
-            self.assertRaisesRegex(checkpoint.CheckpointError, "rejected the request"),
+            self.assertRaisesRegex(NodeError, "rejected the request"),
         ):
             validator.generate_deposit_signature(args)
 
@@ -551,7 +560,7 @@ class ValidatorTests(unittest.TestCase):
         with (
             mock.patch.object(rpc, "read_bearer_token", return_value=None),
             mock.patch.object(validator, "validator_account", return_value=account),
-            self.assertRaisesRegex(checkpoint.CheckpointError, "Refusing to start"),
+            self.assertRaisesRegex(NodeError, "Refusing to start"),
         ):
             validator.wait_for_start_authorization(args, "11" * 32)
 
@@ -586,7 +595,7 @@ class ValidatorTests(unittest.TestCase):
             mock.patch.object(validator, "validator_account", return_value=None),
             mock.patch.object(validator.time, "monotonic", return_value=20.0),
             self.assertRaisesRegex(
-                checkpoint.CheckpointError,
+                NodeError,
                 "services remain stopped",
             ) as raised,
         ):
@@ -731,9 +740,7 @@ class InstalledValidatorIdentityTests(unittest.TestCase):
                     "run",
                     return_value=subprocess.CompletedProcess([], 0, stdout=output),
                 ),
-                self.assertRaisesRegex(
-                    checkpoint.CheckpointError, "exactly one valid"
-                ) as raised,
+                self.assertRaisesRegex(NodeError, "exactly one valid") as raised,
             ):
                 validator.installed_node_public_key(self.inventory)
             self.assertNotIn("secret-fixture", str(raised.exception))
@@ -749,9 +756,7 @@ class InstalledValidatorIdentityTests(unittest.TestCase):
             with (
                 self.subTest(error=type(error).__name__),
                 mock.patch.object(validator.subprocess, "run", side_effect=error),
-                self.assertRaisesRegex(
-                    checkpoint.CheckpointError, "Could not read"
-                ) as raised,
+                self.assertRaisesRegex(NodeError, "Could not read") as raised,
             ):
                 validator.installed_node_public_key(self.inventory)
             self.assertNotIn(secret, str(raised.exception))
@@ -761,7 +766,7 @@ class InstalledValidatorIdentityTests(unittest.TestCase):
         link.symlink_to(self.keys_dir, target_is_directory=True)
         with (
             mock.patch.object(validator.subprocess, "run") as run,
-            self.assertRaises(checkpoint.CheckpointError),
+            self.assertRaises(NodeError),
         ):
             validator.installed_node_public_key({"summit_keys_dir": link})
         run.assert_not_called()
@@ -778,7 +783,7 @@ class InstalledValidatorIdentityTests(unittest.TestCase):
                         path.symlink_to(self.keys_dir / "missing")
                     with (
                         mock.patch.object(validator.subprocess, "run") as run,
-                        self.assertRaises(checkpoint.CheckpointError),
+                        self.assertRaises(NodeError),
                     ):
                         validator.installed_node_public_key(self.inventory)
                     run.assert_not_called()
@@ -897,12 +902,8 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.start.assert_called_once()
 
     def test_invalid_optional_deposit_response_is_not_ignored(self) -> None:
-        self.deposit.side_effect = checkpoint.CheckpointError(
-            "Invalid deposit response"
-        )
-        with self.assertRaisesRegex(
-            checkpoint.CheckpointError, "Invalid deposit response"
-        ):
+        self.deposit.side_effect = NodeError("Invalid deposit response")
+        with self.assertRaisesRegex(NodeError, "Invalid deposit response"):
             node_cli.handle_validator(
                 self.args("--deposit-signature", "/root/deposit-signature.json")
             )
@@ -912,7 +913,7 @@ class ValidatorOnboardTests(unittest.TestCase):
 
     def test_mismatched_deposit_identity_fails_before_polling_or_install(self) -> None:
         self.deposit.return_value = ({}, "22" * 32)
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "does not match"):
+        with self.assertRaisesRegex(NodeError, "does not match"):
             node_cli.handle_validator(
                 self.args("--deposit-signature", "/root/deposit-signature.json")
             )
@@ -921,8 +922,8 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.assert_no_start()
 
     def test_identity_read_failure_fails_before_polling_or_install(self) -> None:
-        self.identity.side_effect = checkpoint.CheckpointError("Cannot read identity")
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "Cannot read identity"):
+        self.identity.side_effect = NodeError("Cannot read identity")
+        with self.assertRaisesRegex(NodeError, "Cannot read identity"):
             node_cli.handle_validator(self.args("--mode", "normal"))
         self.account.assert_not_called()
         self.install.assert_not_called()
@@ -932,9 +933,7 @@ class ValidatorOnboardTests(unittest.TestCase):
         for mode in ("normal", "checkpoint"):
             with self.subTest(mode=mode):
                 self.identity.side_effect = ["11" * 32, "22" * 32]
-                with self.assertRaisesRegex(
-                    checkpoint.CheckpointError, "changed during"
-                ):
+                with self.assertRaisesRegex(NodeError, "changed during"):
                     node_cli.handle_validator(self.args("--mode", mode))
                 self.assert_no_start()
 
@@ -982,7 +981,7 @@ class ValidatorOnboardTests(unittest.TestCase):
         ):
             with (
                 self.subTest(options=options),
-                self.assertRaisesRegex(checkpoint.CheckpointError, "--mode normal"),
+                self.assertRaisesRegex(NodeError, "--mode normal"),
             ):
                 node_cli.handle_validator(self.args("--mode", "normal", *options))
         self.account.assert_not_called()
@@ -1007,7 +1006,7 @@ class ValidatorOnboardTests(unittest.TestCase):
                         if initial_joining
                         else [self.status(status)]
                     )
-                    with self.assertRaisesRegex(checkpoint.CheckpointError, "Refusing"):
+                    with self.assertRaisesRegex(NodeError, "Refusing"):
                         node_cli.handle_validator(self.args("--mode", "normal"))
                     self.assert_no_start()
         self.install.assert_not_called()
@@ -1044,7 +1043,7 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.account.side_effect = [self.status("Joining"), None]
         with (
             mock.patch.object(validator.time, "monotonic", side_effect=[10.0, 12.0]),
-            self.assertRaisesRegex(checkpoint.CheckpointError, "Timed out"),
+            self.assertRaisesRegex(NodeError, "Timed out"),
         ):
             node_cli.handle_validator(
                 self.args("--mode", "normal", "--validator-wait-timeout", "1")
@@ -1065,15 +1064,15 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.start.assert_called_once()
 
     def test_normal_rpc_error_never_starts_services(self) -> None:
-        self.account.side_effect = checkpoint.CheckpointError("Invalid RPC response")
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "Invalid RPC response"):
+        self.account.side_effect = NodeError("Invalid RPC response")
+        with self.assertRaisesRegex(NodeError, "Invalid RPC response"):
             node_cli.handle_validator(self.args("--mode", "normal"))
         self.assert_no_start()
         self.install.assert_not_called()
 
     def test_normal_invalid_inventory_fails_before_polling(self) -> None:
-        self.inventory.side_effect = checkpoint.CheckpointError("Invalid inventory")
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "Invalid inventory"):
+        self.inventory.side_effect = NodeError("Invalid inventory")
+        with self.assertRaisesRegex(NodeError, "Invalid inventory"):
             node_cli.handle_validator(self.args("--mode", "normal"))
         self.account.assert_not_called()
         self.assert_no_start()
@@ -1081,7 +1080,7 @@ class ValidatorOnboardTests(unittest.TestCase):
     def test_normal_requires_trusted_rpc(self) -> None:
         args = self.args("--mode", "normal")
         args.summit_rpc_url = None
-        with self.assertRaisesRegex(checkpoint.CheckpointError, "--summit-rpc-url"):
+        with self.assertRaisesRegex(NodeError, "--summit-rpc-url"):
             node_cli.handle_validator(args)
         self.account.assert_not_called()
         self.assert_no_start()

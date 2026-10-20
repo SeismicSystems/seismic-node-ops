@@ -20,12 +20,12 @@ from typing import NoReturn
 from seismic_node import (
     checkpoint,
     download,
+    fsutil,
     monitoring,
     observer,
-    rpc,
-    supervisor,
     validator,
 )
+from seismic_node.errors import NodeError
 
 
 def add_inventory_argument(parser: argparse.ArgumentParser) -> None:
@@ -345,7 +345,7 @@ def require_checkpoint_source_for_install_options(
 ) -> None:
     """Reject install-only options that would otherwise produce indirect errors."""
     if not source_requested and checkpoint_install_options_requested(args):
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Checkpoint installation options require --snapshot-api-url or local "
             "--archive and --manifest files"
         )
@@ -359,20 +359,16 @@ def validate_positive_options(args: argparse.Namespace) -> None:
         "validator_poll_interval",
     ):
         if hasattr(args, name) and getattr(args, name) <= 0:
-            raise checkpoint.CheckpointError(
-                f"--{name.replace('_', '-')} must be greater than zero"
-            )
+            raise NodeError(f"--{name.replace('_', '-')} must be greater than zero")
     for name in ("snapshot_wait_timeout", "validator_wait_timeout"):
         if hasattr(args, name) and getattr(args, name) < 0:
-            raise checkpoint.CheckpointError(
-                f"--{name.replace('_', '-')} must not be negative"
-            )
+            raise NodeError(f"--{name.replace('_', '-')} must not be negative")
     if (
         hasattr(args, "checkpoint_epoch")
         and args.checkpoint_epoch is not None
         and args.checkpoint_epoch < 0
     ):
-        raise checkpoint.CheckpointError("--checkpoint-epoch must not be negative")
+        raise NodeError("--checkpoint-epoch must not be negative")
 
 
 def install_from_resolved_inputs(
@@ -438,12 +434,12 @@ def handle_validator(args: argparse.Namespace) -> None:
         validator.generate_deposit_signature(args)
         return
     if args.summit_rpc_url is None:
-        raise checkpoint.CheckpointError("validator onboard requires --summit-rpc-url")
+        raise NodeError("validator onboard requires --summit-rpc-url")
     source_requested = checkpoint_source_requested(args)
     if args.mode == "normal" and (
         source_requested or checkpoint_install_options_requested(args)
     ):
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Checkpoint source and installation options cannot be used with "
             "validator onboard --mode normal"
         )
@@ -454,7 +450,7 @@ def handle_validator(args: argparse.Namespace) -> None:
     if args.deposit_signature is not None:
         _, deposit_public_key = validator.load_deposit_response(args.deposit_signature)
         if deposit_public_key != node_public_key:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 "Deposit-signature node public key does not match the installed validator"
             )
     if args.mode == "checkpoint" and not source_requested:
@@ -517,7 +513,7 @@ def handle_observer(args: argparse.Namespace) -> None:
     source_requested = checkpoint_source_requested(args)
     require_checkpoint_source_for_install_options(args, source_requested)
     if args.mode == "normal" and source_requested:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Checkpoint source options cannot be used with observer --mode normal"
         )
     backup: Path | None = None
@@ -540,7 +536,7 @@ def main() -> NoReturn:
     """Validate common options, require root, and dispatch one command."""
     args = parse_args()
     validate_positive_options(args)
-    checkpoint.require_root()
+    fsutil.require_root()
     if args.command == "checkpoint":
         handle_checkpoint(args)
     elif args.command == "validator":
@@ -558,12 +554,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("seismic-node: interrupted", file=sys.stderr)
         raise SystemExit(130) from None
-    except (
-        checkpoint.CheckpointError,
-        rpc.NetworkError,
-        supervisor.SupervisorError,
-        OSError,
-        shutil.Error,
-    ) as error:
+    except (NodeError, OSError, shutil.Error) as error:
         print(f"seismic-node: {error}", file=sys.stderr)
         raise SystemExit(1) from error
