@@ -789,7 +789,7 @@ configure_mdbx_reth_source() {
     local libmdbx_dir
 
     RETH_SOURCE_DIR_FOR_MDBX=""
-    _out "summit-checkpointer requires mdbx_copy built from the same vendored libmdbx revision as seismic-reth."
+    _out "seismic-checkpointer requires mdbx_copy built from the same vendored libmdbx revision as seismic-reth."
     if [[ "$RETH_INSTALL_METHOD" == "source" ]]; then
         _out "mdbx_copy will be built from $SERVICE_HOME/src/seismic-reth."
         return
@@ -801,7 +801,7 @@ configure_mdbx_reth_source() {
             ""
         if [[ -z "$selected" ]]; then
             warn "mdbx_copy will not be installed by this installer."
-            warn "Before starting summit-checkpointer, provide a compatible executable at $MDBX_COPY_TARGET_BIN."
+            warn "Before starting seismic-checkpointer, provide a compatible executable at $MDBX_COPY_TARGET_BIN."
             return
         fi
         if [[ "$selected" != /* ]]; then
@@ -841,24 +841,24 @@ print_mdbx_copy_plan() {
 }
 
 configure_checkpointer() {
-    section "Summit-checkpointer configuration"
+    section "Seismic-checkpointer configuration"
 
     INSTALL_CHECKPOINTER=false
-    CHECKPOINTER_TARGET_BIN="/usr/local/bin/summit-checkpointer"
+    CHECKPOINTER_TARGET_BIN="/usr/local/bin/seismic-checkpointer"
     MDBX_COPY_TARGET_BIN="/usr/local/bin/mdbx_copy"
-    CHECKPOINTER_CONFIG_PATH=${CHECKPOINTER_CONFIG_PATH:-/etc/seismic/summit-checkpointer.toml}
+    CHECKPOINTER_CONFIG_PATH=${CHECKPOINTER_CONFIG_PATH:-/etc/seismic/seismic-checkpointer.toml}
     CHECKPOINTER_SOURCE_REF=${CHECKPOINTER_SOURCE_REF:-main}
     CHECKPOINTER_INSTALL_METHOD=""
     CHECKPOINTS_DIR=""
     CHECKPOINTER_BINARY=""
     RETH_SOURCE_DIR_FOR_MDBX=""
-    if confirm "Enable summit-checkpointer?"; then
+    if confirm "Enable seismic-checkpointer?"; then
         INSTALL_CHECKPOINTER=true
         configure_directory \
             CHECKPOINTS_DIR \
             "Checkpointer output directory" \
             "/persistence/checkpoints" \
-            "Stores Reth snapshots and Summit verification bundles produced by summit-checkpointer."
+            "Stores Reth snapshots and Summit verification bundles produced by seismic-checkpointer."
         configure_file_path \
             CHECKPOINTER_CONFIG_PATH \
             "Checkpointer configuration file" \
@@ -866,12 +866,12 @@ configure_checkpointer() {
         configure_component_installation \
             CHECKPOINTER_INSTALL_METHOD \
             CHECKPOINTER_BINARY \
-            "summit-checkpointer" \
+            "seismic-checkpointer" \
             CHECKPOINTER_TARGET_BIN
         configure_mdbx_reth_source
     fi
 
-    _out "Summit-checkpointer: $INSTALL_CHECKPOINTER"
+    _out "Seismic-checkpointer: $INSTALL_CHECKPOINTER"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         print_component_installation \
             "Checkpointer" \
@@ -1129,7 +1129,7 @@ print_configuration_summary() {
         _out "  Reth source ref:   ${RETH_SOURCE_REF:-repository default branch}"
     fi
 
-    _out "Summit-checkpointer:"
+    _out "Seismic-checkpointer:"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         _out "  Enabled: true"
         print_component_installation \
@@ -1188,7 +1188,7 @@ review_configuration() {
         _out "  3) Edit HTTPS termination and routes"
         _out "  4) Edit network bootstrap"
         _out "  5) Edit validator software"
-        _out "  6) Edit summit-checkpointer"
+        _out "  6) Edit seismic-checkpointer"
         _out "  7) Edit Centralized Custodian"
         _out "  8) Accept configuration"
         _out "  9) Cancel"

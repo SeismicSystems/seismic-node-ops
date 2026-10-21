@@ -40,8 +40,6 @@ OBSERVER_UNITS = {
 }
 # Features a unit depends on; its variables need only apply when these are on.
 UNIT_FEATURES = {
-    "seismic-custodian": {"CUSTODIAN_ENABLED": "true"},
-    "seismic-observer-custodian": {"CUSTODIAN_ENABLED": "true"},
     "seismic-checkpointer": {"CHECKPOINTER_ENABLED": "true"},
     "seismic-prometheus-agent": {"MONITORING_ENABLED": "true"},
 }
@@ -76,6 +74,7 @@ def expand(command: str, env: dict[str, str]) -> list[str]:
 
 def full_env(**overrides: str) -> dict[str, str]:
     values = nodeenv.parse(EXAMPLE.read_text())
+    values["CUSTODIAN_CHAIN_ID"] = "5124"
     values.update(overrides)
     return values
 
@@ -88,10 +87,6 @@ OBSERVER = {
     "OBSERVER_P2P_PORT": "18551",
 }
 EVERYTHING = {
-    "CUSTODIAN_ENABLED": "true",
-    "RETH_PURPOSE_KEYS_SOURCE": "custodian",
-    "CUSTODIAN_COUNCIL_ADDRESS": "0x" + "ab" * 20,
-    "CUSTODIAN_CHAIN_ID": "5124",
     "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
     "CHECKPOINTER_ENABLED": "true",
     "MONITORING_ENABLED": "true",
@@ -172,25 +167,41 @@ class UnitSchemaTests(unittest.TestCase):
                 read_unit(name).get("Unit", "Conflicts"), f"{other}.service"
             )
 
-    def test_validator_summit_units_do_not_auto_restart(self):
-        for name in ("seismic-summit", "seismic-summit-checkpoint"):
-            unit = read_unit(name)
-            with self.subTest(unit=name):
-                self.assertFalse(unit.has_option("Service", "Restart"))
-        for name in VALIDATOR_UNITS | OBSERVER_UNITS:
-            if name.startswith("seismic-summit") or name == "seismic-deposit-rpc":
-                continue
+    def test_long_running_services_restart_on_failure(self):
+        # Summit journals and fsyncs its own votes before broadcasting and
+        # replays them on start (Commonware Simplex), so restarting a voting
+        # process cannot double-sign; every long-running unit may self-heal.
+        self.assertEqual(
+            read_unit("seismic-deposit-rpc").get("Service", "Restart"), "no"
+        )
+        for name in (VALIDATOR_UNITS | OBSERVER_UNITS) - {"seismic-deposit-rpc"}:
             with self.subTest(unit=name):
                 self.assertIn(
                     read_unit(name).get("Service", "Restart"), {"on-failure", "always"}
                 )
+
+    def test_summit_restart_pulls_reth_back_up(self):
+        for name in (
+            "seismic-summit",
+            "seismic-summit-checkpoint",
+            "seismic-observer",
+            "seismic-observer-checkpoint",
+        ):
+            unit = read_unit(name)
+            with self.subTest(unit=name):
+                self.assertEqual(unit.get("Unit", "Requires"), "seismic-reth.service")
+                self.assertIn("seismic-reth.service", unit.get("Unit", "After").split())
+                # An explicit `systemctl restart seismic-reth` must not bounce Summit.
+                self.assertFalse(unit.has_option("Unit", "PartOf"))
 
 
 class ExecStartExpansionTests(unittest.TestCase):
     def test_optional_flags_expand_to_nothing_when_empty(self):
         argv = expand(exec_start("seismic-reth"), full_env())
         self.assertNotIn("--bootnodes", argv)
-        self.assertIn("built-in", argv)
+        self.assertEqual(
+            argv[argv.index("--seismic.purpose-keys-source") + 1], "custodian"
+        )
         self.assertEqual(argv[argv.index("--datadir") + 1], "/persistence/reth")
         argv = expand(exec_start("seismic-summit"), full_env())
         self.assertNotIn("--bootstrappers", argv)

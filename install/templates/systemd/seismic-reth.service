@@ -1,11 +1,17 @@
 # Seismic Reth execution client. Shared by validators and observers.
 # Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# Summit depends on Reth's Engine API socket and fails when Reth fails; the
+# Summit units declare Requires=seismic-reth.service, so their restart brings
+# Reth back up first and the chain recovers in order.
 
 [Unit]
 Description=Seismic Reth execution client
 Documentation=https://github.com/SeismicSystems/seismic-node-ops
 After=network-online.target seismic-custodian.service seismic-observer-custodian.service
 Wants=network-online.target
+# Reth fetches purpose keys from the Custodian socket; one of the two role
+# units is always installed and enabled.
 
 [Service]
 Type=simple
@@ -27,7 +33,7 @@ ExecStart=/usr/local/bin/seismic-reth node -vvv \
     --metrics 9001 \
     --ipcdisable \
     --auth-ipc --auth-ipc.path ${RETH_ENGINE_IPC} \
-    --seismic.purpose-keys-source ${RETH_PURPOSE_KEYS_SOURCE} \
+    --seismic.purpose-keys-source custodian \
     --seismic.custodian.socket ${CUSTODIAN_SOCKET} \
     --disable-discv4-discovery --disable-dns-discovery \
     --enable-discv5-discovery --discovery.v5.port 30303 \

@@ -42,14 +42,14 @@ print_missing_service_prerequisites() {
 
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         if ! security_error=$(check_service_executable_security "$CHECKPOINTER_TARGET_BIN"); then
-            warn "summit-checkpointer cannot start until its executable is secured at $CHECKPOINTER_TARGET_BIN: $security_error."
+            warn "seismic-checkpointer cannot start until its executable is secured at $CHECKPOINTER_TARGET_BIN: $security_error."
             missing=true
         elif ! check_checkpointer_cli_support; then
-            warn "summit-checkpointer cannot start until its executable supports --bind-address: $CHECKPOINTER_TARGET_BIN."
+            warn "seismic-checkpointer cannot start until its executable supports --bind-address: $CHECKPOINTER_TARGET_BIN."
             missing=true
         fi
         if ! security_error=$(check_service_executable_security "$MDBX_COPY_TARGET_BIN"); then
-            warn "summit-checkpointer cannot start until a compatible mdbx_copy is secured at $MDBX_COPY_TARGET_BIN: $security_error."
+            warn "seismic-checkpointer cannot start until a compatible mdbx_copy is secured at $MDBX_COPY_TARGET_BIN: $security_error."
             missing=true
         fi
     fi

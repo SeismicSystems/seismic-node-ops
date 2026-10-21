@@ -1,14 +1,16 @@
 # Seismic Summit consensus client, observer role, normal startup.
 # Static unit: every host-specific value comes from /etc/seismic/node.env.
 #
-# Observers do not vote, so a restart cannot double-sign; Restart=on-failure
-# is safe here.
+# Requires=seismic-reth.service makes an automatic restart of this unit bring
+# Reth back up first, since Summit fails whenever Reth does.
 
 [Unit]
 Description=Seismic Summit consensus client (observer)
 Documentation=https://github.com/SeismicSystems/seismic-node-ops
 After=network-online.target seismic-reth.service
-Wants=network-online.target seismic-reth.service
+Wants=network-online.target
+# Requires= so that an automatic restart of this unit starts Reth first.
+Requires=seismic-reth.service
 Conflicts=seismic-observer-checkpoint.service
 
 [Service]

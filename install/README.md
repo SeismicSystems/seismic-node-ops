@@ -73,7 +73,7 @@ validator.
 | `443`                          | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
 | `7876` (default; configurable) | TCP         | Custodian HTTP backend           | Loopback-only; never expose directly |
 
-When summit-checkpointer is enabled, its RPC and snapshot server binds only to
+When seismic-checkpointer is enabled, its RPC and snapshot server binds only to
 `127.0.0.1:42069`. Do not expose TCP port `42069` directly through a firewall.
 In full OpenResty mode, the rate-limited and JWT-protected `/checkpointer` HTTPS
 route provides remote access instead. Custodian-only mode omits it.
@@ -124,7 +124,7 @@ The installer asks you to configure:
   OpenResty remains optional.
 - The Summit genesis file and an optional bootnode RPC.
 - Summit and seismic-reth binary installation methods.
-- summit-checkpointer.
+- seismic-checkpointer.
 - Centralized Custodian.
 
 When Centralized Custodian is enabled, the installer always uses its publicly
@@ -140,7 +140,7 @@ Root keys and epoch-key material require encrypted transport and special proxy
 protections. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for all three
 installer modes, operator-owned proxy requirements, and setup instructions.
 
-For Summit, seismic-reth, summit-checkpointer, and Centralized Custodian,
+For Summit, seismic-reth, seismic-checkpointer, and Centralized Custodian,
 supported installation modes are:
 
 1. Install a supplied prebuilt executable.
@@ -158,7 +158,7 @@ Custodian:    centralized-custodian (temporary branch, enclave repository)
 
 Deferred binaries must be installed at the configured target paths before the
 corresponding services are started. A prebuilt or already-present deferred
-summit-checkpointer must support `--bind-address`; the generated Supervisor
+seismic-checkpointer must support `--bind-address`; the generated Supervisor
 program uses it to keep the checkpointer RPC on loopback.
 
 ### Optional Summit bootstrappers file
@@ -221,12 +221,12 @@ Treat this as persistent execution-layer state. Do not delete it during an
 installer rerun, and do not manually copy or modify the live database while Reth
 is running.
 
-When summit-checkpointer is enabled, it uses `mdbx_copy` to produce a consistent
-Reth database copy. `mdbx_copy` must be built from the same vendored libmdbx
-revision as the seismic-reth binary. If Reth is built from source, the installer
-builds `mdbx_copy` from that checkout. For a prebuilt or deferred Reth binary,
-provide the matching seismic-reth source checkout when prompted. Do not start
-the checkpointer until a compatible executable is installed at:
+When seismic-checkpointer is enabled, it uses `mdbx_copy` to produce a
+consistent Reth database copy. `mdbx_copy` must be built from the same vendored
+libmdbx revision as the seismic-reth binary. If Reth is built from source, the
+installer builds `mdbx_copy` from that checkout. For a prebuilt or deferred Reth
+binary, provide the matching seismic-reth source checkout when prompted. Do not
+start the checkpointer until a compatible executable is installed at:
 
 ```text
 /usr/local/bin/mdbx_copy
@@ -283,11 +283,11 @@ the installer starts, the installer asks for permission to overwrite it after a
 successful installation. It does not read or reuse the existing contents.
 Declining the overwrite cancels the installation before configuration begins.
 
-When summit-checkpointer is enabled, the installer prompts for an absolute
+When seismic-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
 
 ```text
-/etc/seismic/summit-checkpointer.toml
+/etc/seismic/seismic-checkpointer.toml
 ```
 
 The generated Supervisor command uses the selected path. Its parent directory
@@ -357,7 +357,7 @@ sudo ./tools/seismic-node.py validator start --mode normal
 ```
 
 The command loads the Supervisor program definitions and starts Custodian when
-configured, Reth, `summit`, and summit-checkpointer when configured. Every host
+configured, Reth, `summit`, and seismic-checkpointer when configured. Every host
 in the network must use an identical genesis file because the config digest
 gates P2P authentication. Verify with:
 
@@ -444,7 +444,7 @@ sudo supervisorctl update
 
 It then starts Custodian when configured, Reth, the selected Summit program
 (`summit` in normal mode or `summit-checkpoint` in checkpoint mode), and
-summit-checkpointer when configured. It does not start or reload OpenResty.
+seismic-checkpointer when configured. It does not start or reload OpenResty.
 
 For unattended installation, pass `--yes` to skip the interactive confirmation,
 and pin `--checkpoint-epoch` with `--checkpoint-policy exact` so a dynamically
@@ -587,7 +587,7 @@ sudo supervisorctl start custodian
 sudo supervisorctl start reth
 sudo supervisorctl start summit
 
-# Run this only when summit-checkpointer was enabled.
+# Run this only when seismic-checkpointer was enabled.
 sudo supervisorctl start checkpointer
 
 sudo supervisorctl status
@@ -678,7 +678,7 @@ additionally proxies the existing node routes below. See
 requirements, and deployment verification.
 
 Reth HTTP and WebSocket RPC, Summit RPC, their metrics listeners, and the
-summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
+seismic-checkpointer RPC remain bound to loopback whether or not OpenResty is
 enabled. When OpenResty is disabled, these endpoints are available only from the
 node itself or through an operator-managed tunnel; they are not exposed directly
 on public interfaces.

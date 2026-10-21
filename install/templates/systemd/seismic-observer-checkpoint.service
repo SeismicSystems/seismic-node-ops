@@ -6,7 +6,9 @@
 Description=Seismic Summit consensus client (observer, checkpoint start)
 Documentation=https://github.com/SeismicSystems/seismic-node-ops
 After=network-online.target seismic-reth.service
-Wants=network-online.target seismic-reth.service
+Wants=network-online.target
+# Requires= so that an automatic restart of this unit starts Reth first.
+Requires=seismic-reth.service
 Conflicts=seismic-observer.service
 ConditionPathExists=/etc/seismic/checkpoint-start.toml
 

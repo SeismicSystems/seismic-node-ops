@@ -5,13 +5,16 @@
 # /etc/seismic/checkpoint-start.toml. The runner validates the checkpoint and
 # weak-subjectivity anchor named there, takes the Summit process lock, and
 # exec's Summit with --checkpoint-path and --weak-subjectivity-path appended.
-# Restart= is absent for the same reason as in seismic-summit.service.
+# Restart=on-failure is safe for the reason given in seismic-summit.service;
+# the runner re-validates the checkpoint inputs on every start.
 
 [Unit]
 Description=Seismic Summit consensus client (validator, checkpoint start)
 Documentation=https://github.com/SeismicSystems/seismic-node-ops
 After=network-online.target seismic-reth.service
-Wants=network-online.target seismic-reth.service
+Wants=network-online.target
+# Requires= so that an automatic restart of this unit starts Reth first.
+Requires=seismic-reth.service
 Conflicts=seismic-summit.service seismic-deposit-rpc.service
 ConditionPathExists=/etc/seismic/checkpoint-start.toml
 
@@ -37,6 +40,8 @@ ExecStart=/usr/local/libexec/seismic/summit-checkpoint-runner \
     --prom-ip ${SUMMIT_RPC_BIND} --prom-port 9090 \
     --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
     $SUMMIT_BOOTSTRAPPERS_ARG
+Restart=on-failure
+RestartSec=5s
 TimeoutStopSec=120s
 KillMode=mixed
 

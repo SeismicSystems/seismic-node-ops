@@ -161,7 +161,7 @@ deploy_observer_supervisor_configuration() {
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         render_checkpointer_supervisor_config \
             >>"$staging/seismic-observer.conf"
-        render_checkpointer_toml >"$staging/summit-checkpointer.toml"
+        render_checkpointer_toml >"$staging/seismic-checkpointer.toml"
     fi
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
         render_observer_custodian_supervisor_config \
@@ -177,7 +177,7 @@ deploy_observer_supervisor_configuration() {
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         prepare_checkpointer_config_parent
         install -o root -g root -m 0644 \
-            "$staging/summit-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH"
+            "$staging/seismic-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH"
     else
         rm -f -- "$CHECKPOINTER_CONFIG_PATH"
     fi

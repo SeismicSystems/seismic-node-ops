@@ -3,7 +3,7 @@
 # Supervisor configuration rendering without service activation.
 
 SUPERVISOR_CONFIG_PATH="/etc/supervisor/conf.d/seismic-validator.conf"
-CHECKPOINTER_CONFIG_PATH="/etc/seismic/summit-checkpointer.toml"
+CHECKPOINTER_CONFIG_PATH="/etc/seismic/seismic-checkpointer.toml"
 CHECKPOINT_START_CONFIG_PATH="/etc/seismic/validator-checkpoint-start.toml"
 SUMMIT_CHECKPOINT_RUNNER_SOURCE="$SCRIPT_DIR/../tools/checkpoint-start/summit-checkpoint-runner.py"
 SUMMIT_CHECKPOINT_RUNNER_PATH="/usr/local/libexec/seismic/summit-checkpoint-runner"
@@ -395,7 +395,7 @@ deploy_supervisor_configuration() {
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         render_checkpointer_supervisor_config \
             >>"$staging/seismic-validator.conf"
-        render_checkpointer_toml >"$staging/summit-checkpointer.toml"
+        render_checkpointer_toml >"$staging/seismic-checkpointer.toml"
     fi
     if [[ "$INSTALL_CUSTODIAN" == true ]]; then
         render_custodian_supervisor_config \
@@ -411,7 +411,7 @@ deploy_supervisor_configuration() {
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         prepare_checkpointer_config_parent
         install -o root -g root -m 0644 \
-            "$staging/summit-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH"
+            "$staging/seismic-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH"
     else
         rm -f -- "$CHECKPOINTER_CONFIG_PATH"
     fi

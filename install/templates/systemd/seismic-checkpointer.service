@@ -1,11 +1,11 @@
-# summit-checkpointer: periodic Reth snapshots and Summit verification bundles.
+# seismic-checkpointer: periodic Reth snapshots and Summit verification bundles.
 # Static unit: every host-specific value comes from /etc/seismic/node.env.
 #
-# Reads /etc/seismic/summit-checkpointer.toml (rendered from node.env) and
+# Reads /etc/seismic/seismic-checkpointer.toml (rendered from node.env) and
 # serves snapshots on loopback port 42069; OpenResty may expose /checkpointer.
 
 [Unit]
-Description=Seismic summit-checkpointer
+Description=Seismic checkpointer
 Documentation=https://github.com/SeismicSystems/seismic-node-ops
 After=network-online.target seismic-reth.service seismic-summit.service seismic-observer.service
 Wants=network-online.target
@@ -15,7 +15,7 @@ Type=simple
 User=seismic
 Group=seismic
 EnvironmentFile=/etc/seismic/node.env
-ExecStart=/usr/local/bin/summit-checkpointer \
+ExecStart=/usr/local/bin/seismic-checkpointer \
     --config ${CHECKPOINTER_CONFIG_PATH} \
     --bind-address 127.0.0.1 \
     --port 42069

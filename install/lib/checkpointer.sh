@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
 
-# summit-checkpointer and Reth-compatible mdbx_copy installation.
+# seismic-checkpointer and Reth-compatible mdbx_copy installation.
 
-CHECKPOINTER_REPO="https://github.com/SeismicSystems/summit-checkpointer.git"
+CHECKPOINTER_REPO="https://github.com/SeismicSystems/seismic-checkpointer.git"
 
 install_checkpointer_binary() {
-    local source_dir="$SERVICE_HOME/src/summit-checkpointer"
-    local build_output="$source_dir/target/release/summit-checkpointer"
+    local source_dir="$SERVICE_HOME/src/seismic-checkpointer"
+    local build_output="$source_dir/target/release/seismic-checkpointer"
 
     case "$CHECKPOINTER_INSTALL_METHOD" in
         prebuilt)
             install_binary_target \
-                "summit-checkpointer" \
+                "seismic-checkpointer" \
                 "$CHECKPOINTER_BINARY" \
                 "$CHECKPOINTER_TARGET_BIN"
             ;;
         source)
             install_rust_for_service_user
             prepare_source_checkout \
-                "summit-checkpointer" \
+                "seismic-checkpointer" \
                 "$CHECKPOINTER_REPO" \
                 "$source_dir" \
                 "$CHECKPOINTER_SOURCE_REF"
-            info "Building summit-checkpointer from $CHECKPOINTER_SOURCE_REF..."
+            info "Building seismic-checkpointer from $CHECKPOINTER_SOURCE_REF..."
             # shellcheck disable=SC2016
             if ! run_as_service_user bash -c \
                 'source "$HOME/.cargo/env"; cd "$1"; cargo build --locked --release' \
                 _ "$source_dir" >>"$LOG_FILE" 2>&1; then
-                die "summit-checkpointer build failed; see $LOG_FILE"
+                die "seismic-checkpointer build failed; see $LOG_FILE"
             fi
             install_binary_target \
-                "summit-checkpointer" \
+                "seismic-checkpointer" \
                 "$build_output" \
                 "$CHECKPOINTER_TARGET_BIN"
             ;;
         deferred)
-            info "summit-checkpointer installation deferred; expected executable: $CHECKPOINTER_TARGET_BIN"
+            info "seismic-checkpointer installation deferred; expected executable: $CHECKPOINTER_TARGET_BIN"
             ;;
         *)
-            die "Unknown summit-checkpointer installation method: $CHECKPOINTER_INSTALL_METHOD"
+            die "Unknown seismic-checkpointer installation method: $CHECKPOINTER_INSTALL_METHOD"
             ;;
     esac
 }
@@ -58,12 +58,12 @@ validate_checkpointer_cli_support() {
         return 1
     fi
     if ! security_error=$(check_service_executable_security "$CHECKPOINTER_TARGET_BIN"); then
-        die "summit-checkpointer executable is not safe for service use: $security_error"
+        die "seismic-checkpointer executable is not safe for service use: $security_error"
     fi
     check_checkpointer_cli_support \
-        || die "Installed summit-checkpointer does not support --bind-address."
+        || die "Installed seismic-checkpointer does not support --bind-address."
 
-    success "summit-checkpointer command-line compatibility validated"
+    success "seismic-checkpointer command-line compatibility validated"
 }
 
 install_mdbx_copy() {
@@ -77,7 +77,7 @@ install_mdbx_copy() {
         reth_source_dir="$RETH_SOURCE_DIR_FOR_MDBX"
     else
         warn "Skipping mdbx_copy installation because no matching seismic-reth source checkout was provided."
-        warn "Before starting summit-checkpointer, provide a compatible executable at $MDBX_COPY_TARGET_BIN."
+        warn "Before starting seismic-checkpointer, provide a compatible executable at $MDBX_COPY_TARGET_BIN."
         return
     fi
 
@@ -117,16 +117,16 @@ install_mdbx_copy() {
 
 install_checkpointer() {
     if [[ "$INSTALL_CHECKPOINTER" != true ]]; then
-        info "summit-checkpointer disabled; skipping checkpointer installation."
+        info "seismic-checkpointer disabled; skipping checkpointer installation."
         return
     fi
 
-    section "Installing summit-checkpointer"
+    section "Installing seismic-checkpointer"
     install_checkpointer_binary
     if ! validate_checkpointer_cli_support; then
-        warn "summit-checkpointer executable is deferred and not present at $CHECKPOINTER_TARGET_BIN."
+        warn "seismic-checkpointer executable is deferred and not present at $CHECKPOINTER_TARGET_BIN."
         warn "Provide a compatible executable with --bind-address support before starting the checkpointer."
     fi
     install_mdbx_copy
-    success "summit-checkpointer binary and compatible mdbx_copy installation phase complete."
+    success "seismic-checkpointer binary and compatible mdbx_copy installation phase complete."
 }

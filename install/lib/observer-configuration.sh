@@ -162,7 +162,7 @@ print_observer_configuration_summary() {
     print_component_installation \
         "Seismic Reth" "$RETH_INSTALL_METHOD" "$RETH_BINARY" "$RETH_TARGET_BIN"
 
-    _out "Summit-checkpointer: $INSTALL_CHECKPOINTER"
+    _out "Seismic-checkpointer: $INSTALL_CHECKPOINTER"
     if [[ "$INSTALL_CHECKPOINTER" == true ]]; then
         print_component_installation \
             "Checkpointer" "$CHECKPOINTER_INSTALL_METHOD" \
@@ -202,7 +202,7 @@ review_observer_configuration() {
         _out "  4) Edit network bootstrap"
         _out "  5) Edit observer assignment"
         _out "  6) Edit node software"
-        _out "  7) Edit summit-checkpointer"
+        _out "  7) Edit seismic-checkpointer"
         _out "  8) Edit Centralized Custodian"
         _out "  9) Accept configuration"
         _out " 10) Cancel"

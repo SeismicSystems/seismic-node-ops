@@ -57,7 +57,7 @@ BINARIES = {
     "summit": Path("/usr/local/bin/summit"),
     "reth": Path("/usr/local/bin/seismic-reth"),
     "custodian": Path("/usr/local/bin/seismic-centralized-custodian-service"),
-    "checkpointer": Path("/usr/local/bin/summit-checkpointer"),
+    "checkpointer": Path("/usr/local/bin/seismic-checkpointer"),
     "mdbx_copy": Path("/usr/local/bin/mdbx_copy"),
     "summit_checkpoint_runner": Path(
         "/usr/local/libexec/seismic/summit-checkpoint-runner"
@@ -332,9 +332,9 @@ SCHEMA: dict[str, Field] = {
     "KEYS_DIR": Field(_path),
     "RETH_P2P_KEY_PATH": Field(_path),
     "SUMMIT_KEYS_DIR": Field(_path),
+    "SUMMIT_CRITICAL_LOG_DIR": Field(_path),
     "SUMMIT_BOOTSTRAPPERS_FILE": Field(_optional_path),
     "SUMMIT_BOOTSTRAPPERS_ARG": Field(_optional_string),
-    "SUMMIT_CRITICAL_LOG_DIR": Field(_path),
     # Binaries
     "SUMMIT_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
     "RETH_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
@@ -346,7 +346,6 @@ SCHEMA: dict[str, Field] = {
     "GENESIS_PATH": Field(_path),
     "RETH_BOOTNODE": Field(_optional_url),
     "RETH_BOOTNODES_ARG": Field(_optional_string),
-    "RETH_PURPOSE_KEYS_SOURCE": Field(_enum(("built-in", "custodian"))),
     "RETH_RPC_BIND": Field(_bind_address),
     "SUMMIT_RPC_BIND": Field(_bind_address),
     "RETH_ENGINE_IPC": Field(_path),
@@ -354,24 +353,16 @@ SCHEMA: dict[str, Field] = {
     "OBSERVER_INDEX": Field(_int(0, 2**31 - 1), observer),
     "OBSERVER_PUBLIC_ADDRESS": Field(_host_port, observer),
     "OBSERVER_P2P_PORT": Field(_int(1, 65535), observer),
-    # Custodian
-    "CUSTODIAN_ENABLED": Field(_bool),
-    "CUSTODIAN_DATA_DIR": Field(_path, flag("CUSTODIAN_ENABLED")),
-    "CUSTODIAN_INSTALL_METHOD": Field(
-        _enum(INSTALL_METHODS), flag("CUSTODIAN_ENABLED")
-    ),
-    "CUSTODIAN_VERSION": Field(_string, flag("CUSTODIAN_ENABLED")),
-    "CUSTODIAN_PREBUILT_PATH": Field(
-        _path, both(flag("CUSTODIAN_ENABLED"), prebuilt("CUSTODIAN"))
-    ),
-    # Always passed to Reth, so required even when Custodian is disabled.
+    # Custodian (always present)
+    "CUSTODIAN_DATA_DIR": Field(_path),
+    "CUSTODIAN_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
+    "CUSTODIAN_VERSION": Field(_string),
+    "CUSTODIAN_PREBUILT_PATH": Field(_path, prebuilt("CUSTODIAN")),
     "CUSTODIAN_SOCKET": Field(_path),
-    "CUSTODIAN_COUNCIL_PORT": Field(_int(1, 65535), flag("CUSTODIAN_ENABLED")),
-    "CUSTODIAN_COUNCIL_ADDRESS": Field(_eth_address, flag("CUSTODIAN_ENABLED")),
-    "CUSTODIAN_CHAIN_ID": Field(_int(1, 2**63 - 1), flag("CUSTODIAN_ENABLED")),
-    "CUSTODIAN_PARENT_URL": Field(
-        _https_url, both(flag("CUSTODIAN_ENABLED"), observer)
-    ),
+    "CUSTODIAN_COUNCIL_PORT": Field(_int(1, 65535)),
+    "CUSTODIAN_COUNCIL_ADDRESS": Field(_eth_address),
+    "CUSTODIAN_CHAIN_ID": Field(_int(1, 2**63 - 1)),
+    "CUSTODIAN_PARENT_URL": Field(_https_url, observer),
     # Checkpointer
     "CHECKPOINTER_ENABLED": Field(_bool),
     "CHECKPOINTS_DIR": Field(_path, flag("CHECKPOINTER_ENABLED")),
@@ -386,9 +377,7 @@ SCHEMA: dict[str, Field] = {
     # HTTPS endpoint
     "TLS_MODE": Field(_enum(TLS_MODES)),
     "DOMAIN": Field(_domain, tls_managed),
-    "CUSTODIAN_PUBLIC_URL": Field(
-        _https_url, both(tls_external, flag("CUSTODIAN_ENABLED"))
-    ),
+    "CUSTODIAN_PUBLIC_URL": Field(_https_url, both(tls_external)),
     "RATE_LIMIT_RPS": Field(_int(1, 1_000_000), tls_managed),
     "RATE_LIMIT_BURST": Field(_int(1, 1_000_000), tls_managed),
     "OPENRESTY_JWT_SECRET_PATH": Field(_path, tls_managed),
@@ -402,7 +391,6 @@ SCHEMA: dict[str, Field] = {
 # Keys whose conditions are evaluated must themselves be unconditional.
 _CONDITION_INPUTS = (
     "SEISMIC_ROLE",
-    "CUSTODIAN_ENABLED",
     "CHECKPOINTER_ENABLED",
     "MONITORING_ENABLED",
     "TLS_MODE",
@@ -520,13 +508,6 @@ def _validate(raw: dict[str, str], source: Path | None) -> NodeEnv:
 def _validate_derived(env: NodeEnv) -> None:
     """Derived keys exist only because systemd cannot compute them; they must
     agree with the values they are derived from."""
-    expected_source = "custodian" if env.flag("CUSTODIAN_ENABLED") else "built-in"
-    if env.string("RETH_PURPOSE_KEYS_SOURCE") != expected_source:
-        raise NodeEnvError(
-            f"node.env RETH_PURPOSE_KEYS_SOURCE must be {expected_source} "
-            f"when CUSTODIAN_ENABLED={env.raw['CUSTODIAN_ENABLED']}"
-        )
-
     _require_flag_arg(
         env, "RETH_BOOTNODES_ARG", "--bootnodes", env.string("RETH_BOOTNODE")
     )
@@ -567,6 +548,7 @@ def _validate_layout(env: NodeEnv) -> None:
             raise NodeEnvError(
                 f"node.env {key} must be inside KEYS_DIR: {env.path(key)}"
             )
+
     if not _within(env.path("SUMMIT_CRITICAL_LOG_DIR"), env.path("SUMMIT_DATA_DIR")):
         raise NodeEnvError(
             "node.env SUMMIT_CRITICAL_LOG_DIR must be inside SUMMIT_DATA_DIR"
@@ -577,7 +559,8 @@ def _validate_layout(env: NodeEnv) -> None:
         "SUMMIT_DATA_DIR": env.path("SUMMIT_DATA_DIR"),
         "KEYS_DIR": keys_dir,
     }
-    for key in ("CUSTODIAN_DATA_DIR", "CHECKPOINTS_DIR", "MONITORING_DATA_DIR"):
+    top_level["CUSTODIAN_DATA_DIR"] = env.path("CUSTODIAN_DATA_DIR")
+    for key in ("CHECKPOINTS_DIR", "MONITORING_DATA_DIR"):
         if env.applies(key):
             top_level[key] = env.path(key)
     require_separate_paths(top_level)
@@ -640,3 +623,48 @@ def load(path: Path = DEFAULT_PATH) -> NodeEnv:
     except NodeError as error:
         raise NodeEnvError(str(error)) from error
     return validate(parse(text), source=path)
+
+
+# ---------------------------------------------------------------------------
+# Command line
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python3 -m seismic_node.nodeenv [--check] [PATH]``: validate a file."""
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        prog="seismic_node.nodeenv",
+        description="Validate a node.env file the way systemd and seismic-node read it.",
+    )
+    parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_PATH)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate and exit 0 on success (the default and only action)",
+    )
+    parser.add_argument(
+        "--no-ownership",
+        action="store_true",
+        help="skip root-ownership checks (for files staged before installation)",
+    )
+    args = parser.parse_args(argv)
+    try:
+        if args.no_ownership:
+            env = validate(
+                parse(args.path.read_text(encoding="utf-8")), source=args.path
+            )
+        else:
+            env = load(args.path)
+    except (NodeError, OSError) as error:
+        print(f"node.env: {error}", file=sys.stderr)
+        return 1
+    applicable = sum(1 for key in SCHEMA if env.applies(key))
+    print(f"{args.path}: valid {env.role} configuration ({applicable} keys apply)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

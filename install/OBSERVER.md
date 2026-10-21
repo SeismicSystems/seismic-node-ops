@@ -112,7 +112,7 @@ The following application ports must remain loopback-only:
 The selected Custodian backend port (default `7876`) must also remain
 loopback-only.
 
-When summit-checkpointer is enabled, its direct listener remains on
+When seismic-checkpointer is enabled, its direct listener remains on
 `127.0.0.1:42069`. In full OpenResty mode, remote clients use the rate-limited
 and JWT-protected `/checkpointer` HTTPS route instead. Custodian-only mode does
 not expose that route.
@@ -159,7 +159,7 @@ The installer asks you to configure:
   `18551`.
 - An optional path to a Summit bootstrappers TOML file.
 - Summit and seismic-reth binary installation methods.
-- summit-checkpointer.
+- seismic-checkpointer.
 - Centralized Custodian, including the parent validator Custodian council
   endpoint and Custodian binary installation method.
 
@@ -168,7 +168,7 @@ required to appear in the genesis `[[validators]]` list.
 
 ### Binary installation methods
 
-Summit, seismic-reth, summit-checkpointer, and Centralized Custodian support:
+Summit, seismic-reth, seismic-checkpointer, and Centralized Custodian support:
 
 1. Install a supplied prebuilt executable.
 2. Build from source during installation.
@@ -183,7 +183,7 @@ Checkpointer: main (branch)
 Custodian:    centralized-custodian (temporary branch, enclave repository)
 ```
 
-A prebuilt or already-present deferred summit-checkpointer must support
+A prebuilt or already-present deferred seismic-checkpointer must support
 `--bind-address`; the generated Supervisor program uses it to keep the
 checkpointer RPC and snapshot server on `127.0.0.1:42069`.
 
@@ -292,12 +292,12 @@ Treat this as persistent execution-layer state. Do not delete it during an
 installer rerun, and do not manually copy or modify the live database while Reth
 is running.
 
-When summit-checkpointer is enabled, it uses `mdbx_copy` to produce a consistent
-Reth database copy. `mdbx_copy` must be built from the same vendored libmdbx
-revision as the seismic-reth binary. If Reth is built from source, the installer
-builds `mdbx_copy` from that checkout. For a prebuilt or deferred Reth binary,
-provide the matching seismic-reth source checkout when prompted. Do not start
-the checkpointer until a compatible executable is installed at:
+When seismic-checkpointer is enabled, it uses `mdbx_copy` to produce a
+consistent Reth database copy. `mdbx_copy` must be built from the same vendored
+libmdbx revision as the seismic-reth binary. If Reth is built from source, the
+installer builds `mdbx_copy` from that checkout. For a prebuilt or deferred Reth
+binary, provide the matching seismic-reth source checkout when prompted. Do not
+start the checkpointer until a compatible executable is installed at:
 
 ```text
 /usr/local/bin/mdbx_copy
@@ -358,11 +358,11 @@ it after a successful installation. It does not read or reuse the existing
 contents. Declining the overwrite cancels the installation before configuration
 begins.
 
-When summit-checkpointer is enabled, the installer prompts for an absolute
+When seismic-checkpointer is enabled, the installer prompts for an absolute
 configuration-file path and defaults to:
 
 ```text
-/etc/seismic/summit-checkpointer.toml
+/etc/seismic/seismic-checkpointer.toml
 ```
 
 The generated Supervisor command uses the selected path. Its parent directory
@@ -529,7 +529,7 @@ sudo supervisorctl update
 ```
 
 It starts configured Supervisor programs in dependency order: Custodian when
-enabled, Reth, `summit-observer`, and summit-checkpointer when enabled. If a
+enabled, Reth, `summit-observer`, and seismic-checkpointer when enabled. If a
 program started by the command fails, it stops only the programs that invocation
 started, in reverse order.
 
@@ -620,7 +620,7 @@ custodian -> reth -> summit-observer
 
 When Custodian is disabled, start only Reth and Summit observer in that order.
 
-#### Start summit-checkpointer when enabled
+#### Start seismic-checkpointer when enabled
 
 ```bash
 sudo supervisorctl start checkpointer
@@ -634,7 +634,7 @@ sudo tail -n 100 /var/log/seismic-observer/checkpointer.err
 sudo tail -n 100 /var/log/seismic-observer/checkpointer.log
 ```
 
-summit-checkpointer produces checkpoint artifacts. Starting a validator or
+seismic-checkpointer produces checkpoint artifacts. Starting a validator or
 observer from a checkpoint remains the responsibility of the dedicated
 checkpoint-start CLI.
 
@@ -652,7 +652,7 @@ sudo supervisorctl status
 ```
 
 The command validates the observer installation inventory, then stops
-summit-checkpointer when configured, `summit-observer`,
+seismic-checkpointer when configured, `summit-observer`,
 `summit-observer-checkpoint`, Reth, and Custodian when configured. It stops
 lower-level dependencies only after the programs that depend on them have
 stopped successfully.
@@ -685,9 +685,9 @@ exposure disabled, `/custodian` paths return 404. See
 requirements, and deployment verification.
 
 Reth HTTP and WebSocket RPC, Reth Ops RPC, Summit RPC, metrics listeners, and
-the summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
-enabled. When OpenResty is disabled, these endpoints are available only from the
-node itself or through an operator-managed tunnel.
+the seismic-checkpointer RPC remain bound to loopback whether or not OpenResty
+is enabled. When OpenResty is disabled, these endpoints are available only from
+the node itself or through an operator-managed tunnel.
 
 The additional routes configured in **full mode** are:
 
@@ -745,7 +745,7 @@ Confirm that:
   `18551`.
 - Reth ports `8545`, `8546`, `8552`, and `9001` are loopback-only.
 - Summit ports `3030`, `3031`, and `9090` are loopback-only.
-- summit-checkpointer port `42069` is loopback-only when enabled.
+- seismic-checkpointer port `42069` is loopback-only when enabled.
 - Custodian's HTTP backend listens only on `127.0.0.1` at the selected port
   (default `7876`) when enabled.
 - OpenResty listens on ports `80` and `443` only when configured and explicitly

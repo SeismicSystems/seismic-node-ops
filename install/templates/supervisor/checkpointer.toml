@@ -1,4 +1,4 @@
-# summit-checkpointer configuration managed by seismic-node-ops.
+# seismic-checkpointer configuration managed by seismic-node-ops.
 
 [reth]
 rpc_url = "http://127.0.0.1:8545"

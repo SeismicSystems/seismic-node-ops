@@ -27,6 +27,7 @@ TOKEN = "a" * 64
 def env(**overrides: str) -> nodeenv.NodeEnv:
     values = nodeenv.parse(EXAMPLE.read_text())
     values.update(
+        CUSTODIAN_CHAIN_ID="5124",
         MONITORING_ENABLED="true",
         MONITORING_NODE_NAME="node-1.example",
         MONITORING_REMOTE_WRITE_URL="https://metrics.example/api/v1/write",
@@ -91,6 +92,7 @@ class SettingsTests(unittest.TestCase):
                 "OBSERVER_INDEX": "1",
                 "OBSERVER_PUBLIC_ADDRESS": "203.0.113.1:18551",
                 "OBSERVER_P2P_PORT": "18551",
+                "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
             },
         ):
             config = agent.render(agent.settings(env(**role_overrides)))

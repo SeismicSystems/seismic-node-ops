@@ -88,8 +88,14 @@ class ParseTests(unittest.TestCase):
                 nodeenv.parse(text)
 
 
+# The example leaves network-specific values blank; fill the one required
+# key so the example validates as a minimal validator.
+REQUIRED = {"CUSTODIAN_CHAIN_ID": "5124"}
+
+
 def example_values(**overrides: str) -> dict[str, str]:
     values = nodeenv.parse(EXAMPLE.read_text())
+    values.update(REQUIRED)
     values.update(overrides)
     return values
 
@@ -102,28 +108,20 @@ OBSERVER = {
     "OBSERVER_P2P_PORT": "18551",
 }
 
-CUSTODIAN = {
-    "CUSTODIAN_ENABLED": "true",
-    "RETH_PURPOSE_KEYS_SOURCE": "custodian",
-    "CUSTODIAN_COUNCIL_ADDRESS": "0x" + "ab" * 20,
-    "CUSTODIAN_CHAIN_ID": "5124",
-}
-
 
 class SchemaTests(unittest.TestCase):
     def test_example_validates_as_minimal_validator(self):
         env = nodeenv.validate(example_values())
         self.assertEqual(env.role, "validator")
         self.assertEqual(env.path("RETH_DATA_DIR"), Path("/persistence/reth"))
-        self.assertFalse(env.flag("CUSTODIAN_ENABLED"))
         self.assertIsNone(env.optional_path("SUMMIT_BOOTSTRAPPERS_FILE"))
-        self.assertFalse(env.applies("CUSTODIAN_DATA_DIR"))
+        self.assertEqual(env.path("CUSTODIAN_DATA_DIR"), Path("/persistence/custodian"))
+        self.assertFalse(env.applies("CUSTODIAN_PARENT_URL"))
 
     def test_example_validates_with_every_feature_enabled(self):
         env = nodeenv.validate(
             example_values(
                 **OBSERVER,
-                **CUSTODIAN,
                 CUSTODIAN_PARENT_URL="https://parent.example/custodian",
                 CHECKPOINTER_ENABLED="true",
                 TLS_MODE="full",
@@ -169,15 +167,21 @@ class SchemaTests(unittest.TestCase):
         env = nodeenv.validate(example_values(OBSERVER_PARENT_NODE_PUBLIC_KEY="zz"))
         self.assertFalse(env.applies("OBSERVER_PARENT_NODE_PUBLIC_KEY"))
 
+    def test_custodian_is_always_required(self):
+        values = example_values()
+        del values["CUSTODIAN_CHAIN_ID"]
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "CUSTODIAN_CHAIN_ID"):
+            nodeenv.validate(values)
+        self.assertNotIn("CUSTODIAN_ENABLED", nodeenv.SCHEMA)
+        self.assertNotIn("RETH_PURPOSE_KEYS_SOURCE", nodeenv.SCHEMA)
+
     def test_gated_keys_are_required_when_enabled(self):
-        with self.assertRaisesRegex(nodeenv.NodeEnvError, "CUSTODIAN_COUNCIL_ADDRESS"):
-            nodeenv.validate(example_values(CUSTODIAN_ENABLED="true"))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "CUSTODIAN_PARENT_URL"):
-            nodeenv.validate(example_values(**OBSERVER, **CUSTODIAN))
+            nodeenv.validate(example_values(**OBSERVER))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "DOMAIN"):
             nodeenv.validate(example_values(TLS_MODE="custodian-only"))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "CUSTODIAN_PUBLIC_URL"):
-            nodeenv.validate(example_values(**CUSTODIAN, TLS_MODE="external"))
+            nodeenv.validate(example_values(TLS_MODE="external"))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_NODE_NAME"):
             nodeenv.validate(example_values(MONITORING_ENABLED="true"))
 
@@ -194,7 +198,7 @@ class SchemaTests(unittest.TestCase):
     def test_type_errors(self):
         cases = {
             "SEISMIC_ROLE": "admin",
-            "CUSTODIAN_ENABLED": "yes",
+            "CHECKPOINTER_ENABLED": "yes",
             "RETH_DATA_DIR": "relative/path",
             "SUMMIT_DATA_DIR": "/persistence/../summit",
             "RETH_RPC_BIND": "localhost",
@@ -219,16 +223,11 @@ class SchemaTests(unittest.TestCase):
                 self.subTest(key=key),
                 self.assertRaisesRegex(nodeenv.NodeEnvError, key),
             ):
-                nodeenv.validate(example_values(**{**CUSTODIAN, key: value}))
+                nodeenv.validate(example_values(**{key: value}))
 
     def test_derived_keys_must_match_their_sources(self):
         enode = "enode://ab@203.0.113.1:30303"
         cases = {
-            "purpose keys without custodian": {"RETH_PURPOSE_KEYS_SOURCE": "custodian"},
-            "custodian without purpose keys": {
-                **CUSTODIAN,
-                "RETH_PURPOSE_KEYS_SOURCE": "built-in",
-            },
             "bootnode without arg": {"RETH_BOOTNODE": enode},
             "arg without bootnode": {"RETH_BOOTNODES_ARG": f"--bootnodes {enode}"},
             "arg with wrong bootnode": {
@@ -285,11 +284,11 @@ class SchemaTests(unittest.TestCase):
             "identical data dirs": {"SUMMIT_DATA_DIR": "/persistence/reth"},
             "p2p key outside keys dir": {"RETH_P2P_KEY_PATH": "/persistence/p2p"},
             "summit keys outside keys dir": {"SUMMIT_KEYS_DIR": "/persistence/skeys"},
-            "p2p key inside summit keys": {
-                "RETH_P2P_KEY_PATH": "/persistence/keys/summit/p2p"
-            },
             "critical log outside summit data": {
                 "SUMMIT_CRITICAL_LOG_DIR": "/var/log/critical"
+            },
+            "p2p key inside summit keys": {
+                "RETH_P2P_KEY_PATH": "/persistence/keys/summit/p2p"
             },
             "bootstrappers outside summit keys": {
                 "SUMMIT_BOOTSTRAPPERS_FILE": "/persistence/keys/bootstrappers.toml"
@@ -316,9 +315,9 @@ class SchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "not a boolean"):
             env.flag("SEISMIC_ROLE")
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "not an integer"):
-            env.integer("CUSTODIAN_ENABLED")
+            env.integer("CHECKPOINTER_ENABLED")
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "does not apply"):
-            env.get("CUSTODIAN_DATA_DIR")
+            env.get("CUSTODIAN_PARENT_URL")
 
 
 class LoadTests(unittest.TestCase):

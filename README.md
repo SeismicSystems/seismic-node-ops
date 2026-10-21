@@ -3,6 +3,16 @@
 Operational tooling and configuration for installing and running Seismic
 validator and observer nodes.
 
+## Runbook
+
+**[docs/RUNBOOK.md](docs/RUNBOOK.md)** is the reference for what a Seismic node
+host looks like and how to install, start, operate, and change one: the fixed
+layout, the single operator-authored configuration file `/etc/seismic/node.env`,
+the static systemd units in `install/templates/systemd/`, and the `seismic-node`
+CLI. Operators who manage hosts with configuration management should start
+there; the interactive installers below are one implementation of the same
+steps.
+
 ## Validator installation
 
 The interactive validator installer is located at:

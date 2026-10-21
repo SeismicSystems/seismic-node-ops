@@ -1,15 +1,19 @@
 # Seismic Summit consensus client, validator role, normal startup.
 # Static unit: every host-specific value comes from /etc/seismic/node.env.
 #
-# Restart= is deliberately absent until Summit's double-sign protection across
-# restarts is confirmed; until then a crashed validator stays down and must be
-# started explicitly, exactly as under Supervisor.
+# Restart=on-failure is safe for a voting process: Summit's consensus engine
+# (Commonware Simplex) journals every vote it signs and fsyncs the journal
+# before broadcasting, then replays it on start, so a restarted node cannot
+# sign a conflicting vote for a view it already voted in. The unit is still
+# not enabled at boot, so a reboot goes through `seismic-node validator start`.
 
 [Unit]
 Description=Seismic Summit consensus client (validator)
 Documentation=https://github.com/SeismicSystems/seismic-node-ops
 After=network-online.target seismic-reth.service
-Wants=network-online.target seismic-reth.service
+Wants=network-online.target
+# Requires= so that an automatic restart of this unit starts Reth first.
+Requires=seismic-reth.service
 # Exactly one Summit process may own the key store and consensus state.
 Conflicts=seismic-summit-checkpoint.service seismic-deposit-rpc.service
 
@@ -34,6 +38,8 @@ ExecStart=/usr/bin/flock --nonblock --no-fork ${SUMMIT_DATA_DIR}/.summit-process
     --prom-ip ${SUMMIT_RPC_BIND} --prom-port 9090 \
     --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
     $SUMMIT_BOOTSTRAPPERS_ARG
+Restart=on-failure
+RestartSec=5s
 TimeoutStopSec=120s
 KillMode=mixed
 
