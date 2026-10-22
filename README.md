@@ -79,6 +79,7 @@ go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install tools
 (
   cd install
   shellcheck -x \
+    install.sh \
     install-validator.sh \
     install-observer.sh \
     ../tools/generate-openresty-jwt.sh
