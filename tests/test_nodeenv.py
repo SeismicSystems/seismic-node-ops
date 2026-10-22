@@ -255,6 +255,27 @@ class SchemaTests(unittest.TestCase):
             env.string("RETH_BOOTNODES_ARG").split(), ["--bootnodes", enode]
         )
 
+    def test_versions_are_release_tags_or_branch_refs(self):
+        for good in ("v0.1.0", "v1.7.0-seismic.1", "v0.2.0-rc.1"):
+            with self.subTest(version=good):
+                nodeenv.validate(example_values(SUMMIT_VERSION=good))
+        for bad in ("0.1.0", "internal-testnet-v1", "refs/tags/v0.1.0", "main", ""):
+            with (
+                self.subTest(version=bad),
+                self.assertRaisesRegex(nodeenv.NodeEnvError, "SUMMIT_VERSION"),
+            ):
+                nodeenv.validate(example_values(SUMMIT_VERSION=bad))
+
+    def test_branch_refs_only_for_source_builds(self):
+        env = nodeenv.validate(
+            example_values(
+                RETH_INSTALL_METHOD="source", RETH_VERSION="refs/heads/seismic"
+            )
+        )
+        self.assertEqual(env.string("RETH_VERSION"), "refs/heads/seismic")
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "not downloadable"):
+            nodeenv.validate(example_values(RETH_VERSION="refs/heads/seismic"))
+
     def test_fixed_constants(self):
         self.assertEqual(nodeenv.SERVICE_USER, "seismic")
         self.assertEqual(

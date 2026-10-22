@@ -195,6 +195,20 @@ def _optional_string(value: str, key: str) -> str:
     return value
 
 
+VERSION_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?")
+BRANCH_REF = re.compile(r"refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*")
+
+
+def _version(value: str, key: str) -> str:
+    """A release tag, or an explicit branch ref for source builds."""
+    if VERSION_TAG.fullmatch(value) or BRANCH_REF.fullmatch(value):
+        return value
+    raise NodeEnvError(
+        f"node.env {key} must be a release tag like v0.1.0 (or refs/heads/<branch> "
+        f"for source builds)"
+    )
+
+
 def _path(value: str, key: str) -> Path:
     if not value:
         raise NodeEnvError(f"node.env {key} must not be empty")
@@ -338,8 +352,8 @@ SCHEMA: dict[str, Field] = {
     # Binaries
     "SUMMIT_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
     "RETH_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
-    "SUMMIT_VERSION": Field(_string),
-    "RETH_VERSION": Field(_string),
+    "SUMMIT_VERSION": Field(_version),
+    "RETH_VERSION": Field(_version),
     "SUMMIT_PREBUILT_PATH": Field(_path, prebuilt("SUMMIT")),
     "RETH_PREBUILT_PATH": Field(_path, prebuilt("RETH")),
     # Network
@@ -356,7 +370,7 @@ SCHEMA: dict[str, Field] = {
     # Custodian (always present)
     "CUSTODIAN_DATA_DIR": Field(_path),
     "CUSTODIAN_INSTALL_METHOD": Field(_enum(INSTALL_METHODS)),
-    "CUSTODIAN_VERSION": Field(_string),
+    "CUSTODIAN_VERSION": Field(_version),
     "CUSTODIAN_PREBUILT_PATH": Field(_path, prebuilt("CUSTODIAN")),
     "CUSTODIAN_SOCKET": Field(_path),
     "CUSTODIAN_COUNCIL_PORT": Field(_int(1, 65535)),
@@ -369,7 +383,7 @@ SCHEMA: dict[str, Field] = {
     "CHECKPOINTER_INSTALL_METHOD": Field(
         _enum(INSTALL_METHODS), flag("CHECKPOINTER_ENABLED")
     ),
-    "CHECKPOINTER_VERSION": Field(_string, flag("CHECKPOINTER_ENABLED")),
+    "CHECKPOINTER_VERSION": Field(_version, flag("CHECKPOINTER_ENABLED")),
     "CHECKPOINTER_PREBUILT_PATH": Field(
         _path, both(flag("CHECKPOINTER_ENABLED"), prebuilt("CHECKPOINTER"))
     ),
@@ -508,6 +522,15 @@ def _validate(raw: dict[str, str], source: Path | None) -> NodeEnv:
 def _validate_derived(env: NodeEnv) -> None:
     """Derived keys exist only because systemd cannot compute them; they must
     agree with the values they are derived from."""
+    for component in ("SUMMIT", "RETH", "CUSTODIAN", "CHECKPOINTER"):
+        method_key = f"{component}_INSTALL_METHOD"
+        if env.applies(method_key) and env.string(method_key) == "download":
+            version = env.string(f"{component}_VERSION")
+            if not VERSION_TAG.fullmatch(version):
+                raise NodeEnvError(
+                    f"node.env {component}_VERSION must be a release tag when "
+                    f"{method_key}=download; branches are not downloadable"
+                )
     _require_flag_arg(
         env, "RETH_BOOTNODES_ARG", "--bootnodes", env.string("RETH_BOOTNODE")
     )

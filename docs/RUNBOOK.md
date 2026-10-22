@@ -8,11 +8,9 @@ operator-authored file, `/etc/seismic/node.env`.
 Role-specific steps are marked **validator** or **observer**. Unmarked steps
 apply to both.
 
-> **Status.** This runbook describes the systemd-based layout. Two things it
-> references are not finished yet and are marked inline: `[not yet available]`
-> for prebuilt release downloads (build from source meanwhile) and for the
-> installer's `--config` mode (run the interactive installer or follow the steps
-> by hand meanwhile).
+> **Status.** This runbook describes the systemd-based layout. One thing it
+> references is not finished yet and is marked inline: the installer's
+> `--config` mode `[not yet available]` (follow the steps by hand meanwhile).
 
 ## Contents
 
@@ -223,52 +221,56 @@ enabled. The versions are the `*_VERSION` keys in `node.env`.
 | `/usr/local/bin/seismic-checkpointer` (optional)       | `SeismicSystems/seismic-checkpointer`  | `cargo build --locked --release`                                          |
 | `/usr/local/bin/mdbx_copy` (optional)                  | vendored libmdbx inside `seismic-reth` | `make mdbx_copy` — see below                                              |
 
-**Preferred — signed release artifacts.** `[not yet available]` for the pinned
-tags. seismic-reth (`seismic-release.yml`) and summit (`release.yml`) already
-publish `<binary>_<version>_linux_amd64.tar.gz` with a GitHub build-provenance
-attestation, but only for `v*.*.*` tags (plus nightlies and `main-<sha>`
-prereleases respectively), not for the `internal-testnet-*` tags in `node.env`;
-neither ships a `SHA256SUMS` file. enclave and seismic-checkpointer have no
-release workflow. Once every repository publishes artifacts for the pinned
-versions, the same steps apply to each component:
+**Preferred — signed release artifacts.** Every component publishes a release
+per `vX.Y.Z` tag with three assets: the tarball, a Sigstore **attestation
+bundle** (`.sigstore.json`) proving GitHub Actions built it from that tag, and
+`SHA256SUMS`. Verification uses the GitHub CLI (`gh`, from Ubuntu's
+repositories) but needs no GitHub account or login: the bundle is downloaded
+from the release and passed with `--bundle`. (The bare `gh attestation verify`
+form shown in GitHub's documentation fetches the attestation through the API and
+requires `gh auth login`.) The same four steps apply to every component; the
+tags are the `*_VERSION` keys in `node.env`:
 
 ```bash
-# Substitute the repository, the tag from node.env, and the binary name.
-fetch() {  # fetch <repository> <tag> <binary>
-    local base="https://github.com/SeismicSystems/$1/releases/download/$2"
-    curl -LO "$base/$3_$2_linux_amd64.tar.gz"
-    gh attestation verify "$3_$2_linux_amd64.tar.gz" --owner SeismicSystems
-    tar -xzf "$3_$2_linux_amd64.tar.gz"
-    sudo install -o root -g root -m 0755 "$3" "/usr/local/bin/$3"
+fetch() {  # fetch <repository> <tag> <binary>...
+    local repo=$1 tag=$2; shift 2
+    local base="https://github.com/SeismicSystems/$repo/releases/download/$tag"
+    local asset="${1}_${tag}_linux_amd64"
+    curl -fsSLO "$base/$asset.tar.gz"
+    curl -fsSLO "$base/$asset.sigstore.json"
+    curl -fsSLO "$base/SHA256SUMS"
+    sha256sum --ignore-missing -c SHA256SUMS
+    tar -xzf "$asset.tar.gz"
+    for bin in "$@"; do
+        gh attestation verify "$bin" --owner SeismicSystems --bundle "$asset.sigstore.json"
+        sudo install -o root -g root -m 0755 "$bin" "/usr/local/bin/$bin"
+    done
+    rm -f SHA256SUMS
 }
-fetch summit              internal-testnet-v1 summit
-fetch seismic-reth        internal-testnet-v1 seismic-reth
-fetch enclave             <custodian-tag>     seismic-centralized-custodian-service
-fetch seismic-checkpointer <checkpointer-tag>  seismic-checkpointer   # when enabled
+fetch summit               v0.1.0 summit
+fetch seismic-reth         v0.1.0 seismic-reth mdbx_copy   # mdbx_copy only needed with the checkpointer
+fetch enclave              v0.1.0 seismic-centralized-custodian-service
+fetch seismic-checkpointer v0.1.0 seismic-checkpointer      # when enabled
 ```
 
-The seismic-reth tarball also contains `mdbx_copy`, built from the libmdbx
-revision that tree vendors; install it alongside Reth when the checkpointer is
-enabled:
-
-```bash
-sudo install -o root -g root -m 0755 mdbx_copy /usr/local/bin/mdbx_copy   # from the seismic-reth tarball
-```
+The seismic-reth tarball carries `mdbx_copy`, built from the libmdbx revision
+that tree vendors, so the two always match; the one bundle attests both
+binaries.
 
 **Alternative — build from source** on a build host or on the node, pinned to
 the same tags. Building needs the packages listed under 3.1 and a Rust toolchain
 for the building user:
 
 ```bash
-git clone --branch internal-testnet-v1 https://github.com/SeismicSystems/summit.git
+git clone --branch v0.1.0 https://github.com/SeismicSystems/summit.git
 (cd summit && cargo build --locked --release --features prom)
 sudo install -o root -g root -m 0755 summit/target/release/summit /usr/local/bin/summit
 
-git clone --branch internal-testnet-v1 https://github.com/SeismicSystems/seismic-reth.git
+git clone --branch v0.1.0 https://github.com/SeismicSystems/seismic-reth.git
 (cd seismic-reth && cargo build --locked --release)
 sudo install -o root -g root -m 0755 seismic-reth/target/release/seismic-reth /usr/local/bin/seismic-reth
 
-git clone --branch centralized-custodian https://github.com/SeismicSystems/enclave.git
+git clone --branch v0.1.0 https://github.com/SeismicSystems/enclave.git
 (cd enclave && cargo build --locked --release -p seismic-centralized-custodian-service)
 sudo install -o root -g root -m 0755 enclave/target/release/seismic-centralized-custodian-service \
         /usr/local/bin/seismic-centralized-custodian-service
@@ -279,7 +281,7 @@ must come from the **same** seismic-reth checkout as the Reth binary so its
 libmdbx matches Reth's database format:
 
 ```bash
-git clone --branch main https://github.com/SeismicSystems/seismic-checkpointer.git
+git clone --branch v0.1.0 https://github.com/SeismicSystems/seismic-checkpointer.git
 (cd seismic-checkpointer && cargo build --locked --release)
 sudo install -o root -g root -m 0755 seismic-checkpointer/target/release/seismic-checkpointer /usr/local/bin/seismic-checkpointer
 
