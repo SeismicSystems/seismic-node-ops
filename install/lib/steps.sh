@@ -67,7 +67,7 @@ tls_managed() {
 # --- 3.1 packages -------------------------------------------------------------
 
 collect_packages() {
-    PACKAGES=(python3 curl jq ca-certificates openssl)
+    PACKAGES=(python3 curl jq ca-certificates openssl gettext-base)
     # gh verifies release attestations in download mode; no login is needed.
     needs_download && PACKAGES+=(gh)
     if needs_source_build; then
@@ -351,4 +351,209 @@ build_mdbx_copy() {
 step_runner() {
     install_file "$TOOLS_DIR/checkpoint-start/summit-checkpoint-runner.py" \
         "$LIBEXEC_DIR/summit-checkpoint-runner" 0755 "checkpoint runner"
+}
+
+# --- 3.7 keys ---------------------------------------------------------------
+#
+# Existing keys are never regenerated or replaced. A complete key set is
+# adopted (re-owned to the service account, mode 0600); an incomplete set
+# stops the installer, because generating half a pair would silently change
+# the node's identity.
+
+key_present() { [[ -e "$1" || -L "$1" ]]; }
+
+validate_reth_p2p_key() {
+    local path=$1
+    local value
+
+    [[ ! -L "$path" ]] \
+        || die "Reth P2P key must not be a symbolic link: $path"
+    [[ -f "$path" ]] \
+        || die "Reth P2P key path exists but is not a regular file: $path"
+    [[ $(stat -c %s -- "$path") == "64" ]] \
+        || die "Reth P2P key must contain exactly 64 hexadecimal characters: $path"
+    value=$(<"$path")
+    [[ "$value" =~ ^[0-9a-fA-F]{64}$ ]] \
+        || die "Reth P2P key contains invalid data: $path"
+}
+
+adopt_key_file() {
+    local path=$1 description=$2
+    [[ ! -L "$path" ]] || die "$description must not be a symbolic link: $path"
+    [[ -f "$path" && -s "$path" ]] || die "$description is missing or empty: $path"
+    chown "$SERVICE_USER:$SERVICE_GROUP" -- "$path"
+    chmod 0600 -- "$path"
+}
+
+setup_reth_p2p_key() {
+    local staging
+    if key_present "$RETH_P2P_KEY_PATH"; then
+        validate_reth_p2p_key "$RETH_P2P_KEY_PATH"
+        adopt_key_file "$RETH_P2P_KEY_PATH" "Reth P2P key"
+        success "Reth P2P key preserved: $RETH_P2P_KEY_PATH"
+        return
+    fi
+    staging=$(mktemp "$(dirname "$RETH_P2P_KEY_PATH")/.p2p-key.XXXXXX")
+    chmod 0600 -- "$staging"
+    openssl rand -hex 32 | tr -d '\n' >"$staging" || {
+        rm -f -- "$staging"
+        die "Could not generate the Reth P2P key"
+    }
+    validate_reth_p2p_key "$staging"
+    chown "$SERVICE_USER:$SERVICE_GROUP" -- "$staging"
+    mv -- "$staging" "$RETH_P2P_KEY_PATH"
+    success "Reth P2P key generated: $RETH_P2P_KEY_PATH"
+}
+
+summit_keys_show_public_key() {
+    run_as_service_user "/usr/local/bin/$SUMMIT_BIN" keys show --key-store-path "$SUMMIT_KEYS_DIR" 2>>"$LOG_FILE" \
+        | awk -F': ' '/Node Public Key \(ed25519\)/ {print tolower($2); exit}' | sed 's/^0x//'
+}
+
+# Generate into a private staging store and move only the wanted files.
+summit_generate_into() {
+    local staging=$1
+    [[ -x "/usr/local/bin/$SUMMIT_BIN" ]] \
+        || die "Summit is not installed at /usr/local/bin/$SUMMIT_BIN; run step 'binaries' first"
+    run_as_service_user "/usr/local/bin/$SUMMIT_BIN" keys generate --key-store-path "$staging" -y \
+        >>"$LOG_FILE" 2>&1 || die "Summit key generation failed; see $LOG_FILE"
+}
+
+setup_validator_summit_keys() {
+    local node_key="$SUMMIT_KEYS_DIR/node_key.pem" consensus_key="$SUMMIT_KEYS_DIR/consensus_key.pem"
+    local staging
+    if key_present "$node_key" && key_present "$consensus_key"; then
+        adopt_key_file "$node_key" "Summit node key"
+        adopt_key_file "$consensus_key" "Summit consensus key"
+        success "Summit validator keys preserved: $SUMMIT_KEYS_DIR"
+        return
+    fi
+    if key_present "$node_key" || key_present "$consensus_key"; then
+        die "Summit key set is incomplete in $SUMMIT_KEYS_DIR; refusing to regenerate half of a validator identity"
+    fi
+    staging=$(mktemp -d "$KEYS_DIR/.summit-keys.XXXXXX")
+    chown "$SERVICE_USER:$SERVICE_GROUP" -- "$staging"
+    chmod 0700 -- "$staging"
+    info "Generating Summit validator keys..."
+    summit_generate_into "$staging"
+    [[ -s "$staging/node_key.pem" && -s "$staging/consensus_key.pem" ]] \
+        || {
+            rm -rf -- "$staging"
+            die "Summit did not produce a complete key set"
+        }
+    install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0600 -- "$staging/node_key.pem" "$node_key"
+    install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0600 -- "$staging/consensus_key.pem" "$consensus_key"
+    rm -rf -- "$staging"
+    success "Summit validator keys generated: $SUMMIT_KEYS_DIR"
+}
+
+# An observer uses the parent validator's node_key.pem (provisioned out of
+# band) and its own consensus key. The assignment marker records which
+# parent and index the keys belong to; the CLI checks it on every start.
+setup_observer_summit_keys() {
+    local node_key="$SUMMIT_KEYS_DIR/node_key.pem" consensus_key="$SUMMIT_KEYS_DIR/consensus_key.pem"
+    local assignment="$SUMMIT_KEYS_DIR/observer-assignment"
+    local expected="$OBSERVER_PARENT_NODE_PUBLIC_KEY:$OBSERVER_INDEX"
+    local staging existing
+
+    if key_present "$assignment"; then
+        [[ ! -L "$assignment" && -f "$assignment" ]] || die "Observer assignment must be a regular file: $assignment"
+        existing=$(<"$assignment")
+        [[ "$existing" == "$expected" ]] \
+            || die "Keys in $SUMMIT_KEYS_DIR are assigned to $existing, not $expected; use a different KEYS_DIR"
+    elif key_present "$node_key" || key_present "$consensus_key"; then
+        die "Summit keys exist in $SUMMIT_KEYS_DIR without an observer assignment; refusing to reuse or replace them"
+    fi
+
+    if key_present "$consensus_key"; then
+        adopt_key_file "$consensus_key" "observer consensus key"
+        success "Observer consensus key preserved: $consensus_key"
+    else
+        staging=$(mktemp -d "$KEYS_DIR/.observer-keys.XXXXXX")
+        chown "$SERVICE_USER:$SERVICE_GROUP" -- "$staging"
+        chmod 0700 -- "$staging"
+        info "Generating observer consensus key..."
+        summit_generate_into "$staging"
+        [[ -s "$staging/consensus_key.pem" ]] || {
+            rm -rf -- "$staging"
+            die "Summit did not produce a consensus key"
+        }
+        install -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0600 -- "$staging/consensus_key.pem" "$consensus_key"
+        rm -rf -- "$staging"
+        success "Observer consensus key generated: $consensus_key"
+    fi
+
+    if key_present "$node_key"; then
+        adopt_key_file "$node_key" "provisioned parent node key"
+        local public_key
+        public_key=$(summit_keys_show_public_key)
+        [[ "$public_key" == "$OBSERVER_PARENT_NODE_PUBLIC_KEY" ]] \
+            || die "Provisioned node_key.pem has public key ${public_key:-unreadable}, expected OBSERVER_PARENT_NODE_PUBLIC_KEY=$OBSERVER_PARENT_NODE_PUBLIC_KEY"
+        success "Parent node key matches OBSERVER_PARENT_NODE_PUBLIC_KEY"
+    else
+        warn "No parent node key at $node_key yet; install the one provisioned by the parent's operator before starting (runbook 3.7)."
+    fi
+
+    printf '%s\n' "$expected" >"$assignment.tmp"
+    chown "$SERVICE_USER:$SERVICE_GROUP" -- "$assignment.tmp"
+    chmod 0600 -- "$assignment.tmp"
+    mv -- "$assignment.tmp" "$assignment"
+}
+
+setup_bootstrappers_file() {
+    local target="$SUMMIT_KEYS_DIR/bootstrappers.toml"
+    if [[ -z "$SUMMIT_BOOTSTRAPPERS_FILE" ]]; then
+        [[ ! -e "$target" ]] || warn "A bootstrappers file exists at $target but SUMMIT_BOOTSTRAPPERS_FILE is empty; Summit will not use it."
+        return
+    fi
+    [[ "$SUMMIT_BOOTSTRAPPERS_FILE" == "$target" ]] \
+        || die "SUMMIT_BOOTSTRAPPERS_FILE must be $target (the copy inside SUMMIT_KEYS_DIR); place the file there first"
+    [[ -f "$target" && -s "$target" && ! -L "$target" ]] \
+        || die "SUMMIT_BOOTSTRAPPERS_FILE names $target but no such regular file exists; copy the bootstrappers TOML there (runbook 3.7)"
+    chown "$SERVICE_USER:$SERVICE_GROUP" -- "$target"
+    chmod 0640 -- "$target"
+    success "Bootstrappers file ready: $target"
+}
+
+step_keys() {
+    setup_reth_p2p_key
+    if [[ "$SEISMIC_ROLE" == validator ]]; then
+        setup_validator_summit_keys
+    else
+        setup_observer_summit_keys
+    fi
+    setup_bootstrappers_file
+    # Everything under KEYS_DIR belongs to the service account.
+    chown -R "$SERVICE_USER:$SERVICE_GROUP" -- "$KEYS_DIR"
+    success "Keys ready. Back up $KEYS_DIR securely; it is the node's identity."
+}
+
+# --- 3.8 checkpointer config -------------------------------------------------
+
+# Render a template by substituting ${KEY} for the listed node.env keys only,
+# failing on anything left unresolved.
+render_template() {
+    local source=$1 target=$2 mode=$3 description=$4
+    shift 4
+    local vars=("$@") staging
+    staging=$(mktemp)
+    envsubst "$(printf '${%s} ' "${vars[@]}")" <"$source" >"$staging"
+    if grep -q '\${[A-Z_]*}' "$staging"; then
+        rm -f -- "$staging"
+        die "$description template has unresolved variables: $(grep -o '\${[A-Z_]*}' "$source" | sort -u | paste -sd' ')"
+    fi
+    install_file "$staging" "$target" "$mode" "$description"
+    rm -f -- "$staging"
+}
+
+step_checkpointer() {
+    if [[ "$CHECKPOINTER_ENABLED" != true ]]; then
+        success "Checkpointer disabled; nothing to render."
+        return
+    fi
+    # Derived paths the template needs that are not node.env keys.
+    export RETH_DB_PATH="$RETH_DATA_DIR/db"
+    export CHECKPOINTER_STATE_FILE="$CHECKPOINTS_DIR/checkpointer-state.cbor"
+    render_template "$TEMPLATES_DIR/config/seismic-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH" 0644 \
+        "checkpointer config" RETH_DB_PATH CHECKPOINTS_DIR CHECKPOINTER_STATE_FILE
 }

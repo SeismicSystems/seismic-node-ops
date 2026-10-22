@@ -11,6 +11,7 @@
 # runs the identity and checkpoint checks a bare `systemctl start` does not.
 
 set -euo pipefail
+set -o errtrace # ERR trap applies inside functions
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
@@ -133,8 +134,6 @@ source "$SCRIPT_DIR/lib/binaries.sh"
 # shellcheck source=lib/steps.sh
 source "$SCRIPT_DIR/lib/steps.sh"
 
-step_keys() { info "keys: not implemented yet"; }
-step_checkpointer() { info "checkpointer: not implemented yet"; }
 step_tls() { info "tls: not implemented yet"; }
 
 # --- driver -----------------------------------------------------------------

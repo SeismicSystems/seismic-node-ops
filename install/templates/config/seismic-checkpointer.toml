@@ -2,16 +2,16 @@
 
 [reth]
 rpc_url = "http://127.0.0.1:8545"
-db_path = "RETH_DB_PATH_PLACEHOLDER"
+db_path = "${RETH_DB_PATH}"
 
 [checkpoint]
 epoch_blocks = 10000
 checkpoint_delay_blocks = 3
-output_dir = "CHECKPOINTS_DIR_PLACEHOLDER"
+output_dir = "${CHECKPOINTS_DIR}"
 max_snapshots = 3
 compact = true
-mdbx_copy_path = "MDBX_COPY_BINARY_PLACEHOLDER"
-reth_path = "RETH_BINARY_PLACEHOLDER"
+mdbx_copy_path = "/usr/local/bin/mdbx_copy"
+reth_path = "/usr/local/bin/seismic-reth"
 
 [summit]
 enabled = true
@@ -23,7 +23,7 @@ poll_interval_secs = 30
 retry_interval_secs = 60
 
 [state]
-state_file = "CHECKPOINTER_STATE_FILE_PLACEHOLDER"
+state_file = "${CHECKPOINTER_STATE_FILE}"
 
 [logging]
 level = "info"
