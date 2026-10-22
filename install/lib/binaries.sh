@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 
-# Summit and seismic-reth binary installation.
-
-SUMMIT_REPO="https://github.com/SeismicSystems/summit.git"
-RETH_REPO="https://github.com/SeismicSystems/seismic-reth.git"
+# Source checkout, Rust toolchain, and binary installation helpers shared by
+# install/lib/steps.sh.
 
 run_as_service_user() {
     command -v runuser >/dev/null 2>&1 \
@@ -306,72 +304,4 @@ install_binary_target() {
     [[ -f "$target_path" && -x "$target_path" ]] \
         || die "$description target is not executable after installation: $target_path"
     success "$description binary installed: $target_path"
-}
-
-install_summit_binary() {
-    local source_dir="$SERVICE_HOME/src/summit"
-    local build_output="$source_dir/target/release/summit"
-
-    case "$SUMMIT_INSTALL_METHOD" in
-        prebuilt)
-            install_binary_target "Summit" "$SUMMIT_BINARY" "$SUMMIT_TARGET_BIN"
-            ;;
-        source)
-            install_rust_for_service_user
-            prepare_source_checkout \
-                "Summit" "$SUMMIT_REPO" "$source_dir" "$SUMMIT_SOURCE_REF"
-            info "Building Summit from $SUMMIT_SOURCE_REF..."
-            # shellcheck disable=SC2016
-            if ! run_as_service_user bash -c \
-                'source "$HOME/.cargo/env"; cd "$1"; cargo build --locked --release --features prom' \
-                _ "$source_dir" >>"$LOG_FILE" 2>&1; then
-                die "Summit build failed; see $LOG_FILE"
-            fi
-            install_binary_target "Summit" "$build_output" "$SUMMIT_TARGET_BIN"
-            ;;
-        deferred)
-            info "Summit installation deferred; expected executable: $SUMMIT_TARGET_BIN"
-            ;;
-        *) die "Unknown Summit installation method: $SUMMIT_INSTALL_METHOD" ;;
-    esac
-}
-
-install_reth_binary() {
-    local source_dir="$SERVICE_HOME/src/seismic-reth"
-    local build_output="$source_dir/target/release/seismic-reth"
-
-    case "$RETH_INSTALL_METHOD" in
-        prebuilt)
-            install_binary_target "seismic-reth" "$RETH_BINARY" "$RETH_TARGET_BIN"
-            ;;
-        source)
-            install_rust_for_service_user
-            prepare_source_checkout \
-                "seismic-reth" "$RETH_REPO" "$source_dir" "$RETH_SOURCE_REF"
-            info "Building seismic-reth from $RETH_SOURCE_REF..."
-            # shellcheck disable=SC2016
-            if ! run_as_service_user bash -c \
-                'source "$HOME/.cargo/env"; cd "$1"; cargo build --locked --release' \
-                _ "$source_dir" >>"$LOG_FILE" 2>&1; then
-                die "seismic-reth build failed; see $LOG_FILE"
-            fi
-            install_binary_target \
-                "seismic-reth" "$build_output" "$RETH_TARGET_BIN"
-            ;;
-        deferred)
-            info "seismic-reth installation deferred; expected executable: $RETH_TARGET_BIN"
-            ;;
-        *) die "Unknown seismic-reth installation method: $RETH_INSTALL_METHOD" ;;
-    esac
-}
-
-install_node_binaries() {
-    section "Installing node binaries"
-    install_summit_binary
-    install_reth_binary
-    success "Summit and seismic-reth installation methods completed."
-}
-
-install_validator_binaries() {
-    install_node_binaries
 }

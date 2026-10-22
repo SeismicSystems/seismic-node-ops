@@ -45,21 +45,17 @@ jobs:
         run: |
           shellcheck -x \
             install.sh \
-            install-validator.sh \
-            install-observer.sh \
             ../tools/generate-openresty-jwt.sh
 
       - name: Check Python formatting and lint
         run: |
           python3 -m pip install ruff==0.16.5
           ruff check --target-version py312 \
-            install/lib/custodian_url.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
             tests
           ruff format --check --target-version py312 \
-            install/lib/custodian_url.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
@@ -78,7 +74,6 @@ jobs:
       - name: Check Python compilation and tests
         run: |
           python3 -m py_compile \
-            install/lib/custodian_url.py \
             tools/seismic-node.py \
             tools/seismic_node/*.py \
             tools/checkpoint-start/summit-checkpoint-runner.py

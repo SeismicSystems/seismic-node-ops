@@ -311,6 +311,7 @@ install_component() {
         source) build_component "$name" "$repo" "$version" "$build" "$output_dir" "${bins[@]}" ;;
         prebuilt)
             [[ "${#bins[@]}" == 1 ]] || die "$name: prebuilt supports a single binary; install ${bins[*]:1} by hand"
+            check_service_executable_security "${!prebuilt_var}" || die "$name: ${!prebuilt_var} is not safe to install (ownership or permissions)"
             install_binary_target "$name" "${!prebuilt_var}" "/usr/local/bin/${bins[0]}"
             ;;
         deferred) warn "$name: deferred; place the executable at /usr/local/bin/${bins[0]} before starting" ;;
