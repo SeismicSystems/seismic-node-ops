@@ -557,3 +557,48 @@ step_checkpointer() {
     render_template "$TEMPLATES_DIR/config/seismic-checkpointer.toml" "$CHECKPOINTER_CONFIG_PATH" 0644 \
         "checkpointer config" RETH_DB_PATH CHECKPOINTS_DIR CHECKPOINTER_STATE_FILE
 }
+
+# --- 3.11 tls ---------------------------------------------------------------
+#
+# lib/openresty.sh predates node.env and reads the installer's old variables.
+# This step derives them from TLS_MODE and friends, in one place, and calls
+# its install and deploy functions unchanged.
+#
+#   TLS_MODE        OPENRESTY_MODE  EXPOSE_CUSTODIAN  managed?
+#   disabled        disabled        false             no
+#   external        external        true              no (operator's proxy)
+#   custodian-only  custodian       true              yes: /custodian only
+#   full            full            true              yes: /custodian + JWT-protected node routes
+
+# lib/openresty.sh calls this before rendering. Exposure consistency is
+# guaranteed by the node.env schema and the TLS_MODE mapping above; only the
+# loopback listen address remains to check.
+validate_custodian_exposure() {
+    [[ "$COUNCIL_LISTEN" =~ ^127\.0\.0\.1:[0-9]+$ ]]
+}
+
+step_tls() {
+    case "$TLS_MODE" in
+        disabled)
+            success "TLS_MODE=disabled; no public endpoint, OpenResty untouched."
+            return
+            ;;
+        external)
+            success "TLS_MODE=external; Custodian is served by the operator's terminator at $CUSTODIAN_PUBLIC_URL (see install/CUSTODIAN_TLS.md)."
+            return
+            ;;
+        custodian-only) OPENRESTY_MODE=custodian ;;
+        full) OPENRESTY_MODE=full ;;
+        *) die "Unknown TLS_MODE: $TLS_MODE" ;;
+    esac
+    CONFIGURE_PUBLIC_ENDPOINT=true
+    EXPOSE_CUSTODIAN=true
+    INSTALL_CUSTODIAN=true
+    COUNCIL_LISTEN="127.0.0.1:$CUSTODIAN_COUNCIL_PORT"
+    CUSTODIAN_BASE_URL="https://$DOMAIN/custodian"
+    export OPENRESTY_MODE CONFIGURE_PUBLIC_ENDPOINT EXPOSE_CUSTODIAN INSTALL_CUSTODIAN COUNCIL_LISTEN CUSTODIAN_BASE_URL
+
+    install_openresty
+    deploy_openresty_configuration
+    print_https_activation_instructions
+}

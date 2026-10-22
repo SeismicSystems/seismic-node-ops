@@ -131,10 +131,10 @@ validate_config() {
 
 # shellcheck source=lib/binaries.sh
 source "$SCRIPT_DIR/lib/binaries.sh"
+# shellcheck source=lib/openresty.sh
+source "$SCRIPT_DIR/lib/openresty.sh"
 # shellcheck source=lib/steps.sh
 source "$SCRIPT_DIR/lib/steps.sh"
-
-step_tls() { info "tls: not implemented yet"; }
 
 # --- driver -----------------------------------------------------------------
 
