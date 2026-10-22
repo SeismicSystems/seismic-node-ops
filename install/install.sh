@@ -14,7 +14,6 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
-# shellcheck disable=SC2034  # used by step functions sourced from lib/
 TEMPLATES_DIR="$SCRIPT_DIR/templates"
 TOOLS_DIR="$REPO_ROOT/tools"
 LOG_FILE=${LOG_FILE:-/var/log/seismic-install.log}
@@ -125,17 +124,17 @@ validate_config() {
     success "Role: $SEISMIC_ROLE"
 }
 
-# --- steps (filled in by later commits) --------------------------------------
+# --- steps ------------------------------------------------------------------
+# Implemented in lib/steps.sh; the remaining stubs are filled in by later
+# commits.
 
-step_packages() { info "packages: not implemented yet"; }
-step_account() { info "account: not implemented yet"; }
-step_directories() { info "directories: not implemented yet"; }
+# shellcheck source=lib/steps.sh
+source "$SCRIPT_DIR/lib/steps.sh"
+
 step_binaries() { info "binaries: not implemented yet"; }
 step_runner() { info "runner: not implemented yet"; }
-step_config() { info "config: not implemented yet"; }
 step_keys() { info "keys: not implemented yet"; }
 step_checkpointer() { info "checkpointer: not implemented yet"; }
-step_units() { info "units: not implemented yet"; }
 step_tls() { info "tls: not implemented yet"; }
 
 # --- driver -----------------------------------------------------------------
