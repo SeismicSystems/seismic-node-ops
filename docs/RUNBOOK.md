@@ -8,9 +8,10 @@ operator-authored file, `/etc/seismic/node.env`.
 Role-specific steps are marked **validator** or **observer**. Unmarked steps
 apply to both.
 
-> **Status.** This runbook describes the systemd-based layout. One thing it
-> references is not finished yet and is marked inline: the installer's
-> `--config` mode `[not yet available]` (follow the steps by hand meanwhile).
+> **Installer.** `install/install.sh --config node.env` performs section 3 from
+> a prepared `node.env` with no prompts; each step below names the installer
+> step that implements it. Operators who prefer configuration management can
+> follow the steps directly (section 8).
 
 ## Contents
 
@@ -35,6 +36,14 @@ apply to both.
   this.
 - Outbound network access to the Seismic release artifacts (or source
   repositories) and, when monitoring is enabled, to the central Prometheus.
+- For `download` installs, the GitHub CLI (`gh`) 2.49 or newer to verify release
+  attestations. Ubuntu 24.04's own `gh` package is 2.45 and lacks
+  `gh attestation`, so the installer adds GitHub's apt repository (signing key
+  pinned by fingerprint) and installs `gh` from there. No GitHub account or
+  login is required when the attestation bundle is downloaded from the release
+  and passed with `--bundle`. The bare `gh attestation verify` form, by
+  contrast, fetches the attestation through GitHub's API and requires
+  `gh auth login`.
 
 ### Inbound ports
 
@@ -54,16 +63,16 @@ Configure cloud and host firewalls before the first start.
 
 ### Inputs to have in hand
 
-| Input                           | Where it comes from                                | Needed when                                        |
-| ------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
-| Genesis TOML                    | `internal_testnet_genesis.toml` in this repository | Always                                             |
-| Bootstrappers TOML              | Seismic operations; see [3.7 Keys](#37-keys)       | Joining a running network with stale genesis peers |
-| Bootnode RPC URL                | Seismic operations                                 | Optional; resolves the Reth bootnode enode         |
-| Parent node public key + index  | The parent validator's operator                    | **observer**                                       |
-| Parent Custodian HTTPS base URL | The parent validator's operator                    | **observer**                                       |
-| EVM chain ID                    | Seismic operations                                 | Always (Custodian)                                 |
-| Monitoring token (64 hex chars) | Seismic operations, delivered to a root-only file  | Monitoring enabled                                 |
-| Public DNS name                 | You; must resolve to this host                     | Managed OpenResty                                  |
+| Input                                 | Where it comes from                                | Needed when                                        |
+| ------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| Genesis TOML                          | `internal_testnet_genesis.toml` in this repository | Always                                             |
+| Bootstrappers TOML                    | Seismic operations; see [3.7 Keys](#37-keys)       | Joining a running network with stale genesis peers |
+| Bootnode RPC URL                      | Seismic operations                                 | Optional; resolves the Reth bootnode enode         |
+| Parent node public key + index        | The parent validator's operator                    | **observer**                                       |
+| Parent Custodian HTTPS base URL       | The parent validator's operator                    | **observer**                                       |
+| EVM chain ID                          | Seismic operations                                 | Always (Custodian)                                 |
+| Prometheus Agent token (64 hex chars) | Seismic operations, delivered to a root-only file  | `MONITORING_ENABLED=true` (3.12)                   |
+| Public DNS name                       | You; must resolve to this host                     | Managed OpenResty                                  |
 
 ## 2. Host layout
 
@@ -178,9 +187,25 @@ sudo git clone https://github.com/SeismicSystems/seismic-node-ops.git "$REPO"
 
 ### 3.1 Packages
 
+_Installer step: `packages`._
+
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3 curl jq ca-certificates openssl
+sudo apt-get install -y python3 curl jq ca-certificates openssl gettext-base
+```
+
+For `download` installs, add GitHub's apt repository and install `gh` from it
+(Ubuntu's `gh` is too old; see Prerequisites). The installer checks that the
+keyring contains GitHub CLI signing key
+`7F38 BBB5 9D06 4DBC B3D8 4D72 5612 B364 6231 3325` before trusting it:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+gpg --show-keys --with-fingerprint /etc/apt/keyrings/githubcli-archive-keyring.gpg   # must list 7F38 ... 3325
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+sudo apt-get update && sudo apt-get install -y gh
+gh attestation --help >/dev/null   # confirms a new enough gh
 ```
 
 Add only when building from source:
@@ -190,12 +215,16 @@ Add only when building from source:
 
 ### 3.2 Service account
 
+_Installer step: `account`._
+
 ```bash
 sudo useradd --system --home /var/lib/seismic --shell /usr/sbin/nologin \
         --user-group seismic
 ```
 
 ### 3.3 Directories
+
+_Installer step: `directories`._
 
 Using the defaults from `node.env.example`; adjust if you change the paths.
 
@@ -209,6 +238,8 @@ sudo install -d -o seismic -g seismic -m 0750 /persistence/checkpoints
 ```
 
 ### 3.4 Binaries
+
+_Installer step: `binaries`._
 
 Four binaries are required on every node and two more when the checkpointer is
 enabled. The versions are the `*_VERSION` keys in `node.env`.
@@ -291,6 +322,8 @@ sudo install -o root -g root -m 0755 seismic-reth/crates/storage/libmdbx-rs/mdbx
 
 ### 3.5 Checkpoint runner
 
+_Installer step: `runner`._
+
 Only needed when Summit will be started **from a checkpoint**. The
 `seismic-summit-checkpoint` and `seismic-observer-checkpoint` units execute it
 instead of `summit` directly; the normal-start units do not use it. A node that
@@ -327,6 +360,8 @@ sudo install -o root -g root -m 0755 "$REPO/tools/checkpoint-start/summit-checkp
 
 ### 3.6 Genesis and `node.env`
 
+_Installer step: `config`._
+
 ```bash
 sudo install -o root -g root -m 0644 "$REPO/internal_testnet_genesis.toml" /etc/seismic/genesis.toml
 sudo install -o root -g root -m 0640 "$REPO/install/templates/node.env.example" /etc/seismic/node.env
@@ -342,8 +377,8 @@ every key; the ones you must decide are:
 | `SUMMIT_BOOTSTRAPPERS_FILE` / `SUMMIT_BOOTSTRAPPERS_ARG`                                                                                 | `/persistence/keys/summit/bootstrappers.toml` and `--bootstrappers <that path>`, or both empty |
 | `CUSTODIAN_COUNCIL_ADDRESS`, `CUSTODIAN_CHAIN_ID`                                                                                        | Address has a testnet default; chain ID from Seismic operations                                |
 | `CHECKPOINTER_ENABLED`                                                                                                                   | Usually `false` for a plain validator                                                          |
-| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See 3.11                                                                                       |
-| `MONITORING_ENABLED`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                              | See 3.12                                                                                       |
+| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See [3.11](#311-https-endpoint)                                                                |
+| `MONITORING_ENABLED`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                              | See [3.12](#312-prometheus-agent-optional)                                                     |
 | **observer** `OBSERVER_PARENT_NODE_PUBLIC_KEY`, `OBSERVER_INDEX`, `OBSERVER_PUBLIC_ADDRESS`, `OBSERVER_P2P_PORT`, `CUSTODIAN_PARENT_URL` | From the parent's operator                                                                     |
 
 Keys marked `(computed)` in `node.env.example` (`RETH_BOOTNODES_ARG`,
@@ -360,6 +395,8 @@ uses, so what passes here is what the units will see:
 ```
 
 ### 3.7 Keys
+
+_Installer step: `keys`._
 
 Reth P2P identity:
 
@@ -407,19 +444,22 @@ chat, or source control.
 
 ### 3.8 Checkpointer configuration (optional)
 
-When `CHECKPOINTER_ENABLED=true`, render
-`install/templates/supervisor/checkpointer.toml` to
-`/etc/seismic/seismic-checkpointer.toml`, replacing the placeholders:
+_Installer step: `checkpointer`._
 
-| Placeholder                           | Value                                      |
-| ------------------------------------- | ------------------------------------------ |
-| `RETH_DB_PATH_PLACEHOLDER`            | `$RETH_DATA_DIR/db`                        |
-| `CHECKPOINTS_DIR_PLACEHOLDER`         | `$CHECKPOINTS_DIR`                         |
-| `MDBX_COPY_BINARY_PLACEHOLDER`        | `/usr/local/bin/mdbx_copy`                 |
-| `RETH_BINARY_PLACEHOLDER`             | `/usr/local/bin/seismic-reth`              |
-| `CHECKPOINTER_STATE_FILE_PLACEHOLDER` | `$CHECKPOINTS_DIR/checkpointer-state.cbor` |
+When `CHECKPOINTER_ENABLED=true`, render
+`install/templates/config/seismic-checkpointer.toml` to
+`/etc/seismic/seismic-checkpointer.toml`, substituting these variables (the
+binary paths are fixed in the template):
+
+| Placeholder                  | Value                                      |
+| ---------------------------- | ------------------------------------------ |
+| `${RETH_DB_PATH}`            | `$RETH_DATA_DIR/db`                        |
+| `${CHECKPOINTS_DIR}`         | `$CHECKPOINTS_DIR`                         |
+| `${CHECKPOINTER_STATE_FILE}` | `$CHECKPOINTS_DIR/checkpointer-state.cbor` |
 
 ### 3.9 Custodian root key
+
+_No installer step; the Custodian creates the key itself._
 
 Nothing to install. The Custodian keeps its 32-byte root key at
 `$CUSTODIAN_DATA_DIR/root.key` and creates it on first start:
@@ -436,6 +476,8 @@ Nothing to install. The Custodian keeps its 32-byte root key at
   certificate before that.
 
 ### 3.10 systemd units
+
+_Installer step: `units`._
 
 ```bash
 for unit in "$REPO"/install/templates/systemd/seismic-*.service; do
@@ -455,6 +497,8 @@ apply to this role or to disabled features are inert — nothing starts them, an
 
 ### 3.11 HTTPS endpoint
 
+_Installer step: `tls`._
+
 `TLS_MODE` selects one of:
 
 - `disabled` — no public endpoint. Valid for observers, whose Custodian only
@@ -466,17 +510,46 @@ apply to this role or to disabled features are inert — nothing starts them, an
   forward `POST /custodian/v1/council` to
   `http://127.0.0.1:$CUSTODIAN_COUNCIL_PORT/v1/council`, cap bodies at 64 KiB,
   never log or cache bodies.
-- `custodian-only` / `full` — managed OpenResty with automatic certificates.
-  Follow
-  [`install/README.md` → OpenResty public endpoint](../install/README.md#openresty-public-endpoint)
-  for the OpenResty package, `lua-resty-auto-ssl`, and the rendered
-  `nginx.conf`; `full` additionally exposes JWT-protected node routes and needs
-  the JWT secret at `/etc/seismic/openresty-jwt-secret`.
+- `custodian-only` / `full` — managed OpenResty with automatic certificates from
+  Let's Encrypt via `lua-resty-auto-ssl` (`DOMAIN` must resolve to this host;
+  ports 80 and 443 open). `custodian-only` exposes only
+  `POST /custodian/v1/council`. `full` additionally proxies the node routes
+  below and needs the JWT secret at `OPENRESTY_JWT_SECRET_PATH`, which the
+  installer generates.
+
+  | Public path     | Local upstream    | Notes                                            |
+  | --------------- | ----------------- | ------------------------------------------------ |
+  | `/rpc`          | `127.0.0.1:8545`  | Reth HTTP JSON-RPC                               |
+  | `/ws`           | `127.0.0.1:8546`  | Reth WebSocket JSON-RPC                          |
+  | `/summit`       | `127.0.0.1:3030`  | Summit RPC                                       |
+  | `/ops`          | `127.0.0.1:8552`  | Signature-authenticated privileged Reth RPC      |
+  | `/checkpointer` | `127.0.0.1:42069` | Rate-limited and JWT-protected RPC and snapshots |
+  | `/prom-summit`  | `127.0.0.1:9090`  | Rate-limited and JWT-protected                   |
+  | `/prom-reth`    | `127.0.0.1:9001`  | Rate-limited and JWT-protected                   |
+
+  JWT-protected routes require `Authorization: Bearer <token>` signed with the
+  secret at `OPENRESTY_JWT_SECRET_PATH` (`tools/generate-openresty-jwt.sh`
+  issues one). Installing the configuration never starts, enables, or reloads
+  OpenResty; activate it explicitly once the node runs:
+
+  ```bash
+  sudo openresty -t
+  sudo systemctl enable openresty
+  sudo systemctl is-active --quiet openresty && sudo systemctl reload openresty || sudo systemctl start openresty
+  ```
+
+  Reth, Summit, checkpointer, and metrics listeners stay bound to loopback in
+  every mode; OpenResty is the only public surface, and `seismic-deposit-rpc`
+  (`3031`) is never proxied. Proxy requirements for the Custodian route are in
+  [`install/CUSTODIAN_TLS.md`](../install/CUSTODIAN_TLS.md).
 
 Validators must expose Custodian; give Seismic operations the resulting
 `https://DOMAIN/custodian` URL.
 
 ### 3.12 Prometheus Agent (optional)
+
+_Not an installer step; run `seismic-node monitoring install` after
+installation._
 
 Reth and Summit always expose Prometheus metrics on loopback (`9001` and
 `9090`), and the `full` TLS mode publishes them as JWT-protected `/prom-reth`
@@ -500,6 +573,15 @@ sudo "$REPO/tools/seismic-node.py" monitoring install --token-source /root/monit
 This creates the `seismic-prometheus` account, downloads the checksum-pinned
 Prometheus release, renders `/etc/seismic/prometheus-agent/prometheus.yml`, and
 copies the token. It starts nothing.
+
+The agent scrapes Summit (`9090`), Reth (`9001`), and itself (`9091`) every 15
+seconds, labelling each series with `node=<MONITORING_NODE_NAME>` and
+`role=<SEISMIC_ROLE>`, and remote-writes over outbound HTTPS; port `9091` is a
+local status listener, not an inbound requirement. Its WAL keeps at least 5
+minutes and at most 6 hours of unsent samples — an outage longer than that loses
+data, so watch free space. Seismic operations must register the node as a push
+source before the agent starts, and stop any central pull of the same node so
+series are not collected twice.
 
 ### 3.13 Pre-start verification
 
@@ -724,6 +806,14 @@ it maps directly onto a configuration-management role:
 | 3.12 Prometheus Agent    | `command: seismic-node monitoring install`                                                                                  |
 | 4 start                  | `command: seismic-node validator start` — or `systemd: state=started` per unit if you accept the CLI's checks being skipped |
 
-The installer's non-interactive mode (`--config node.env --yes`)
-`[not yet available]` will perform steps 3.1–3.12 from a prepared `node.env` for
-operators who prefer one command over a role.
+The installer (`install.sh --config node.env`) performs steps 3.1–3.11 from a
+prepared `node.env` for operators who prefer one command over a role:
+
+```bash
+sudo "$REPO/install/install.sh" --config /path/to/node.env            # everything
+sudo "$REPO/install/install.sh" --config /path/to/node.env --dry-run  # validate and print the plan
+sudo "$REPO/install/install.sh" --config /path/to/node.env --only units,tls
+```
+
+Every step is idempotent and reports what it changed; a rerun after editing
+`node.env` or a template touches only what differs. Nothing is started.

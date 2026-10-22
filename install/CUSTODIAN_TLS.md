@@ -1,23 +1,20 @@
 # Custodian HTTPS deployment
 
-Both node installers use the enclave `centralized-custodian` branch. Choose a
-Custodian backend port when prompted (default **7876**). The bind address stays
-**`127.0.0.1`**. Choose an unused port accessible to the service user and never
-expose it directly; the installer does not configure firewall rules.
+The Custodian backend port is `CUSTODIAN_COUNCIL_PORT` in `node.env` (default
+**7876**). The bind address stays **`127.0.0.1`**. Choose an unused port
+accessible to the service user and never expose it directly; the installer does
+not configure firewall rules.
 
-## Installer choices
+## TLS_MODE
 
-Validators require a public Custodian HTTPS endpoint. **Observers default to no
-public Custodian endpoint**: they only need outbound access to their parent.
-Observers can still publish node RPC endpoints through OpenResty independently.
+Validators require a public Custodian HTTPS endpoint. **Observers default to
+none** (`TLS_MODE=disabled`): they only need outbound access to their parent.
 
-For validators, or observers that opt in to Custodian exposure, choose:
-
-| Mode                                  | HTTPS routes                                                  |
-| ------------------------------------- | ------------------------------------------------------------- |
-| Own TLS terminator                    | Operator-configured; the installer leaves the proxy untouched |
-| OpenResty: Custodian only (default)   | Custodian only                                                |
-| OpenResty: Custodian + node endpoints | Custodian, RPC, Summit, and the other node routes             |
+| `TLS_MODE`       | HTTPS routes                                                  |
+| ---------------- | ------------------------------------------------------------- |
+| `external`       | Operator-configured; the installer leaves the proxy untouched |
+| `custodian-only` | Custodian only                                                |
+| `full`           | Custodian, RPC, Summit, and the other node routes             |
 
 Managed modes configure automatic certificates and write the entire OpenResty
 main configuration. Custodian-only mode skips JWT setup. Custodian uses protocol
@@ -33,7 +30,7 @@ https://YOUR_DOMAIN/custodian
 ```
 
 When installing an observer, enter the **parent validator's** Custodian endpoint
-when prompted—not the observer's own endpoint.
+as `CUSTODIAN_PARENT_URL`—not the observer's own endpoint.
 
 Clients append `/v1/council`; the proxy forwards `POST /custodian/v1/council` to
 `http://127.0.0.1:BACKEND_PORT/v1/council` using your selected port. Changing
