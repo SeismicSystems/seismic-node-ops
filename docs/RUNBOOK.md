@@ -504,12 +504,17 @@ _Installer step: `tls`._
 - `disabled` — no public endpoint. Valid for observers, whose Custodian only
   needs outbound access to the parent.
 - `external` — you run the terminator. Set `CUSTODIAN_PUBLIC_URL` to the base
-  URL you expose (e.g. `https://node.example.com/custodian`) and configure your
-  proxy to the requirements in
-  [`install/CUSTODIAN_TLS.md`](../install/CUSTODIAN_TLS.md#proxy-requirements):
-  forward `POST /custodian/v1/council` to
-  `http://127.0.0.1:$CUSTODIAN_COUNCIL_PORT/v1/council`, cap bodies at 64 KiB,
-  never log or cache bodies.
+  URL you expose (e.g. `https://node.example.com/custodian`) and give your proxy
+  the Custodian route. Reference configurations that implement every rule in
+  [`install/CUSTODIAN_TLS.md`](../install/CUSTODIAN_TLS.md#proxy-requirements)
+  are in `install/templates/proxy/`: `nginx/custodian.conf` (a server block for
+  plain nginx) and `caddy/Caddyfile`. Replace `DOMAIN` and, if changed,
+  `CUSTODIAN_COUNCIL_PORT`; each file states where it falls short of the managed
+  OpenResty policy (Caddy needs a plugin for rate limiting). The rules in one
+  line: forward `POST /custodian/v1/council` to
+  `http://127.0.0.1:$CUSTODIAN_COUNCIL_PORT/v1/council` with client headers
+  stripped, cap bodies at 64 KiB, never log or cache bodies, never serve the
+  route over plain HTTP.
 - `custodian-only` / `full` — managed OpenResty with automatic certificates from
   Let's Encrypt via `lua-resty-auto-ssl` (`DOMAIN` must resolve to this host;
   ports 80 and 443 open). `custodian-only` exposes only

@@ -1,0 +1,115 @@
+# Reference Caddyfile for TLS_MODE=external: the Custodian council route on
+# an operator-managed Caddy. Implements every rule in install/CUSTODIAN_TLS.md;
+# the limits match the managed OpenResty templates where Caddy can express
+# them. Caddy obtains and renews the certificate itself.
+#
+# Replace DOMAIN and, if changed in node.env, the port in
+# CUSTODIAN_COUNCIL_PORT. Then set CUSTODIAN_PUBLIC_URL=https://DOMAIN/custodian.
+#
+# Differences from managed OpenResty, stated so nobody assumes parity:
+#   - Rate limiting is not built into Caddy. The per-IP and global request
+#     rates (5/s and 20/s) need the caddy-ratelimit plugin
+#     (github.com/mholt/caddy-ratelimit), configured as shown below; without
+#     it, rely on upstream DDoS protection and the Custodian's own nonce TTL.
+#   - There is no single total upload deadline; read_body and the transport
+#     timeouts bound the phases separately. request_body still guarantees the
+#     backend only ever sees a complete body no larger than 64 KiB.
+#   - Concurrency caps (4 per IP, 16 global) have no direct equivalent.
+
+{
+    servers {
+        timeouts {
+            read_header 5s
+            read_body   5s
+            write       5s
+            idle        5s
+        }
+        max_header_size 16KB
+    }
+}
+
+DOMAIN {
+    # Caddy orders directives by its own precedence, so every check for the
+    # council route lives inside one handle block, where order is literal.
+    handle /custodian/v1/council {
+        # Secret bodies: never access-logged, never cached.
+        log_skip
+        header Cache-Control "no-store"
+
+        @not_post not method POST
+        respond @not_post 405
+
+        @query expression {query} != ""
+        respond @query 400
+
+        @chunked header Transfer-Encoding *
+        respond @chunked 400
+
+        @upgrade header Upgrade *
+        respond @upgrade 400
+
+        @not_cbor not header Content-Type application/cbor
+        respond @not_cbor 415
+
+        @no_length not header Content-Length *
+        respond @no_length 411
+
+        # 64 KiB cap (inclusive), enforced before the body reaches the backend.
+        request_body {
+            max_size 65536
+        }
+
+        # With github.com/mholt/caddy-ratelimit installed:
+        # rate_limit {
+        #     zone custodian_ip     { key {remote_host} events 5  window 1s }
+        #     zone custodian_global { key static        events 20 window 1s }
+        # }
+
+        reverse_proxy 127.0.0.1:CUSTODIAN_COUNCIL_PORT {
+            # Strip the public prefix: the backend serves /v1/council. The
+            # query was rejected above, so only the path is rewritten.
+            rewrite /v1/council
+
+            # Forward only what the backend needs; drop every client header.
+            header_up -*
+            header_up Host 127.0.0.1
+            header_up Content-Type application/cbor
+            header_up Accept application/cbor
+            header_up Cache-Control no-store
+            header_up Connection close
+            header_down -Cache-Control
+
+            transport http {
+                dial_timeout 1s
+                response_header_timeout 5s
+                read_timeout 5s
+                write_timeout 5s
+                versions 1.1
+            }
+            # No retries: observer challenges are process-local.
+            lb_try_duration 0
+        }
+    }
+
+    # Nothing else under /custodian exists; do not let it fall through.
+    handle /custodian* {
+        respond 404
+    }
+
+    # Anything outside /custodian is yours; by default, nothing.
+    handle {
+        respond 404
+    }
+}
+
+# Plaintext HTTP: never serve or redirect the council route (clients must not
+# send secrets over HTTP); 404 it. Everything else redirects to HTTPS. Caddy's
+# ACME HTTP-01 handler takes precedence over this site block automatically.
+http://DOMAIN {
+    handle /custodian* {
+        respond 404
+    }
+    handle {
+        redir https://{host}{uri} 308
+    }
+}

@@ -72,6 +72,21 @@ See `templates/openresty/custodian-*.conf` and
 `templates/openresty/lua/custodian.lua` for the complete OpenResty-specific
 policy.
 
+### Reference configurations for `TLS_MODE=external`
+
+| File                                   | For                                                        | Certificates                      |
+| -------------------------------------- | ---------------------------------------------------------- | --------------------------------- |
+| `templates/proxy/nginx/custodian.conf` | plain nginx: a server block plus the rate/connection zones | yours (certbot, acme.sh); no ACME |
+| `templates/proxy/caddy/Caddyfile`      | Caddy 2                                                    | automatic, built in               |
+
+Both implement the rules above and are tested against a live backend: method,
+query, `Content-Type`, `Content-Length`, chunked and `Upgrade` rejections, the
+64 KiB cap (inclusive), prefix 404s, plain-HTTP refusal,
+`Cache-Control: no-store` on responses, and no access logging of the route. Each
+file's header lists what it cannot match exactly: nginx has no single total
+upload deadline, and Caddy has no built-in rate limiting or concurrency caps.
+Envoy is not provided.
+
 ## Deployment checklist
 
 The installer prepares configuration but does **not** start services. The steps

@@ -9,10 +9,12 @@ touches services.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -235,3 +237,139 @@ step_tls
 
 if __name__ == "__main__":
     unittest.main()
+
+
+PROXY_DIR = ROOT / "install/templates/proxy"
+
+
+class ReferenceProxyTests(unittest.TestCase):
+    """The TLS_MODE=external references must carry the same rules as the
+    managed OpenResty policy. Behaviour is verified against live proxies
+    outside CI; these checks keep the files from drifting."""
+
+    RULES: ClassVar[dict[str, list[str]]] = {
+        "nginx/custodian.conf": [
+            "location = /custodian/v1/council",
+            "client_max_body_size 64k;",
+            "client_body_buffer_size 128k;",
+            "client_body_in_file_only off;",
+            "proxy_request_buffering on;",
+            "proxy_max_temp_file_size 0;",
+            "proxy_pass_request_headers off;",
+            "access_log off;",
+            'add_header Cache-Control "no-store" always;',
+            "return 405;",
+            "return 415;",
+            "return 411;",
+            "proxy_pass http://127.0.0.1:CUSTODIAN_COUNCIL_PORT/v1/council;",
+            "rate=5r/s;",
+            "rate=20r/s;",
+            "limit_conn custodian_ip_conn 4;",
+            "limit_conn custodian_global_conn 16;",
+            "listen 80;",
+        ],
+        "caddy/Caddyfile": [
+            "handle /custodian/v1/council",
+            "log_skip",
+            'header Cache-Control "no-store"',
+            "respond @not_post 405",
+            "respond @not_cbor 415",
+            "respond @no_length 411",
+            "respond @chunked 400",
+            "respond @upgrade 400",
+            "max_size 65536",
+            "reverse_proxy 127.0.0.1:CUSTODIAN_COUNCIL_PORT",
+            "rewrite /v1/council",
+            "header_up -*",
+            "header_down -Cache-Control",
+            "lb_try_duration 0",
+            "http://DOMAIN",
+        ],
+    }
+
+    def test_references_carry_every_rule_and_both_placeholders(self):
+        for name, rules in self.RULES.items():
+            text = (PROXY_DIR / name).read_text()
+            with self.subTest(file=name):
+                for rule in rules:
+                    self.assertIn(rule, text)
+                self.assertIn("DOMAIN", text)
+                self.assertIn("CUSTODIAN_COUNCIL_PORT", text)
+                self.assertNotIn("_PLACEHOLDER", text)
+
+    def test_limits_match_the_managed_openresty_policy(self):
+        def squash(text: str) -> str:
+            return re.sub(r"[ \t]+", " ", text)
+
+        managed = squash(
+            (ROOT / "install/templates/openresty/custodian-location.conf").read_text()
+        )
+        nginx = squash((PROXY_DIR / "nginx/custodian.conf").read_text())
+        for directive in (
+            "client_max_body_size 64k;",
+            "client_body_buffer_size 128k;",
+            "client_body_timeout 5s;",
+            "proxy_connect_timeout 1s;",
+            "proxy_send_timeout 5s;",
+            "proxy_read_timeout 5s;",
+            "limit_conn custodian_ip_conn 4;",
+            "limit_conn custodian_global_conn 16;",
+            "limit_req zone=custodian_ip_rate burst=10 nodelay;",
+            "limit_req zone=custodian_global_rate burst=20 nodelay;",
+        ):
+            with self.subTest(directive=directive):
+                self.assertIn(directive, managed)
+                self.assertIn(directive, nginx)
+
+    @unittest.skipUnless(
+        os.environ.get("CUSTODIAN_OPENRESTY_BIN"),
+        "set CUSTODIAN_OPENRESTY_BIN to an nginx/openresty binary",
+    )
+    def test_nginx_reference_passes_configuration_test(self):
+        nginx_bin = os.environ["CUSTODIAN_OPENRESTY_BIN"]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "logs").mkdir()
+            subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-keyout",
+                    str(root / "key.pem"),
+                    "-out",
+                    str(root / "cert.pem"),
+                    "-days",
+                    "1",
+                    "-subj",
+                    "/CN=localhost",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            conf = (PROXY_DIR / "nginx/custodian.conf").read_text()
+            conf = conf.replace("DOMAIN", "localhost").replace(
+                "CUSTODIAN_COUNCIL_PORT", "7876"
+            )
+            conf = conf.replace(
+                "listen 443 ssl;",
+                f"listen 127.0.0.1:18443 ssl;\n    ssl_certificate {root}/cert.pem;\n    ssl_certificate_key {root}/key.pem;",
+            ).replace("listen 80;", "listen 127.0.0.1:18080;")
+            (root / "custodian.conf").write_text(conf)
+            (root / "nginx.conf").write_text(
+                f"worker_processes 1;\nerror_log {root}/logs/error.log warn;\npid {root}/nginx.pid;\n"
+                f"events {{ worker_connections 64; }}\n"
+                f"http {{ access_log {root}/logs/access.log; client_body_temp_path {root}/body;\n"
+                f"proxy_temp_path {root}/proxy; include {root}/custodian.conf; }}\n"
+            )
+            result = subprocess.run(
+                [nginx_bin, "-p", str(root), "-c", str(root / "nginx.conf"), "-t"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("test is successful", result.stderr)
