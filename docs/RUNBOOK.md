@@ -280,8 +280,8 @@ fetch() {  # fetch <repository> <tag> <binary>...
 }
 fetch summit               v0.1.0 summit
 fetch seismic-reth         v0.1.0 seismic-reth mdbx_copy   # mdbx_copy only needed with the checkpointer
-fetch enclave              v0.1.0 seismic-centralized-custodian-service
-fetch seismic-checkpointer v0.1.0 seismic-checkpointer      # when enabled
+fetch enclave              v0.1.1 seismic-centralized-custodian-service
+fetch seismic-checkpointer v0.1.1 seismic-checkpointer      # when enabled
 ```
 
 The seismic-reth tarball carries `mdbx_copy`, built from the libmdbx revision
@@ -312,7 +312,7 @@ must come from the **same** seismic-reth checkout as the Reth binary so its
 libmdbx matches Reth's database format:
 
 ```bash
-git clone --branch v0.1.0 https://github.com/SeismicSystems/seismic-checkpointer.git
+git clone --branch v0.1.1 https://github.com/SeismicSystems/seismic-checkpointer.git
 (cd seismic-checkpointer && cargo build --locked --release)
 sudo install -o root -g root -m 0755 seismic-checkpointer/target/release/seismic-checkpointer /usr/local/bin/seismic-checkpointer
 
