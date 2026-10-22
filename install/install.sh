@@ -128,11 +128,11 @@ validate_config() {
 # Implemented in lib/steps.sh; the remaining stubs are filled in by later
 # commits.
 
+# shellcheck source=lib/binaries.sh
+source "$SCRIPT_DIR/lib/binaries.sh"
 # shellcheck source=lib/steps.sh
 source "$SCRIPT_DIR/lib/steps.sh"
 
-step_binaries() { info "binaries: not implemented yet"; }
-step_runner() { info "runner: not implemented yet"; }
 step_keys() { info "keys: not implemented yet"; }
 step_checkpointer() { info "checkpointer: not implemented yet"; }
 step_tls() { info "tls: not implemented yet"; }
