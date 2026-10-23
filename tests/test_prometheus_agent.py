@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import json
 import os
 import sys
 import tarfile
@@ -28,7 +29,8 @@ def env(**overrides: str) -> nodeenv.NodeEnv:
     values = nodeenv.parse(EXAMPLE.read_text())
     values.update(
         CUSTODIAN_CHAIN_ID="5124",
-        MONITORING_ENABLED="true",
+        DOMAIN="node.example.com",
+        MONITORING_MODE="push",
         MONITORING_NODE_NAME="node-1.example",
         MONITORING_REMOTE_WRITE_URL="https://metrics.example/api/v1/write",
     )
@@ -43,9 +45,13 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(values["role"], "validator")
         self.assertEqual(values["data_dir"], "/var/lib/seismic-prometheus-agent")
 
-    def test_disabled_is_rejected(self):
-        with self.assertRaisesRegex(agent.AgentError, "MONITORING_ENABLED is false"):
-            agent.settings(env(MONITORING_ENABLED="false"))
+    def test_only_push_mode_uses_the_agent(self):
+        with self.assertRaisesRegex(agent.AgentError, "MONITORING_MODE is off"):
+            agent.settings(env(MONITORING_MODE="off"))
+        with self.assertRaisesRegex(agent.AgentError, "MONITORING_MODE is pull"):
+            agent.settings(
+                env(MONITORING_MODE="pull", TLS_MODE="full", DOMAIN="node.example.com")
+            )
 
     def test_reject_unsafe_endpoint_and_label(self):
         bad_urls = [
@@ -102,6 +108,44 @@ class SettingsTests(unittest.TestCase):
             self.assertIn(
                 f'role: "{role_overrides.get("SEISMIC_ROLE", "validator")}"', config
             )
+
+    def test_scrape_targets_follow_node_env(self):
+        base = agent.scrape_targets(env())
+        self.assertEqual(
+            [
+                (
+                    t["labels"]["service"],
+                    t["targets"][0],
+                    t["labels"]["__metrics_path__"],
+                )
+                for t in base
+            ],
+            [
+                ("summit", "127.0.0.1:9090", "/"),
+                ("reth", "127.0.0.1:9001", "/"),
+                ("custodian", "127.0.0.1:7876", "/metrics"),
+            ],
+        )
+        custom = agent.scrape_targets(env(CUSTODIAN_COUNCIL_PORT="17876"))
+        self.assertEqual(custom[2]["targets"], ["127.0.0.1:17876"])
+        with_checkpointer = agent.scrape_targets(env(CHECKPOINTER_ENABLED="true"))
+        self.assertEqual(
+            with_checkpointer[3],
+            {
+                "targets": ["127.0.0.1:42069"],
+                "labels": {"service": "checkpointer", "__metrics_path__": "/metrics"},
+            },
+        )
+        # Valid file_sd JSON: a list of target groups, every label a string.
+        for group in json.loads(agent.render_targets(env(CHECKPOINTER_ENABLED="true"))):
+            self.assertEqual(set(group), {"targets", "labels"})
+            self.assertTrue(all(isinstance(v, str) for v in group["labels"].values()))
+
+    def test_template_scrapes_the_targets_file_by_relative_path(self):
+        config = agent.render(agent.settings(env()))
+        self.assertIn('files: ["targets.json"]', config)
+        self.assertIn('replacement: "${1}/node-1.example"', config)
+        self.assertNotIn("9090", config, "service ports belong in targets.json")
 
     def test_architectures(self):
         self.assertEqual(agent.architecture("x86_64"), "amd64")
@@ -227,6 +271,7 @@ class InstallationTests(unittest.TestCase):
                 "HOME": root / "config",
                 "TOKEN": root / "config/token",
                 "CONFIG": root / "config/prometheus.yml",
+                "TARGETS": root / "config/targets.json",
                 "RELEASES": root / "releases",
                 "BIN_DIR": root / "releases/3.5.0",
                 "CURRENT": root / "releases/current",
@@ -288,13 +333,20 @@ class InstallationTests(unittest.TestCase):
             (root / "wal/buffered").write_text("samples")
             self.assertEqual(agent.TOKEN.stat().st_mode & 0o777, 0o640)
             self.assertEqual(agent.CONFIG.stat().st_mode & 0o777, 0o640)
+            self.assertEqual(agent.TARGETS.stat().st_mode & 0o777, 0o640)
             self.assertNotIn(TOKEN, agent.CONFIG.read_text())
+            self.assertEqual(agent.TARGETS.read_text(), agent.render_targets(config))
             with self.reinstall_bypass():
                 agent.install(config, token)
             self.assertEqual(agent.TOKEN.read_text(), TOKEN + "\n")
             self.assertEqual((root / "wal/buffered").read_text(), "samples")
             for call in run.call_args_list:
                 self.assertEqual(call.args[0][1:4], ["check", "config", "--agent"])
+                # promtool resolves the relative targets.json against the staged
+                # config, so the staged directory must hold both.
+                staged = Path(call.args[0][4])
+                self.assertEqual(staged.name, "prometheus.yml")
+                self.assertEqual(staged.parent.name[:9], ".install-")
 
     def test_refuses_to_adopt_unrelated_wal(self):
         with self.fixture() as (root, token, _):
@@ -307,7 +359,9 @@ class InstallationTests(unittest.TestCase):
         with self.fixture() as (root, token, run):
             config = env(MONITORING_DATA_DIR=str(root / "wal"))
             agent.install(config, token)
-            before = {p: p.read_bytes() for p in (agent.CONFIG, agent.TOKEN)}
+            before = {
+                p: p.read_bytes() for p in (agent.CONFIG, agent.TOKEN, agent.TARGETS)
+            }
             token.write_text("b" * 64)
             run.return_value.returncode = 1
             with (
@@ -348,11 +402,20 @@ class InstallationTests(unittest.TestCase):
             (agent.BIN_DIR / "prometheus").write_text("bin")
             agent.CURRENT.symlink_to("3.5.0")
             agent.check_existing(config)
-            with self.assertRaisesRegex(agent.AgentError, "does not match node.env"):
+            with self.assertRaisesRegex(agent.AgentError, "prometheus.yml does not"):
                 agent.check_existing(
                     env(
                         MONITORING_DATA_DIR=str(root / "wal"),
                         MONITORING_NODE_NAME="other",
+                    )
+                )
+            # Enabling the checkpointer adds a scrape target; the installed
+            # targets.json is stale until the agent is reinstalled.
+            with self.assertRaisesRegex(agent.AgentError, "targets.json does not"):
+                agent.check_existing(
+                    env(
+                        MONITORING_DATA_DIR=str(root / "wal"),
+                        CHECKPOINTER_ENABLED="true",
                     )
                 )
 
@@ -385,9 +448,7 @@ class LifecycleTests(unittest.TestCase):
 
     def test_ensure_running_skips_when_disabled_and_rejects_wrong_role(self):
         with mock.patch.object(systemd, "start_service") as start:
-            monitoring.ensure_running(
-                {"env": env(MONITORING_ENABLED="false")}, "validator"
-            )
+            monitoring.ensure_running({"env": env(MONITORING_MODE="off")}, "validator")
         start.assert_not_called()
         with contextlib.redirect_stderr(io.StringIO()) as err:
             monitoring.ensure_running({"env": env()}, "observer")
@@ -456,9 +517,7 @@ class LifecycleTests(unittest.TestCase):
     def test_disabled_status_is_informational_and_start_refuses(self):
         with (
             mock.patch.object(fsutil, "require_root"),
-            mock.patch.object(
-                nodeenv, "load", return_value=env(MONITORING_ENABLED="false")
-            ),
+            mock.patch.object(nodeenv, "load", return_value=env(MONITORING_MODE="off")),
             mock.patch.object(systemd, "start_service") as start,
             contextlib.redirect_stdout(io.StringIO()) as out,
         ):

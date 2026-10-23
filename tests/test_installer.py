@@ -35,6 +35,9 @@ OBSERVER = {
 def example(**overrides: str) -> str:
     values = nodeenv.parse(EXAMPLE.read_text())
     values["CUSTODIAN_CHAIN_ID"] = "5124"
+    values["DOMAIN"] = "node.example.com"
+    values["MONITORING_NODE_NAME"] = "node-1"
+    values["MONITORING_REMOTE_WRITE_URL"] = "https://metrics.example/api/v1/write"
     values.update(overrides)
     return "".join(f"{k}={v}\n" for k, v in values.items())
 

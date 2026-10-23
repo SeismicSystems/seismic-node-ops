@@ -41,7 +41,7 @@ OBSERVER_UNITS = {
 # Features a unit depends on; its variables need only apply when these are on.
 UNIT_FEATURES = {
     "seismic-checkpointer": {"CHECKPOINTER_ENABLED": "true"},
-    "seismic-prometheus-agent": {"MONITORING_ENABLED": "true"},
+    "seismic-prometheus-agent": {"MONITORING_MODE": "push"},
 }
 
 BRACED = re.compile(r"\$\{([A-Z0-9_]+)\}")
@@ -75,6 +75,9 @@ def expand(command: str, env: dict[str, str]) -> list[str]:
 def full_env(**overrides: str) -> dict[str, str]:
     values = nodeenv.parse(EXAMPLE.read_text())
     values["CUSTODIAN_CHAIN_ID"] = "5124"
+    values["DOMAIN"] = "node.example.com"
+    values["MONITORING_NODE_NAME"] = "node-1"
+    values["MONITORING_REMOTE_WRITE_URL"] = "https://metrics.example/api/v1/write"
     values.update(overrides)
     return values
 
@@ -89,7 +92,7 @@ OBSERVER = {
 EVERYTHING = {
     "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
     "CHECKPOINTER_ENABLED": "true",
-    "MONITORING_ENABLED": "true",
+    "MONITORING_MODE": "push",
     "MONITORING_NODE_NAME": "node-1",
     "MONITORING_REMOTE_WRITE_URL": "https://metrics.example/api/v1/write",
 }

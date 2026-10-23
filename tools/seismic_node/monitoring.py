@@ -22,11 +22,12 @@ def configured(inventory: dict[str, Any], role: str) -> bool:
         raise NodeError("Node configuration was not loaded")
     if env.role != role:
         raise NodeError("Monitoring command does not match node role")
-    return env.flag("MONITORING_ENABLED")
+    return enabled(env)
 
 
 def enabled(env: nodeenv.NodeEnv) -> bool:
-    return env.flag("MONITORING_ENABLED")
+    """The agent runs only in push mode; pull is served by the HTTPS proxy."""
+    return env.monitoring_mode == "push"
 
 
 def ensure_running(inventory: dict[str, Any], role: str) -> None:

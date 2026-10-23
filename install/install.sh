@@ -170,7 +170,7 @@ print_next_steps() {
     else
         _out "  sudo $TOOLS_DIR/seismic-node.py observer start --mode normal"
     fi
-    if [[ "$MONITORING_ENABLED" == true ]]; then
+    if [[ "$MONITORING_MODE" == push ]]; then
         _out "Prometheus Agent (runbook 3.12):"
         _out "  sudo $TOOLS_DIR/seismic-node.py monitoring install --token-source /root/monitoring-token"
     fi

@@ -88,9 +88,14 @@ class ParseTests(unittest.TestCase):
                 nodeenv.parse(text)
 
 
-# The example leaves network-specific values blank; fill the one required
-# key so the example validates as a minimal validator.
-REQUIRED = {"CUSTODIAN_CHAIN_ID": "5124"}
+# The example leaves network-specific values blank; fill the required keys so
+# the example validates as a minimal validator (push monitoring is the default).
+REQUIRED = {
+    "CUSTODIAN_CHAIN_ID": "5124",
+    "DOMAIN": "node.example.com",
+    "MONITORING_NODE_NAME": "node-1",
+    "MONITORING_REMOTE_WRITE_URL": "https://metrics.example/api/v1/write",
+}
 
 
 def example_values(**overrides: str) -> dict[str, str]:
@@ -126,7 +131,7 @@ class SchemaTests(unittest.TestCase):
                 CHECKPOINTER_ENABLED="true",
                 TLS_MODE="full",
                 DOMAIN="node.example.com",
-                MONITORING_ENABLED="true",
+                MONITORING_MODE="push",
                 MONITORING_NODE_NAME="node-1",
                 MONITORING_REMOTE_WRITE_URL="https://metrics.example/api/v1/write",
             )
@@ -179,11 +184,83 @@ class SchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "CUSTODIAN_PARENT_URL"):
             nodeenv.validate(example_values(**OBSERVER))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "DOMAIN"):
-            nodeenv.validate(example_values(TLS_MODE="custodian-only"))
+            nodeenv.validate(example_values(DOMAIN=""))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "CUSTODIAN_PUBLIC_URL"):
             nodeenv.validate(example_values(TLS_MODE="external"))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_NODE_NAME"):
-            nodeenv.validate(example_values(MONITORING_ENABLED="true"))
+            nodeenv.validate(example_values(MONITORING_NODE_NAME=""))
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_REMOTE_WRITE_URL"):
+            nodeenv.validate(example_values(MONITORING_REMOTE_WRITE_URL=""))
+
+    def test_monitoring_mode(self):
+        for bad in ("true", "false", "agent", ""):
+            with (
+                self.subTest(bad),
+                self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_MODE"),
+            ):
+                nodeenv.validate(example_values(MONITORING_MODE=bad))
+        # The MONITORING_* settings belong to the agent, so pull ignores them.
+        pull = nodeenv.validate(
+            example_values(
+                MONITORING_MODE="pull",
+                TLS_MODE="full",
+                DOMAIN="node.example.com",
+                MONITORING_NODE_NAME="",
+                MONITORING_REMOTE_WRITE_URL="",
+            )
+        )
+        self.assertEqual(pull.monitoring_mode, "pull")
+        self.assertFalse(pull.applies("MONITORING_REMOTE_WRITE_URL"))
+        external = nodeenv.validate(
+            example_values(
+                MONITORING_MODE="pull",
+                TLS_MODE="external",
+                CUSTODIAN_PUBLIC_URL="https://node.example.com/custodian",
+            )
+        )
+        self.assertEqual(external.monitoring_mode, "pull")
+        # Publishing metrics does not require publishing the node's RPC.
+        custodian_only = nodeenv.validate(
+            example_values(
+                MONITORING_MODE="pull", TLS_MODE="custodian-only", DOMAIN="node.example.com"
+            )
+        )
+        self.assertEqual(custodian_only.monitoring_mode, "pull")
+        # Pull needs some HTTPS proxy on the node.
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_MODE=pull"):
+            nodeenv.validate(
+                example_values(
+                    **OBSERVER,
+                    CUSTODIAN_PARENT_URL="https://parent.example/custodian",
+                    MONITORING_MODE="pull",
+                    TLS_MODE="disabled",
+                )
+            )
+
+    def test_disabled_tls_is_for_observers_only(self):
+        observer = nodeenv.validate(
+            example_values(
+                **OBSERVER,
+                CUSTODIAN_PARENT_URL="https://parent.example/custodian",
+                TLS_MODE="disabled",
+                DOMAIN="",
+            )
+        )
+        self.assertEqual(observer.string("TLS_MODE"), "disabled")
+        self.assertFalse(observer.applies("DOMAIN"))
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "only valid for observers"):
+            nodeenv.validate(example_values(TLS_MODE="disabled"))
+        # The example is a validator and therefore exposes the Custodian.
+        self.assertEqual(nodeenv.validate(example_values()).string("TLS_MODE"), "custodian-only")
+        # Push is the default; off is accepted and needs none of the agent's keys.
+        self.assertEqual(nodeenv.validate(example_values()).monitoring_mode, "push")
+        off = nodeenv.validate(
+            example_values(
+                MONITORING_MODE="off", MONITORING_NODE_NAME="", MONITORING_REMOTE_WRITE_URL=""
+            )
+        )
+        self.assertEqual(off.monitoring_mode, "off")
+        self.assertFalse(off.applies("MONITORING_NODE_NAME"))
 
     def test_prebuilt_path_required_only_for_prebuilt_method(self):
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "SUMMIT_PREBUILT_PATH"):
@@ -319,7 +396,7 @@ class SchemaTests(unittest.TestCase):
                 "CHECKPOINTS_DIR": "/persistence/reth/checkpoints",
             },
             "monitoring inside summit data": {
-                "MONITORING_ENABLED": "true",
+                "MONITORING_MODE": "push",
                 "MONITORING_NODE_NAME": "n",
                 "MONITORING_REMOTE_WRITE_URL": "https://m.example/api/v1/write",
                 "MONITORING_DATA_DIR": "/persistence/summit/agent",

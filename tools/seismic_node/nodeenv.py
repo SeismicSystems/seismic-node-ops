@@ -67,11 +67,27 @@ BINARIES = {
     ),
 }
 
+# Loopback metrics ports fixed by the unit files (Summit --prom-port, Reth
+# --metrics) and the checkpointer's --port. The Custodian's is
+# CUSTODIAN_COUNCIL_PORT in node.env.
+SUMMIT_METRICS_PORT = 9090
+RETH_METRICS_PORT = 9001
+CHECKPOINTER_PORT = 42069
+
 KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ROLES = ("validator", "observer")
 INSTALL_METHODS = ("download", "prebuilt", "source", "deferred")
 TLS_MODES = ("disabled", "custodian-only", "full", "external")
 MANAGED_TLS_MODES = ("custodian-only", "full")
+# How Seismic operations receives this node's metrics: nothing leaves the
+# node, the Prometheus Agent pushes them, or the HTTPS proxy publishes
+# JWT-protected /prom-* routes for Seismic to pull.
+MONITORING_MODES = ("off", "push", "pull")
+# Pull needs an HTTPS proxy on the node: managed OpenResty (either mode; the
+# /prom-* routes do not depend on the node's RPC being public) or the
+# operator's own proxy in `external` mode, which then has to enforce the same
+# JWT check itself.
+PULL_TLS_MODES = ("custodian-only", "full", "external")
 
 
 class NodeEnvError(NodeError):
@@ -331,6 +347,10 @@ def tls_external(raw: dict[str, str]) -> bool:
     return raw.get("TLS_MODE") == "external"
 
 
+def monitoring(mode: str) -> Condition:
+    return lambda raw: raw.get("MONITORING_MODE") == mode
+
+
 @dataclass(frozen=True)
 class Field:
     validate: Validator
@@ -396,17 +416,17 @@ SCHEMA: dict[str, Field] = {
     "RATE_LIMIT_BURST": Field(_int(1, 1_000_000), tls_managed),
     "OPENRESTY_JWT_SECRET_PATH": Field(_path, tls_managed),
     # Monitoring
-    "MONITORING_ENABLED": Field(_bool),
-    "MONITORING_NODE_NAME": Field(_string, flag("MONITORING_ENABLED")),
-    "MONITORING_REMOTE_WRITE_URL": Field(_https_url, flag("MONITORING_ENABLED")),
-    "MONITORING_DATA_DIR": Field(_path, flag("MONITORING_ENABLED")),
+    "MONITORING_MODE": Field(_enum(MONITORING_MODES)),
+    "MONITORING_NODE_NAME": Field(_string, monitoring("push")),
+    "MONITORING_REMOTE_WRITE_URL": Field(_https_url, monitoring("push")),
+    "MONITORING_DATA_DIR": Field(_path, monitoring("push")),
 }
 
 # Keys whose conditions are evaluated must themselves be unconditional.
 _CONDITION_INPUTS = (
     "SEISMIC_ROLE",
     "CHECKPOINTER_ENABLED",
-    "MONITORING_ENABLED",
+    "MONITORING_MODE",
     "TLS_MODE",
     "SUMMIT_INSTALL_METHOD",
     "RETH_INSTALL_METHOD",
@@ -431,6 +451,10 @@ class NodeEnv:
     @property
     def role(self) -> str:
         return self.values["SEISMIC_ROLE"]
+
+    @property
+    def monitoring_mode(self) -> str:
+        return self.values["MONITORING_MODE"]
 
     def applies(self, key: str) -> bool:
         return key in self.values
@@ -549,6 +573,22 @@ def _validate_derived(env: NodeEnv) -> None:
             raise NodeEnvError(
                 f"node.env OBSERVER_P2P_PORT must be {port} to match OBSERVER_PUBLIC_ADDRESS"
             )
+
+    # A validator's Custodian serves purpose keys to its observers and must be
+    # reachable; an observer's only fetches from the parent.
+    if env.role == "validator" and env.string("TLS_MODE") == "disabled":
+        raise NodeEnvError(
+            "node.env TLS_MODE=disabled is only valid for observers: a validator "
+            "must expose its Custodian; set TLS_MODE to custodian-only, full, or "
+            "external"
+        )
+
+    if env.monitoring_mode == "pull" and env.string("TLS_MODE") not in PULL_TLS_MODES:
+        raise NodeEnvError(
+            "node.env MONITORING_MODE=pull needs an HTTPS proxy to publish the "
+            "/prom-* routes: set TLS_MODE to custodian-only or full (managed "
+            "OpenResty) or external (your proxy must enforce the JWT check)"
+        )
 
 
 def _require_flag_arg(env: NodeEnv, key: str, flag_name: str, value: str) -> None:

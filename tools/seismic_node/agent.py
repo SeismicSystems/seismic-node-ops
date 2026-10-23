@@ -1,9 +1,10 @@
 """Optional Prometheus Agent installation driven by node.env.
 
-The agent's settings are the ``MONITORING_*`` keys in /etc/seismic/node.env;
-this module owns only the artifacts derived from them: the pinned Prometheus
-release, the rendered ``prometheus.yml``, and the bearer token copied from a
-root-only handoff file. The static ``seismic-prometheus-agent.service`` unit
+The agent runs in ``MONITORING_MODE=push`` and its settings are the
+``MONITORING_*`` keys in /etc/seismic/node.env; this module owns only the
+artifacts derived from them: the pinned Prometheus release, the rendered
+``prometheus.yml``, the ``targets.json`` listing the node's metrics endpoints,
+and the bearer token copied from a root-only handoff file. The static ``seismic-prometheus-agent.service`` unit
 is installed with every other unit and reads ``MONITORING_DATA_DIR`` itself.
 
 No action here starts a service. Disabling is an edit to node.env followed by
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import grp
 import hashlib
+import json
 import os
 import platform
 import pwd
@@ -37,6 +39,9 @@ CHECKSUMS = {
 HOME = Path("/etc/seismic/prometheus-agent")
 TOKEN = HOME / "token"
 CONFIG = HOME / "prometheus.yml"
+# Scraped by the single file_sd job in prometheus.yml; referenced there by a
+# relative path, so validation can run against a staged copy.
+TARGETS = HOME / "targets.json"
 RELEASES = Path("/usr/local/lib/seismic/prometheus-agent")
 BIN_DIR = RELEASES / VERSION
 CURRENT = RELEASES / "current"
@@ -61,8 +66,11 @@ class AgentError(NodeError):
 
 def settings(env: nodeenv.NodeEnv) -> dict[str, str]:
     """Extract and strictly validate the agent's settings from node.env."""
-    if not env.flag("MONITORING_ENABLED"):
-        raise AgentError("MONITORING_ENABLED is false in node.env")
+    if env.monitoring_mode != "push":
+        raise AgentError(
+            f"MONITORING_MODE is {env.monitoring_mode} in node.env; the agent "
+            "is only used in push mode"
+        )
     node = env.string("MONITORING_NODE_NAME")
     if not NODE_NAME.fullmatch(node) or ".." in node:
         raise AgentError(
@@ -122,6 +130,34 @@ def read_token(path: Path, *, handoff: bool) -> bytes:
     if not re.fullmatch(rb"[0-9a-f]{64}", token):
         raise AgentError("Expected a 64-character opaque monitoring token")
     return token + b"\n"
+
+
+def scrape_targets(env: nodeenv.NodeEnv) -> list[dict[str, object]]:
+    """The node's loopback metrics endpoints, in Prometheus file_sd form.
+
+    Summit's and Reth's ports are fixed by their unit files; the Custodian's
+    council listener serves /metrics on CUSTODIAN_COUNCIL_PORT; the
+    checkpointer only exists when enabled. The same table, as /prom-* routes,
+    is what the proxy publishes in pull mode.
+    """
+    services = [
+        ("summit", nodeenv.SUMMIT_METRICS_PORT, "/"),
+        ("reth", nodeenv.RETH_METRICS_PORT, "/"),
+        ("custodian", env.integer("CUSTODIAN_COUNCIL_PORT"), "/metrics"),
+    ]
+    if env.flag("CHECKPOINTER_ENABLED"):
+        services.append(("checkpointer", nodeenv.CHECKPOINTER_PORT, "/metrics"))
+    return [
+        {
+            "targets": [f"127.0.0.1:{port}"],
+            "labels": {"service": service, "__metrics_path__": path},
+        }
+        for service, port, path in services
+    ]
+
+
+def render_targets(env: nodeenv.NodeEnv) -> str:
+    return json.dumps(scrape_targets(env), indent=2) + "\n"
 
 
 def render(values: dict[str, str]) -> str:
@@ -299,8 +335,10 @@ def install(env: nodeenv.NodeEnv, token_source: Path) -> None:
         tmp = Path(tmp_name)
         install_release(tmp)
         config = render(values)
+        targets = render_targets(env)
         staged_config = tmp / "prometheus.yml"
         staged_config.write_text(config)
+        (tmp / TARGETS.name).write_text(targets)
         result = subprocess.run(
             [
                 str(BIN_DIR / "promtool"),
@@ -318,6 +356,7 @@ def install(env: nodeenv.NodeEnv, token_source: Path) -> None:
                 "Generated Prometheus agent configuration did not validate"
             )
         atomic_write(TOKEN, token, 0o640, account.pw_gid)
+        atomic_write(TARGETS, targets.encode(), 0o640, account.pw_gid)
         atomic_write(CONFIG, config.encode(), 0o640, account.pw_gid)
     print("Prometheus Agent installed; no services were started.")
 
@@ -330,6 +369,11 @@ def check_existing(env: nodeenv.NodeEnv) -> None:
     if CONFIG.read_text() != render(values):
         raise AgentError(
             "Installed prometheus.yml does not match node.env; reinstall the agent"
+        )
+    fsutil.require_root_managed_file(TARGETS, "Agent scrape targets")
+    if TARGETS.read_text() != render_targets(env):
+        raise AgentError(
+            "Installed targets.json does not match node.env; reinstall the agent"
         )
     if not CURRENT.is_symlink() or not (CURRENT / "prometheus").is_file():
         raise AgentError("Prometheus Agent binary is not installed")

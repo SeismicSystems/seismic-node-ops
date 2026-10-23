@@ -68,18 +68,28 @@ def shell(code: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def render(mode: str, lua_dir: str = "/fixture/lua", custodian_port: int = 7876) -> str:
+def render(
+    mode: str,
+    lua_dir: str = "/fixture/lua",
+    custodian_port: int = 7876,
+    monitoring: str = "off",
+    checkpointer: bool = False,
+) -> str:
     """Render nginx.conf for a managed TLS_MODE ("custodian-only" or "full")."""
     result = shell(
         """
 TLS_MODE=$1
 CUSTODIAN_COUNCIL_PORT=$3
+MONITORING_MODE=$4
+CHECKPOINTER_ENABLED=$5
 apply_tls_mode
 render_openresty_configuration "$2"
 """,
         mode,
         lua_dir,
         str(custodian_port),
+        monitoring,
+        "true" if checkpointer else "false",
     )
     if result.returncode:
         raise AssertionError(result.stderr)
@@ -169,6 +179,88 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("proxy_pass http://127.0.0.1:17876/v1/council;", config)
         self.assertNotIn(":7876", config)
         self.assertIn("/opt/lua/", config)
+
+    def test_metrics_routes_exist_only_in_pull_mode(self):
+        for monitoring in ("off", "push"):
+            with self.subTest(monitoring):
+                config = render("full", monitoring=monitoring, checkpointer=True)
+                self.assertNotIn("location = /prom-", config)
+                self.assertNotIn(":9090", config)
+                self.assertNotIn(":9001", config)
+                # The checkpointer route still proxies RPC; its /metrics is closed.
+                self.assertIn("proxy_pass http://127.0.0.1:42069;", config)
+                guard = config.index(
+                    "location = /checkpointer/metrics { access_log off; return 404; }"
+                )
+                self.assertLess(guard, config.index("location ~ ^/checkpointer(?:/|$)"))
+
+        config = render("full", monitoring="pull", custodian_port=17876)
+        self.assertNotIn("/checkpointer/metrics", config)
+        for route, upstream in (
+            ("summit", "9090/"),
+            ("reth", "9001/"),
+            ("custodian", "17876/metrics"),
+        ):
+            with self.subTest(route):
+                block = config[config.index(f"location = /prom-{route} {{") :]
+                block = block[: block.index("\n}\n")]
+                self.assertIn("jwt_auth()", block)
+                self.assertIn("rate_limit()", block)
+                self.assertIn("limit_except GET { deny all; }", block)
+                self.assertIn('proxy_set_header Authorization "";', block)
+                self.assertIn(f"proxy_pass http://127.0.0.1:{upstream};", block)
+        # Without the checkpointer there is no checkpointer route to publish.
+        self.assertNotIn("/prom-checkpointer", config)
+        self.assertNotIn("_PLACEHOLDER", config)
+
+        config = render("full", monitoring="pull", checkpointer=True)
+        self.assertIn("location = /prom-checkpointer {", config)
+        self.assertIn("proxy_pass http://127.0.0.1:42069/metrics;", config)
+
+    def test_custodian_only_publishes_only_metrics_in_pull_mode(self):
+        # Publishing metrics does not require publishing the node's RPC:
+        # custodian-only + pull is /custodian plus the /prom-* routes, nothing
+        # else, with the JWT and rate-limit machinery they need.
+        config = render("custodian-only", monitoring="pull", checkpointer=True)
+        self.assertIn("proxy_pass http://127.0.0.1:7876/v1/council;", config)
+        self.assertIn("lua_shared_dict limit_req_store", config)
+        for route, upstream in (
+            ("summit", "9090/"),
+            ("reth", "9001/"),
+            ("custodian", "7876/metrics"),
+            ("checkpointer", "42069/metrics"),
+        ):
+            with self.subTest(route):
+                block = config[config.index(f"location = /prom-{route} {{") :]
+                block = block[: block.index("\n}\n")]
+                self.assertIn("jwt_auth()", block)
+                self.assertIn("rate_limit()", block)
+                self.assertIn(f"proxy_pass http://127.0.0.1:{upstream};", block)
+        # The catch-all 404 comes after the metrics routes.
+        self.assertLess(
+            config.index("location = /prom-summit {"),
+            config.index("location / { return 404; }"),
+        )
+        for forbidden in (
+            "location /rpc",
+            "location ~ ^/checkpointer",
+            "/checkpointer/metrics",
+            ":8545",
+            ":8546",
+            ":3030",
+            "return 301",
+        ):
+            self.assertNotIn(forbidden, config)
+        self.assertNotIn("_PLACEHOLDER", config)
+
+    def test_custodian_only_without_pull_has_no_jwt_machinery(self):
+        for monitoring in ("off", "push"):
+            with self.subTest(monitoring):
+                config = render("custodian-only", monitoring=monitoring, checkpointer=True)
+                self.assertNotIn("location = /prom-", config)
+                self.assertNotIn("lua_shared_dict limit_req_store", config)
+                self.assertNotIn("jwt_auth", config)
+                self.assertNotIn(":42069", config)
 
     def test_custodian_body_limits_are_rendered(self):
         config = render("custodian-only")

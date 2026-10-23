@@ -15,6 +15,12 @@
 #     timeouts bound the phases separately. request_body still guarantees the
 #     backend only ever sees a complete body no larger than 64 KiB.
 #   - Concurrency caps (4 per IP, 16 global) have no direct equivalent.
+#
+# Metrics: this file deliberately proxies nothing else. With the default
+# MONITORING_MODE=push the node's Prometheus endpoints must stay unreachable
+# from outside. Only with MONITORING_MODE=pull add the /prom-* routes, and
+# only behind the JWT check described in docs/RUNBOOK.md 3.12 (for example
+# the caddy-security plugin's jwt validation).
 
 {
     servers {

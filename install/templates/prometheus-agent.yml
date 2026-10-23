@@ -3,24 +3,25 @@ global:
   scrape_timeout: 10s
 
 scrape_configs:
-  - job_name: "summit/NODE_PLACEHOLDER"
-    # Match the existing /prom-summit proxy's upstream path.
-    metrics_path: /
-    static_configs:
-      - targets: ["127.0.0.1:9090"]
-        labels:
-          node: "NODE_PLACEHOLDER"
-          instance: "NODE_PLACEHOLDER"
-          role: "ROLE_PLACEHOLDER"
-  - job_name: "reth/NODE_PLACEHOLDER"
-    # Match the existing /prom-reth proxy's upstream path.
-    metrics_path: /
-    static_configs:
-      - targets: ["127.0.0.1:9001"]
-        labels:
-          node: "NODE_PLACEHOLDER"
-          instance: "NODE_PLACEHOLDER"
-          role: "ROLE_PLACEHOLDER"
+  # One job for every service on this node. Which services, and on which
+  # ports, comes from node.env and is written next to this file as
+  # targets.json by `seismic-node monitoring install`; Prometheus re-reads
+  # it on change. Each target carries a `service` label and its scrape path.
+  - job_name: "node/NODE_PLACEHOLDER"
+    file_sd_configs:
+      - files: ["targets.json"]
+    relabel_configs:
+      # Keep the per-service job names (summit/<node>, reth/<node>, ...) so
+      # series are identical to a static per-service configuration.
+      - source_labels: [service]
+        target_label: job
+        replacement: "${1}/NODE_PLACEHOLDER"
+      - target_label: node
+        replacement: "NODE_PLACEHOLDER"
+      - target_label: instance
+        replacement: "NODE_PLACEHOLDER"
+      - target_label: role
+        replacement: "ROLE_PLACEHOLDER"
   - job_name: "prometheus-agent/NODE_PLACEHOLDER"
     static_configs:
       - targets: ["127.0.0.1:9091"]

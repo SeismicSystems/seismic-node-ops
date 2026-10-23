@@ -570,6 +570,8 @@ step_checkpointer() {
 #   external        external        true              no (operator's proxy)
 #   custodian-only  custodian       true              yes: /custodian only
 #   full            full            true              yes: /custodian + JWT-protected node routes
+#
+# MONITORING_MODE=pull adds JWT-protected /prom-* routes to either managed mode.
 
 # lib/openresty.sh calls this before rendering. Exposure consistency is
 # guaranteed by the node.env schema and the TLS_MODE mapping above; only the

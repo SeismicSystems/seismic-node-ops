@@ -71,7 +71,7 @@ Configure cloud and host firewalls before the first start.
 | Parent node public key + index        | The parent validator's operator                    | **observer**                                       |
 | Parent Custodian HTTPS base URL       | The parent validator's operator                    | **observer**                                       |
 | EVM chain ID                          | Seismic operations                                 | Always (Custodian)                                 |
-| Prometheus Agent token (64 hex chars) | Seismic operations, delivered to a root-only file  | `MONITORING_ENABLED=true` (3.12)                   |
+| Prometheus Agent token (64 hex chars) | Seismic operations, delivered to a root-only file  | `MONITORING_MODE=push`, the default (3.12)         |
 | Public DNS name                       | You; must resolve to this host                     | Managed OpenResty                                  |
 
 ## 2. Host layout
@@ -112,7 +112,7 @@ This is the contract every step below establishes. All paths except those under
 | `seismic-observer-checkpoint.service` | observer  | on-failure | Requires `/etc/seismic/checkpoint-start.toml`              |
 | `seismic-observer-custodian.service`  | observer  | on-failure | Always installed; fetches root key from parent             |
 | `seismic-checkpointer.service`        | both      | on-failure | Only when `CHECKPOINTER_ENABLED=true`                      |
-| `seismic-prometheus-agent.service`    | both      | always     | Only when `MONITORING_ENABLED=true`                        |
+| `seismic-prometheus-agent.service`    | both      | always     | Only when `MONITORING_MODE=push` (the default)             |
 
 Each unit has a drop-in `<unit>.d/10-hardening.conf` from
 `install/templates/systemd/seismic-hardening.conf`. No unit is enabled at boot
@@ -377,8 +377,8 @@ every key; the ones you must decide are:
 | `SUMMIT_BOOTSTRAPPERS_FILE` / `SUMMIT_BOOTSTRAPPERS_ARG`                                                                                 | `/persistence/keys/summit/bootstrappers.toml` and `--bootstrappers <that path>`, or both empty |
 | `CUSTODIAN_COUNCIL_ADDRESS`, `CUSTODIAN_CHAIN_ID`                                                                                        | Address has a testnet default; chain ID from Seismic operations                                |
 | `CHECKPOINTER_ENABLED`                                                                                                                   | Usually `false` for a plain validator                                                          |
-| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See [3.11](#311-https-endpoint)                                                                |
-| `MONITORING_ENABLED`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                              | See [3.12](#312-prometheus-agent-optional)                                                     |
+| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See [3.11](#311-https-endpoint); validators must expose the Custodian                          |
+| `MONITORING_MODE`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                                 | See [3.12](#312-monitoring)                                                                    |
 | **observer** `OBSERVER_PARENT_NODE_PUBLIC_KEY`, `OBSERVER_INDEX`, `OBSERVER_PUBLIC_ADDRESS`, `OBSERVER_P2P_PORT`, `CUSTODIAN_PARENT_URL` | From the parent's operator                                                                     |
 
 Keys marked `(computed)` in `node.env.example` (`RETH_BOOTNODES_ARG`,
@@ -501,8 +501,10 @@ _Installer step: `tls`._
 
 `TLS_MODE` selects one of:
 
-- `disabled` — no public endpoint. Valid for observers, whose Custodian only
-  needs outbound access to the parent.
+- `disabled` — no public endpoint. **Observers only**: their Custodian needs
+  just outbound access to the parent, whereas a validator's serves purpose keys
+  to its observers and must be reachable, so `--check` rejects this mode for
+  validators.
 - `external` — you run the terminator. Set `CUSTODIAN_PUBLIC_URL` to the base
   URL you expose (e.g. `https://node.example.com/custodian`) and give your proxy
   the Custodian route. Reference configurations that implement every rule in
@@ -529,13 +531,28 @@ _Installer step: `tls`._
   | `/summit`       | `127.0.0.1:3030`  | Summit RPC                                       |
   | `/ops`          | `127.0.0.1:8552`  | Signature-authenticated privileged Reth RPC      |
   | `/checkpointer` | `127.0.0.1:42069` | Rate-limited and JWT-protected RPC and snapshots |
-  | `/prom-summit`  | `127.0.0.1:9090`  | Rate-limited and JWT-protected                   |
-  | `/prom-reth`    | `127.0.0.1:9001`  | Rate-limited and JWT-protected                   |
+
+  With `MONITORING_MODE=pull` ([3.12](#312-monitoring)) both managed modes also
+  render one JWT-protected, rate-limited, GET-only route per metrics endpoint —
+  in `custodian-only` these and `/custodian` are the only public paths, so
+  publishing metrics never requires publishing the node's RPC:
+
+  | Public path          | Local upstream                              |
+  | -------------------- | ------------------------------------------- |
+  | `/prom-summit`       | `127.0.0.1:9090/`                           |
+  | `/prom-reth`         | `127.0.0.1:9001/`                           |
+  | `/prom-custodian`    | `127.0.0.1:$CUSTODIAN_COUNCIL_PORT/metrics` |
+  | `/prom-checkpointer` | `127.0.0.1:42069/metrics` (if enabled)      |
+
+  In every other monitoring mode these routes do not exist and
+  `/checkpointer/metrics` returns 404, so no metrics leave the node through the
+  proxy.
 
   JWT-protected routes require `Authorization: Bearer <token>` signed with the
   secret at `OPENRESTY_JWT_SECRET_PATH` (`tools/generate-openresty-jwt.sh`
-  issues one). Installing the configuration never starts, enables, or reloads
-  OpenResty; activate it explicitly once the node runs:
+  issues one); the installer generates the secret whenever such routes exist.
+  Installing the configuration never starts, enables, or reloads OpenResty;
+  activate it explicitly once the node runs:
 
   ```bash
   sudo openresty -t
@@ -551,24 +568,70 @@ _Installer step: `tls`._
 Validators must expose Custodian; give Seismic operations the resulting
 `https://DOMAIN/custodian` URL.
 
-### 3.12 Prometheus Agent (optional)
+### 3.12 Monitoring
 
-_Not an installer step; run `seismic-node monitoring install` after
+_Not an installer step; in push mode run `seismic-node monitoring install` after
 installation._
 
-Reth and Summit always expose Prometheus metrics on loopback (`9001` and
-`9090`), and the `full` TLS mode publishes them as JWT-protected `/prom-reth`
-and `/prom-summit` routes for an external Prometheus to pull. The Prometheus
-Agent is the push alternative: it scrapes those endpoints locally and
-remote-writes to Seismic's central Prometheus with a bearer token from Seismic
-operations. Its settings are the `MONITORING_*` keys in `node.env` and its CLI
-is `seismic-node monitoring`.
+Every service serves Prometheus metrics on loopback, in every mode:
+
+| Service                                    | Loopback endpoint                           | Push job / pull route                        |
+| ------------------------------------------ | ------------------------------------------- | -------------------------------------------- |
+| Summit                                     | `127.0.0.1:9090/`                           | `summit/<node>` / `/prom-summit`             |
+| Reth                                       | `127.0.0.1:9001/`                           | `reth/<node>` / `/prom-reth`                 |
+| Custodian                                  | `127.0.0.1:$CUSTODIAN_COUNCIL_PORT/metrics` | `custodian/<node>` / `/prom-custodian`       |
+| Checkpointer (`CHECKPOINTER_ENABLED=true`) | `127.0.0.1:42069/metrics`                   | `checkpointer/<node>` / `/prom-checkpointer` |
+| Prometheus Agent (push only)               | `127.0.0.1:9091`                            | `prometheus-agent/<node>` / —                |
+
+`MONITORING_MODE` in `node.env` decides how Seismic operations receives them:
+
+- `push` (default) — the **Prometheus Agent** scrapes the endpoints locally and
+  remote-writes to Seismic's central Prometheus with a bearer token from Seismic
+  operations. Nothing inbound is needed. **The metrics endpoints must not be
+  exposed publicly in this mode**: the managed OpenResty renders no `/prom-*`
+  routes, and if you run your own proxy (`TLS_MODE=external`) do not add any —
+  Seismic would collect every series twice, and the endpoints carry no
+  authentication of their own.
+- `pull` — the HTTPS proxy publishes the endpoints as JWT-protected `/prom-*`
+  routes ([3.11](#311-https-endpoint)) and Seismic's central Prometheus scrapes
+  them. Requires an HTTPS proxy on the node: `TLS_MODE=custodian-only` or
+  `full`, where the managed OpenResty renders the routes from
+  `install/templates/openresty/metrics-location.conf` (the node's RPC does not
+  have to be public for this), or `TLS_MODE=external`. **With your own proxy you
+  must add the same protection yourself**: one GET-only route per endpoint,
+  proxying exactly the upstream path in the 3.11 table, rate-limited, and
+  rejecting any request whose `Authorization: Bearer <token>` is not a JWT
+  signed with the secret at `OPENRESTY_JWT_SECRET_PATH` (the check
+  `install/templates/openresty/lua/jwt_auth.lua` implements; strip the header
+  before proxying). Mint a token with `tools/generate-openresty-jwt.sh` and hand
+  it to Seismic operations together with the public base URL. Never publish the
+  metrics ports without that check.
+- `off` — nothing leaves the node. Only by agreement with Seismic operations,
+  who otherwise alert on the missing telemetry.
+
+Which combinations with `TLS_MODE` ([3.11](#311-https-endpoint)) are valid, and
+what is public on the node in each (✔ valid, ✘ rejected by `--check`):
+
+| `TLS_MODE`                  | `push` (default)                             | `pull`                                             | `off`                        |
+| --------------------------- | -------------------------------------------- | -------------------------------------------------- | ---------------------------- |
+| `disabled` (observers only) | ✔ nothing public                            | ✘ no proxy to publish `/prom-*`                    | ✔ nothing public            |
+| `custodian-only`            | ✔ `/custodian`                              | ✔ `/custodian`, `/prom-*`                         | ✔ `/custodian`              |
+| `full`                      | ✔ `/custodian`, node routes                 | ✔ `/custodian`, node routes, `/prom-*`            | ✔ `/custodian`, node routes |
+| `external`                  | ✔ your routes; must **not** include metrics | ✔ your routes; must include JWT-checked `/prom-*` | ✔ your routes               |
+
+The rest of this section is push mode. Its CLI is `seismic-node monitoring` and
+its settings in `node.env` are:
+
+| Key                           | Set to                                                                                                                                        |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MONITORING_NODE_NAME`        | The node label agreed with Seismic operations; they register the token against it                                                             |
+| `MONITORING_REMOTE_WRITE_URL` | The HTTPS remote-write endpoint from Seismic operations                                                                                       |
+| `MONITORING_DATA_DIR`         | The agent's WAL directory, owned by its own `seismic-prometheus` account and outside node state (default `/var/lib/seismic-prometheus-agent`) |
 
 The token is the bearer credential the agent presents on every remote-write
 request; Seismic operations issues one per node (64 hex characters) and
 registers it against `MONITORING_NODE_NAME`. Put it in a root-only file outside
-the node's data and key directories — the CLI refuses anything else — and with
-`MONITORING_ENABLED=true` run:
+the node's data and key directories — the CLI refuses anything else — and run:
 
 ```bash
 sudo install -o root -g root -m 0600 /path/from/ops/token /root/monitoring-token
@@ -576,17 +639,18 @@ sudo "$REPO/tools/seismic-node.py" monitoring install --token-source /root/monit
 ```
 
 This creates the `seismic-prometheus` account, downloads the checksum-pinned
-Prometheus release, renders `/etc/seismic/prometheus-agent/prometheus.yml`, and
-copies the token. It starts nothing.
+Prometheus release, renders `/etc/seismic/prometheus-agent/prometheus.yml` and
+`targets.json` (the endpoint list above, derived from `node.env`), and copies
+the token. It starts nothing.
 
-The agent scrapes Summit (`9090`), Reth (`9001`), and itself (`9091`) every 15
-seconds, labelling each series with `node=<MONITORING_NODE_NAME>` and
-`role=<SEISMIC_ROLE>`, and remote-writes over outbound HTTPS; port `9091` is a
-local status listener, not an inbound requirement. Its WAL keeps at least 5
-minutes and at most 6 hours of unsent samples — an outage longer than that loses
-data, so watch free space. Seismic operations must register the node as a push
-source before the agent starts, and stop any central pull of the same node so
-series are not collected twice.
+The agent scrapes every endpoint in `targets.json` and itself (`9091`) every 15
+seconds, labelling each series with `node=<MONITORING_NODE_NAME>`,
+`role=<SEISMIC_ROLE>` and `job=<service>/<node>`, and remote-writes over
+outbound HTTPS; port `9091` is a local status listener, not an inbound
+requirement. Its WAL keeps at least 5 minutes and at most 6 hours of unsent
+samples — an outage longer than that loses data, so watch free space. Seismic
+operations must register the node as a push source before the agent starts, and
+stop any central pull of the same node so series are not collected twice.
 
 ### 3.13 Pre-start verification
 

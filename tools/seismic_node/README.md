@@ -52,13 +52,15 @@ sudo ./tools/seismic-node.py monitoring status
 sudo ./tools/seismic-node.py monitoring stop
 ```
 
-`install` downloads the checksum-pinned Prometheus release, renders
-`/etc/seismic/prometheus-agent/prometheus.yml` from the `MONITORING_*` keys in
-`node.env`, and copies the token from a root-only (0600) handoff file; it never
-starts the service. `check` verifies the installed artifacts still match
-`node.env`. Monitoring commands read `node.env` without requiring usable node
-databases or keys. To disable the agent, set `MONITORING_ENABLED=false` and run
-`monitoring stop`; credentials and the WAL are preserved.
+The agent is used in `MONITORING_MODE=push` (the default). `install` downloads
+the checksum-pinned Prometheus release, renders
+`/etc/seismic/prometheus-agent/prometheus.yml` and `targets.json` from the
+`MONITORING_*` and service keys in `node.env`, and copies the token from a
+root-only (0600) handoff file; it never starts the service. `check` verifies the
+installed artifacts still match `node.env`. Monitoring commands read `node.env`
+without requiring usable node databases or keys. To stop using the agent, set
+`MONITORING_MODE` to `pull` or `off` and run `monitoring stop`; credentials and
+the WAL are preserved.
 
 ## Workflow boundaries
 
