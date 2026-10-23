@@ -4,8 +4,10 @@ The agent runs in ``MONITORING_MODE=push`` and its settings are the
 ``MONITORING_*`` keys in /etc/seismic/node.env; this module owns only the
 artifacts derived from them: the pinned Prometheus release, the rendered
 ``prometheus.yml``, the ``targets.json`` listing the node's metrics endpoints,
-and the bearer token copied from a root-only handoff file. The static ``seismic-prometheus-agent.service`` unit
-is installed with every other unit and reads ``MONITORING_DATA_DIR`` itself.
+and the bearer token(s) copied from root-only handoff files: Seismic's, and
+optionally the operator's own for a second remote-write destination. The
+static ``seismic-prometheus-agent.service`` unit is installed with every other
+unit and reads ``MONITORING_DATA_DIR`` itself.
 
 No action here starts a service. Disabling is an edit to node.env followed by
 ``seismic-node monitoring stop``; credentials and the WAL are preserved.
@@ -38,6 +40,8 @@ CHECKSUMS = {
 }
 HOME = Path("/etc/seismic/prometheus-agent")
 TOKEN = HOME / "token"
+# Bearer token for the operator's own receiver; present only if one was given.
+OPERATOR_TOKEN = HOME / "operator-token"
 CONFIG = HOME / "prometheus.yml"
 # Scraped by the single file_sd job in prometheus.yml; referenced there by a
 # relative path, so validation can run against a staged copy.
@@ -82,6 +86,16 @@ def settings(env: nodeenv.NodeEnv) -> dict[str, str]:
             "MONITORING_REMOTE_WRITE_URL requires HTTPS port 443 and /api/v1/write, "
             "without credentials, query or fragment"
         )
+    operator_url = env.string("MONITORING_OPERATOR_REMOTE_WRITE_URL")
+    if operator_url and not _valid_remote_write_url(operator_url, any_port=True):
+        raise AgentError(
+            "MONITORING_OPERATOR_REMOTE_WRITE_URL requires HTTPS and /api/v1/write, "
+            "without credentials, query or fragment"
+        )
+    if operator_url == url:
+        raise AgentError(
+            "MONITORING_OPERATOR_REMOTE_WRITE_URL must differ from MONITORING_REMOTE_WRITE_URL"
+        )
     data_dir = env.path("MONITORING_DATA_DIR")
     if not re.fullmatch(r"/[A-Za-z0-9_./-]+", str(data_dir)):
         raise AgentError("MONITORING_DATA_DIR contains unsafe characters")
@@ -94,11 +108,12 @@ def settings(env: nodeenv.NodeEnv) -> dict[str, str]:
         "node": node,
         "role": env.role,
         "url": url,
+        "operator_url": operator_url,
         "data_dir": str(data_dir),
     }
 
 
-def _valid_remote_write_url(url: str) -> bool:
+def _valid_remote_write_url(url: str, *, any_port: bool = False) -> bool:
     if not url.isascii() or re.search(r"[\s\\\"'<>]", url):
         return False
     try:
@@ -108,7 +123,7 @@ def _valid_remote_write_url(url: str) -> bool:
     return bool(
         parsed.scheme == "https"
         and parsed.hostname
-        and parsed.port in (None, 443)
+        and (any_port or parsed.port in (None, 443))
         and parsed.username is None
         and parsed.password is None
         and parsed.path == "/api/v1/write"
@@ -119,15 +134,24 @@ def _valid_remote_write_url(url: str) -> bool:
     )
 
 
-def read_token(path: Path, *, handoff: bool) -> bytes:
-    """Read a 64-hex token; handoff files must be root-only (0600)."""
+def read_token(path: Path, *, handoff: bool, operator: bool = False) -> bytes:
+    """Read a bearer token; handoff files must be root-only (0600).
+
+    Seismic's token is a 64-hex string. The operator's receiver is theirs, so
+    its token is any single printable line.
+    """
     meta = fsutil.require_root_managed_file(path, "Monitoring token")
-    if meta.st_size > 128 or meta.st_mode & 0o007:
+    if meta.st_size > (1024 if operator else 128) or meta.st_mode & 0o007:
         raise AgentError("Token file must be private and contain one opaque token")
     if handoff and meta.st_mode & 0o077:
         raise AgentError("Token handoff file must be root-only (0600)")
     token = path.read_bytes().strip()
-    if not re.fullmatch(rb"[0-9a-f]{64}", token):
+    if operator:
+        if not token or not re.fullmatch(rb"[\x21-\x7e]+", token):
+            raise AgentError(
+                "Expected a single-line printable ASCII operator token without spaces"
+            )
+    elif not re.fullmatch(rb"[0-9a-f]{64}", token):
         raise AgentError("Expected a 64-character opaque monitoring token")
     return token + b"\n"
 
@@ -160,13 +184,46 @@ def render_targets(env: nodeenv.NodeEnv) -> str:
     return json.dumps(scrape_targets(env), indent=2) + "\n"
 
 
-def render(values: dict[str, str]) -> str:
+def render_operator_remote_write(values: dict[str, str], *, token: bool) -> str:
+    """The optional second remote_write entry; empty when not configured."""
+    url = values["operator_url"]
+    if not url:
+        return ""
+    lines = [
+        "  - name: operator",
+        f'    url: "{url}"',
+    ]
+    if token:
+        lines += [
+            "    authorization:",
+            "      type: Bearer",
+            f'      credentials_file: "{OPERATOR_TOKEN}"',
+        ]
+    lines += [
+        "    remote_timeout: 30s",
+        "    queue_config:",
+        "      min_shards: 1",
+        "      max_shards: 2",
+        "      capacity: 10000",
+        "      max_samples_per_send: 2000",
+        "      batch_send_deadline: 5s",
+        "      min_backoff: 1s",
+        "      max_backoff: 30s",
+        "      retry_on_http_429: true",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def render(values: dict[str, str], *, operator_token: bool = False) -> str:
     config = TEMPLATE.read_text()
     for key, value in {
         "NODE_PLACEHOLDER": values["node"],
         "ROLE_PLACEHOLDER": values["role"],
         "URL_PLACEHOLDER": f'"{values["url"]}"',
         "TOKEN_PLACEHOLDER": f'"{TOKEN}"',
+        "OPERATOR_REMOTE_WRITE_PLACEHOLDER\n": render_operator_remote_write(
+            values, token=operator_token
+        ),
     }.items():
         config = config.replace(key, value)
     if "_PLACEHOLDER" in config:
@@ -312,16 +369,28 @@ def require_stopped() -> None:
         raise AgentError("Stop the Prometheus Agent before changing its configuration")
 
 
-def install(env: nodeenv.NodeEnv, token_source: Path) -> None:
+def install(
+    env: nodeenv.NodeEnv, token_source: Path, operator_token_source: Path | None = None
+) -> None:
     """Install or update the agent from node.env; nothing is started."""
     values = settings(env)
+    if operator_token_source is not None and not values["operator_url"]:
+        raise AgentError(
+            "--operator-token-source needs MONITORING_OPERATOR_REMOTE_WRITE_URL in node.env"
+        )
     for key in ("RETH_DATA_DIR", "SUMMIT_DATA_DIR", "KEYS_DIR"):
         node_dir = env.path(key)
-        if token_source == node_dir or node_dir in token_source.parents:
-            raise AgentError(
-                "Token handoff must be outside node data and key directories"
-            )
+        for source in (token_source, operator_token_source):
+            if source is not None and (source == node_dir or node_dir in source.parents):
+                raise AgentError(
+                    "Token handoff must be outside node data and key directories"
+                )
     token = read_token(token_source, handoff=True)
+    operator_token = (
+        None
+        if operator_token_source is None
+        else read_token(operator_token_source, handoff=True, operator=True)
+    )
     require_stopped()
     account = service_account()
     directory(HOME, gid=account.pw_gid, mode=0o750)
@@ -334,7 +403,7 @@ def install(env: nodeenv.NodeEnv, token_source: Path) -> None:
     with tempfile.TemporaryDirectory(prefix=".install-", dir=HOME) as tmp_name:
         tmp = Path(tmp_name)
         install_release(tmp)
-        config = render(values)
+        config = render(values, operator_token=operator_token is not None)
         targets = render_targets(env)
         staged_config = tmp / "prometheus.yml"
         staged_config.write_text(config)
@@ -356,6 +425,13 @@ def install(env: nodeenv.NodeEnv, token_source: Path) -> None:
                 "Generated Prometheus agent configuration did not validate"
             )
         atomic_write(TOKEN, token, 0o640, account.pw_gid)
+        if operator_token is not None:
+            atomic_write(OPERATOR_TOKEN, operator_token, 0o640, account.pw_gid)
+        elif OPERATOR_TOKEN.exists() or OPERATOR_TOKEN.is_symlink():
+            # The rendered config no longer references it; do not leave a
+            # stale credential behind.
+            fsutil.require_root_managed_file(OPERATOR_TOKEN, "Operator token")
+            OPERATOR_TOKEN.unlink()
         atomic_write(TARGETS, targets.encode(), 0o640, account.pw_gid)
         atomic_write(CONFIG, config.encode(), 0o640, account.pw_gid)
     print("Prometheus Agent installed; no services were started.")
@@ -365,8 +441,11 @@ def check_existing(env: nodeenv.NodeEnv) -> None:
     """Verify the installed artifacts match node.env."""
     values = settings(env)
     read_token(TOKEN, handoff=False)
+    operator_token = bool(values["operator_url"]) and OPERATOR_TOKEN.exists()
+    if operator_token:
+        read_token(OPERATOR_TOKEN, handoff=False, operator=True)
     fsutil.require_root_managed_file(CONFIG, "Agent configuration")
-    if CONFIG.read_text() != render(values):
+    if CONFIG.read_text() != render(values, operator_token=operator_token):
         raise AgentError(
             "Installed prometheus.yml does not match node.env; reinstall the agent"
         )

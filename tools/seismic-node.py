@@ -306,6 +306,15 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="root-only (0600) file holding the 64-hex remote-write token",
     )
+    monitoring_install.add_argument(
+        "--operator-token-source",
+        type=Path,
+        default=None,
+        help=(
+            "root-only (0600) file holding the bearer token for your own "
+            "MONITORING_OPERATOR_REMOTE_WRITE_URL receiver, if it needs one"
+        ),
+    )
 
     return parser.parse_args()
 

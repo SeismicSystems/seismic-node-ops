@@ -56,9 +56,13 @@ The agent is used in `MONITORING_MODE=push` (the default). `install` downloads
 the checksum-pinned Prometheus release, renders
 `/etc/seismic/prometheus-agent/prometheus.yml` and `targets.json` from the
 `MONITORING_*` and service keys in `node.env`, and copies the token from a
-root-only (0600) handoff file; it never starts the service. `check` verifies the
-installed artifacts still match `node.env`. Monitoring commands read `node.env`
-without requiring usable node databases or keys. To stop using the agent, set
+root-only (0600) handoff file; it never starts the service. With
+`MONITORING_OPERATOR_REMOTE_WRITE_URL` set in `node.env` the rendered
+configuration carries a second remote-write destination, the operator's own
+Prometheus; `--operator-token-source` supplies its bearer token when needed, and
+a reinstall without the flag removes it again. `check` verifies the installed
+artifacts still match `node.env`. Monitoring commands read `node.env` without
+requiring usable node databases or keys. To stop using the agent, set
 `MONITORING_MODE` to `pull` or `off` and run `monitoring stop`; credentials and
 the WAL are preserved.
 

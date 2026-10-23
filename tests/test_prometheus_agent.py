@@ -109,6 +109,45 @@ class SettingsTests(unittest.TestCase):
                 f'role: "{role_overrides.get("SEISMIC_ROLE", "validator")}"', config
             )
 
+    def test_operator_remote_write_is_optional_and_rendered_second(self):
+        operator = "https://prom.operator.example:9443/api/v1/write"
+        # Absent by default: one remote_write entry, no operator token.
+        config = agent.render(agent.settings(env()))
+        self.assertEqual(config.count("- name:"), 1)
+        self.assertNotIn("name: operator", config)
+        self.assertNotIn("_PLACEHOLDER", config)
+
+        values = agent.settings(env(MONITORING_OPERATOR_REMOTE_WRITE_URL=operator))
+        self.assertEqual(values["operator_url"], operator)
+        without = agent.render(values)
+        self.assertEqual(without.count("- name:"), 2)
+        self.assertLess(without.index("name: seismic-monitoring"), without.index("name: operator"))
+        self.assertIn(f'url: "{operator}"', without)
+        self.assertNotIn(str(agent.OPERATOR_TOKEN), without)
+        with_token = agent.render(values, operator_token=True)
+        self.assertIn(f'credentials_file: "{agent.OPERATOR_TOKEN}"', with_token)
+        # Seismic's queue is untouched by the second entry.
+        self.assertEqual(with_token.count("retry_on_http_429: true"), 2)
+
+    def test_operator_remote_write_url_rules(self):
+        # Any HTTPS port is fine for the operator's own receiver, but the
+        # other rules still apply, and it must not duplicate Seismic's.
+        agent.settings(
+            env(MONITORING_OPERATOR_REMOTE_WRITE_URL="https://p.example:9090/api/v1/write")
+        )
+        for url in (
+            "http://p.example/api/v1/write",
+            "https://u:p@p.example/api/v1/write",
+            "https://p.example/api/v1/write?x=1",
+            "https://p.example/other",
+            "https://metrics.example/api/v1/write",
+        ):
+            with (
+                self.subTest(url=url),
+                self.assertRaises((agent.AgentError, nodeenv.NodeEnvError)),
+            ):
+                agent.settings(env(MONITORING_OPERATOR_REMOTE_WRITE_URL=url))
+
     def test_scrape_targets_follow_node_env(self):
         base = agent.scrape_targets(env())
         self.assertEqual(
@@ -270,6 +309,7 @@ class InstallationTests(unittest.TestCase):
             for key, value in {
                 "HOME": root / "config",
                 "TOKEN": root / "config/token",
+                "OPERATOR_TOKEN": root / "config/operator-token",
                 "CONFIG": root / "config/prometheus.yml",
                 "TARGETS": root / "config/targets.json",
                 "RELEASES": root / "releases",
@@ -316,6 +356,54 @@ class InstallationTests(unittest.TestCase):
             token.write_text(TOKEN)
             token.chmod(0o600)
             yield root, token, run
+
+    def test_operator_token_lifecycle(self):
+        operator = "https://prom.operator.example/api/v1/write"
+        with self.fixture() as (root, token, run):
+            config = env(
+                MONITORING_DATA_DIR=str(root / "wal"),
+                MONITORING_OPERATOR_REMOTE_WRITE_URL=operator,
+            )
+            # A token source without the URL in node.env is a mistake.
+            with self.assertRaisesRegex(agent.AgentError, "needs MONITORING_OPERATOR"):
+                agent.install(env(MONITORING_DATA_DIR=str(root / "wal")), token, token)
+            # URL without token: second remote_write, no credentials.
+            agent.install(config, token)
+            agent.BIN_DIR.mkdir(parents=True)
+            (agent.BIN_DIR / "prometheus").write_text("bin")
+            agent.CURRENT.symlink_to("3.5.0")
+            self.assertIn("name: operator", agent.CONFIG.read_text())
+            self.assertNotIn("operator-token", agent.CONFIG.read_text())
+            self.assertFalse(agent.OPERATOR_TOKEN.exists())
+            agent.check_existing(config)
+            # Add a token: operator tokens are opaque, not 64-hex; same
+            # handoff rules as Seismic's.
+            op = root / "op-handoff"
+            op.write_text("glsa_operator-token.value\n")
+            op.chmod(0o600)
+            with self.reinstall_bypass():
+                agent.install(config, token, op)
+            self.assertEqual(agent.OPERATOR_TOKEN.read_text(), "glsa_operator-token.value\n")
+            self.assertEqual(agent.OPERATOR_TOKEN.stat().st_mode & 0o777, 0o640)
+            self.assertIn(f'credentials_file: "{agent.OPERATOR_TOKEN}"', agent.CONFIG.read_text())
+            agent.check_existing(config)
+            op.chmod(0o640)
+            with self.reinstall_bypass(), self.assertRaisesRegex(agent.AgentError, "root-only"):
+                agent.install(config, token, op)
+            op.chmod(0o600)
+            op.write_text("two words\n")
+            with self.reinstall_bypass(), self.assertRaisesRegex(agent.AgentError, "single-line"):
+                agent.install(config, token, op)
+            # Reinstall without the token removes the stale credential and
+            # the reference to it.
+            with self.reinstall_bypass():
+                agent.install(config, token)
+            self.assertFalse(agent.OPERATOR_TOKEN.exists())
+            self.assertNotIn("operator-token", agent.CONFIG.read_text())
+            agent.check_existing(config)
+            # Dropping the URL from node.env is drift until reinstalled.
+            with self.assertRaisesRegex(agent.AgentError, "does not match"):
+                agent.check_existing(env(MONITORING_DATA_DIR=str(root / "wal")))
 
     @staticmethod
     def reinstall_bypass():
@@ -505,14 +593,24 @@ class LifecycleTests(unittest.TestCase):
                         token_source=Path("rel"),
                     )
                 )
+            with self.assertRaises(NodeError):
+                monitoring.handle(
+                    SimpleNamespace(
+                        monitoring_command="install",
+                        node_env=None,
+                        token_source=Path("/root/t"),
+                        operator_token_source=Path("rel"),
+                    )
+                )
             monitoring.handle(
                 SimpleNamespace(
                     monitoring_command="install",
                     node_env=None,
                     token_source=Path("/root/t"),
+                    operator_token_source=Path("/root/op"),
                 )
             )
-        install.assert_called_once()
+        install.assert_called_once_with(mock.ANY, Path("/root/t"), Path("/root/op"))
 
     def test_disabled_status_is_informational_and_start_refuses(self):
         with (

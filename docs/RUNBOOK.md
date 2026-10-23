@@ -622,11 +622,12 @@ what is public on the node in each (✔ valid, ✘ rejected by `--check`):
 The rest of this section is push mode. Its CLI is `seismic-node monitoring` and
 its settings in `node.env` are:
 
-| Key                           | Set to                                                                                                                                        |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MONITORING_NODE_NAME`        | The node label agreed with Seismic operations; they register the token against it                                                             |
-| `MONITORING_REMOTE_WRITE_URL` | The HTTPS remote-write endpoint from Seismic operations                                                                                       |
-| `MONITORING_DATA_DIR`         | The agent's WAL directory, owned by its own `seismic-prometheus` account and outside node state (default `/var/lib/seismic-prometheus-agent`) |
+| Key                                    | Set to                                                                                                                                                           |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MONITORING_NODE_NAME`                 | This node's name in Seismic's Prometheus (the `node` label on every series). Must be exactly the name Seismic operations registered the node and its token under |
+| `MONITORING_REMOTE_WRITE_URL`          | The HTTPS remote-write endpoint from Seismic operations                                                                                                          |
+| `MONITORING_DATA_DIR`                  | The agent's WAL directory, owned by its own `seismic-prometheus` account and outside node state (default `/var/lib/seismic-prometheus-agent`)                    |
+| `MONITORING_OPERATOR_REMOTE_WRITE_URL` | Optional: a second remote-write endpoint you run yourself; see [Seeing your own metrics](#seeing-your-own-metrics)                                               |
 
 The token is the bearer credential the agent presents on every remote-write
 request; Seismic operations issues one per node (64 hex characters) and
@@ -651,6 +652,33 @@ requirement. Its WAL keeps at least 5 minutes and at most 6 hours of unsent
 samples — an outage longer than that loses data, so watch free space. Seismic
 operations must register the node as a push source before the agent starts, and
 stop any central pull of the same node so series are not collected twice.
+
+#### Seeing your own metrics
+
+The agent keeps nothing locally: it has no storage and no query API, so in push
+mode there is nothing on the node for a Grafana to read. To see your node's
+metrics yourself, have the agent deliver the same samples to a Prometheus you
+run:
+
+1. Run a Prometheus (not on the validator) with
+   `--web.enable-remote-write-receiver`, behind HTTPS, and point your Grafana at
+   it.
+2. Set
+   `MONITORING_OPERATOR_REMOTE_WRITE_URL=https://<your host>[:port]/api/v1/write`
+   in `node.env`.
+3. If your receiver requires a bearer token, put it in a root-only file and pass
+   `--operator-token-source <file>` to `monitoring install`; omit the flag for a
+   receiver that authenticates another way.
+4. Rerun
+   `seismic-node monitoring install --token-source /root/monitoring-token [--operator-token-source /root/operator-token]`
+   and restart the agent.
+
+The agent then forwards every sample to both destinations from separate queues:
+if your receiver is down, delivery to Seismic continues, and the other way
+round. Your Prometheus gets the same series and labels Seismic gets, so a
+dashboard built against either works against both. To stop, clear the key, rerun
+`monitoring install` without `--operator-token-source`, and restart the agent;
+the second destination and its token are removed.
 
 ### 3.13 Pre-start verification
 

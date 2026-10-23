@@ -287,6 +287,10 @@ def _https_url(value: str, key: str) -> str:
     return value
 
 
+def _optional_https_url(value: str, key: str) -> str:
+    return _https_url(value, key) if value else value
+
+
 def _optional_url(value: str, key: str) -> str:
     if value and not re.fullmatch(r"(https?|enode)://[^\s]+", value):
         raise NodeEnvError(f"node.env {key} must be a URL or empty")
@@ -419,6 +423,7 @@ SCHEMA: dict[str, Field] = {
     "MONITORING_MODE": Field(_enum(MONITORING_MODES)),
     "MONITORING_NODE_NAME": Field(_string, monitoring("push")),
     "MONITORING_REMOTE_WRITE_URL": Field(_https_url, monitoring("push")),
+    "MONITORING_OPERATOR_REMOTE_WRITE_URL": Field(_optional_https_url, monitoring("push")),
     "MONITORING_DATA_DIR": Field(_path, monitoring("push")),
 }
 

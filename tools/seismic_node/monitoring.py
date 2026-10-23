@@ -52,7 +52,10 @@ def handle(args: Any) -> None:
     command = args.monitoring_command
     if command == "install":
         fsutil.require_absolute(args.token_source, "Token source")
-        agent.install(env, args.token_source)
+        operator_token_source = getattr(args, "operator_token_source", None)
+        if operator_token_source is not None:
+            fsutil.require_absolute(operator_token_source, "Operator token source")
+        agent.install(env, args.token_source, operator_token_source)
         return
     if command == "check":
         agent.check_existing(env)

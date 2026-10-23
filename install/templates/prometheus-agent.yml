@@ -46,3 +46,7 @@ remote_write:
       min_backoff: 1s
       max_backoff: 30s
       retry_on_http_429: true
+  # A second destination the operator runs, rendered only when
+  # MONITORING_OPERATOR_REMOTE_WRITE_URL is set. Same samples, own queue:
+  # an outage on one side never blocks the other.
+OPERATOR_REMOTE_WRITE_PLACEHOLDER
