@@ -833,6 +833,47 @@ sudo "$REPO/tools/seismic-node.py" monitoring status|start|stop|check
 systemd reads `node.env` at each unit start, so a change takes effect on the
 next start of that unit and not before.
 
+### Switching `MONITORING_MODE`
+
+This is the one change that touches both the proxy and the agent and needs a
+handover with Seismic operations, who collect each node either by push or by
+pull, never both, or every series arrives twice. Agree the switch with them
+first, then:
+
+**`push` → `pull`**
+
+```bash
+sudo "$REPO/tools/seismic-node.py" monitoring stop
+# edit /etc/seismic/node.env: MONITORING_MODE=pull
+(cd "$REPO/tools" && sudo python3 -m seismic_node.nodeenv --check)
+sudo "$REPO/install/install.sh" --config /etc/seismic/node.env --only tls
+sudo openresty -t && sudo systemctl reload openresty
+sudo "$REPO/tools/generate-openresty-jwt.sh" --ttl-seconds 15552000 --subject seismic-ops
+```
+
+The `tls` step renders the `/prom-*` routes and, on a `custodian-only` host that
+had none before, creates the JWT secret at `OPENRESTY_JWT_SECRET_PATH`. Hand the
+printed token and `https://DOMAIN` to Seismic operations; they register the pull
+target and retire the push one. The agent's token and WAL stay on disk unused.
+With `TLS_MODE=external`, add the JWT-checked routes to your own proxy instead
+of running the `tls` step ([3.12](#312-monitoring)).
+
+**`pull` → `push`**
+
+```bash
+# edit /etc/seismic/node.env: MONITORING_MODE=push and the MONITORING_* keys
+(cd "$REPO/tools" && sudo python3 -m seismic_node.nodeenv --check)
+sudo "$REPO/tools/seismic-node.py" monitoring install --token-source /root/monitoring-token
+sudo "$REPO/install/install.sh" --config /etc/seismic/node.env --only tls
+sudo openresty -t && sudo systemctl reload openresty
+sudo "$REPO/tools/seismic-node.py" monitoring start
+```
+
+The `tls` step removes the `/prom-*` routes (the JWT secret remains for any
+other protected routes). Tell Seismic operations once the agent is running so
+they retire the pull target. With `TLS_MODE=external`, remove the metrics routes
+from your own proxy instead.
+
 ## 7. Running as a different account
 
 The service account is fixed to `seismic` in the unit files and in the Custodian

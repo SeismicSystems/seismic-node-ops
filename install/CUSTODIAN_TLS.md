@@ -16,10 +16,15 @@ none** (`TLS_MODE=disabled`): they only need outbound access to their parent.
 | `custodian-only` | Custodian only                                                |
 | `full`           | Custodian, RPC, Summit, and the other node routes             |
 
+With `MONITORING_MODE=pull` both managed modes additionally publish the
+JWT-protected `/prom-*` metrics routes (runbook 3.12).
+
 Managed modes configure automatic certificates and write the entire OpenResty
-main configuration. Custodian-only mode skips JWT setup. Custodian uses protocol
-signatures, not proxy JWTs, to authorize operations. Its HTTPS frontend is
-Internet-reachable without a source-IP allowlist.
+main configuration. The JWT secret and handlers are set up whenever a
+JWT-protected route exists: always in `full`, and in `custodian-only` only with
+`MONITORING_MODE=pull`. Custodian uses protocol signatures, not proxy JWTs, to
+authorize operations. Its HTTPS frontend is Internet-reachable without a
+source-IP allowlist.
 
 ## Endpoint
 
