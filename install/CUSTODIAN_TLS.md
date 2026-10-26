@@ -83,14 +83,19 @@ policy.
 | -------------------------------------- | ---------------------------------------------------------- | --------------------------------- |
 | `templates/proxy/nginx/custodian.conf` | plain nginx: a server block plus the rate/connection zones | yours (certbot, acme.sh); no ACME |
 | `templates/proxy/caddy/Caddyfile`      | Caddy 2                                                    | automatic, built in               |
+| `templates/proxy/envoy/envoy.yaml`     | Envoy 1.40+ (static bootstrap, no control plane)           | yours (certbot, acme.sh); no ACME |
 
-Both implement the rules above and are tested against a live backend: method,
-query, `Content-Type`, `Content-Length`, chunked and `Upgrade` rejections, the
-64 KiB cap (inclusive), prefix 404s, plain-HTTP refusal,
-`Cache-Control: no-store` on responses, and no access logging of the route. Each
-file's header lists what it cannot match exactly: nginx has no single total
-upload deadline, and Caddy has no built-in rate limiting or concurrency caps.
-Envoy is not provided.
+All three implement the rules above and are tested against a live backend:
+method, query, `Content-Type`, `Content-Length`, chunked and `Upgrade`
+rejections, the 64 KiB cap (inclusive), prefix 404s, plain-HTTP refusal,
+`Cache-Control: no-store` on responses, no access logging of the route, and no
+client header reaching the backend. Each file's header lists what it cannot
+match exactly: nginx has no single total upload deadline, Caddy has no built-in
+rate limiting or concurrency caps, and Envoy's built-in rate limiter cannot key
+on the client address, so its per-IP limits need the external rate limit
+service. None of them enables a compressor or decompressor; the route takes
+fixed-length CBOR only, and Envoy's decompressors in particular are where its
+remotely reachable memory-safety bugs have been (most recently CVE-2026-111497).
 
 ## Deployment checklist
 

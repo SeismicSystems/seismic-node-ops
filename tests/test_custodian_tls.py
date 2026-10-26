@@ -377,6 +377,29 @@ class ReferenceProxyTests(unittest.TestCase):
             "lb_try_duration 0",
             "http://DOMAIN",
         ],
+        "envoy/envoy.yaml": [
+            "path: /custodian/v1/council",
+            "direct_response: { status: 405 }",
+            "direct_response: { status: 415 }",
+            "direct_response: { status: 411 }",
+            "direct_response: { status: 400 }",
+            "direct_response: { status: 404 }",
+            "max_request_bytes: 65536",
+            "request_timeout: 5s",
+            "prefix_rewrite: /v1/council",
+            "host_rewrite_literal: 127.0.0.1",
+            "suppress_envoy_headers: true",
+            "skip_xff_append: true",
+            "generate_request_id: false",
+            "retry_policy: { num_retries: 0 }",
+            "connect_timeout: 1s",
+            "max_requests_per_connection: 1",
+            "max_connections: 16",
+            "max_tokens: 20",
+            "tokens_per_fill: 20",
+            "key: Cache-Control, value: no-store",
+            "port_value: 80",
+        ],
     }
 
     def test_references_carry_every_rule_and_both_placeholders(self):
@@ -388,6 +411,23 @@ class ReferenceProxyTests(unittest.TestCase):
                 self.assertIn("DOMAIN", text)
                 self.assertIn("CUSTODIAN_COUNCIL_PORT", text)
                 self.assertNotIn("_PLACEHOLDER", text)
+
+    def test_envoy_reference_has_no_access_log_and_strips_client_headers(self):
+        text = (PROXY_DIR / "envoy/envoy.yaml").read_text()
+        self.assertNotIn("access_log", text)
+        # No (de)compressor: the route takes fixed-length CBOR only, and
+        # Envoy's decompressors are its recurring remote memory-safety bugs.
+        self.assertNotIn("filters.http.compressor", text)
+        self.assertNotIn("filters.http.decompressor", text)
+        # The Lua filter keeps only the pseudo-headers, Content-Length and
+        # the headers the rejection routes match on; the route then replaces
+        # content-type and drops x-forwarded-proto.
+        self.assertIn('["content-length"] = true', text)
+        self.assertIn("headers:remove(name)", text)
+        self.assertIn("request_headers_to_remove: [x-forwarded-proto]", text)
+        self.assertIn("key: Content-Type, value: application/cbor", text)
+        for forbidden in ("request_headers_to_add", "x-forwarded-for"):
+            self.assertNotIn(forbidden, text.split("name: http\n")[1])
 
     def test_limits_match_the_managed_openresty_policy(self):
         def squash(text: str) -> str:
