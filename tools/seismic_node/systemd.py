@@ -7,7 +7,8 @@ later step fails. Explicit shutdown stops services in reverse order.
 
 ``systemctl start`` and ``systemctl stop`` block until the unit reaches its
 target state or fails, so no polling loop is needed; ``Restart=`` is inhibited
-by an administrative stop, so stopping is always quiescent.
+by an administrative stop, so stopping is always quiescent. For Type=simple,
+the start target is reached after fork, not successful exec or readiness.
 """
 
 from __future__ import annotations
@@ -155,10 +156,11 @@ def start_service(
 ) -> bool:
     """Start one stopped service; return whether a start was issued.
 
-    ``systemctl start`` returns once the unit is active or has failed. For
-    Type=simple that means the process was exec'd; readiness is the caller's
-    concern. ``on_start_requested`` runs as soon as the request is issued so
-    the caller owns cleanup even if the start itself fails.
+    ``systemctl start`` waits for the start job, not application readiness.
+    Type=simple considers startup complete after fork, before exec; even the
+    immediate status check below can miss a later exec or initialization failure.
+    Readiness is the caller's concern. ``on_start_requested`` runs before the
+    request is issued so the caller owns cleanup even if the start itself fails.
     """
     before = require_service(name)
     if before.running:

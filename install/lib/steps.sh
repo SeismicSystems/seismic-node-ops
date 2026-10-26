@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Installation steps for install.sh, one function per runbook section. Every
-# function reads only node.env keys (sourced by the installer) and the
+# function reads only node.env keys (exported by the Python parser) and the
 # installer's own paths; none prompts, and none starts a service. Steps are
 # idempotent: a rerun verifies what exists and creates only what is missing.
 
@@ -206,7 +206,7 @@ step_units() {
         success "Units unchanged; systemd reloaded."
     fi
     systemd-analyze verify "$UNIT_DIR"/seismic-*.service >>"$LOG_FILE" 2>&1 \
-        || warn "systemd-analyze verify reported issues; see $LOG_FILE (missing binaries are expected before step 'binaries')."
+        || warn "systemd-analyze verify reported issues; see $LOG_FILE (for a partial --only run, install binaries first; disabled optional services may lack binaries)."
 }
 
 # --- 3.4 binaries ------------------------------------------------------------

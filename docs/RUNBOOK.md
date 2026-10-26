@@ -97,7 +97,7 @@ This is the contract every step below establishes. All paths except those under
 | `/etc/seismic/checkpoint-start.toml`     | `0644` | Written by `seismic-node checkpoint install`. Its presence allows the `*-checkpoint` units. |
 | `/etc/seismic/weak-subjectivity.toml`    | `0600` | Trust anchor named by the above; obtained from an independent source.                       |
 | `/etc/seismic/prometheus-agent/`         | `0750` | Agent config and token, group `seismic-prometheus`.                                         |
-| `/etc/seismic/openresty-jwt-secret`      | `0600` | JWT secret for protected OpenResty routes (full mode only).                                 |
+| `/etc/seismic/openresty-jwt-secret`      | `0640` | `root:nogroup`; JWT secret for full mode or Custodian-only with pull monitoring.            |
 
 ### Services (`/etc/systemd/system`, shipped verbatim from `install/templates/systemd/`)
 
@@ -246,7 +246,7 @@ sudo install -d -o seismic -g seismic -m 0750 /persistence/checkpoints
 
 _Installer step: `binaries`._
 
-Four binaries are required on every node and two more when the checkpointer is
+Three binaries are required on every node and two more when the checkpointer is
 enabled. The versions are the `*_VERSION` keys in `node.env`. The values in
 `node.env.example` are the set released and tested together; they move together,
 and a component from a different release is untested against the others. The
@@ -787,10 +787,15 @@ or, to start from a checkpoint, run `checkpoint install` first (see
 systemctl status 'seismic-*'
 journalctl -u seismic-reth -u seismic-summit -f
 curl -s 127.0.0.1:9001/metrics | grep -E '^reth_sync_'        # Reth height
-curl -s 127.0.0.1:9090/metrics | grep -E 'peers|height' | head  # Summit
+curl -s 127.0.0.1:9090/ | grep -E 'peers|height' | head        # Summit
 curl -s -X POST 127.0.0.1:8545 -H 'content-type: application/json' \
      -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'
 ```
+
+The units use `Type=simple`: a successful start and an immediate `active` state
+do not guarantee successful `exec` or application readiness. Check the journals
+and health endpoints; execution or initialization can still fail after the CLI
+returns.
 
 Expect Reth to report peers within a minute and Summit to log participation once
 synced. Every host must use an identical genesis; a digest mismatch shows up as

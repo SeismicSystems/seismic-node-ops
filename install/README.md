@@ -75,3 +75,30 @@ checks. Supplied files are uploaded unchanged.
 The harness needs Python 3 locally and validates the config before any sync,
 upload, or SSH command. `tests/test_vm_harness.py` exercises this flow with
 stubbed transports, without contacting a VM.
+
+### Deployment validation (disposable Ubuntu 24.04 VM)
+
+The offline tests and install-only harness do **not** validate actual systemd
+sandboxing or application readiness. Before deployment, use an explicitly agreed
+disposable Ubuntu 24.04 target, never a production node or the developer host,
+and verify:
+
+- Fresh validator and observer installations; each role's start, stop, restart,
+  and installer rerun. Observer startup needs a test parent and provisioned
+  parent node key (runbook 3.7); the generated harness config covers neither.
+- Source-built Reth with `CHECKPOINTER_ENABLED=true`: `mdbx_copy` is installed
+  and source checkout/build reruns preserve genuine local edits.
+- The journal has no sandbox-related failures: interface discovery with
+  `AF_NETLINK`, the syscall filter with jemalloc, and writes to configured data,
+  key, socket, and checkpoint paths all work.
+- Runtime paths chosen by the operator are accessible with `ProtectHome=yes`; do
+  not put binaries, configuration, or state under `/home` without checking them.
+  A source-build Rust toolchain is an installer input, not a runtime path.
+- Summit exports working disk metrics (including its `/proc/mounts` access);
+  scrape Summit at `http://127.0.0.1:9090/` and Reth at
+  `http://127.0.0.1:9001/metrics` as in runbook section 4.
+- `Type=simple` start success is not treated as readiness: inspect journals and
+  application health after startup, not just the immediate unit state.
+
+Record the VM image, config, tested revisions, commands, and results. These
+checks remain deployment prerequisites until they have actually run.
