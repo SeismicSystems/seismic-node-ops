@@ -4,10 +4,11 @@ The agent runs in ``MONITORING_MODE=push`` and its settings are the
 ``MONITORING_*`` keys in /etc/seismic/node.env; this module owns only the
 artifacts derived from them: the pinned Prometheus release, the rendered
 ``prometheus.yml``, the ``targets.json`` listing the node's metrics endpoints,
-and the bearer token(s) copied from root-only handoff files: Seismic's, and
-optionally the operator's own for a second remote-write destination. The
-static ``seismic-prometheus-agent.service`` unit is installed with every other
-unit and reads ``MONITORING_DATA_DIR`` itself.
+and the bearer token(s) copied from root-only handoff files. A validator pushes
+to Seismic (token from Seismic operations) and optionally to the operator's own
+Prometheus; an observer pushes to the operator's Prometheus only. The static
+``seismic-prometheus-agent.service`` unit is installed with every other unit
+and reads ``MONITORING_DATA_DIR`` itself.
 
 No action here starts a service. Disabling is an edit to node.env followed by
 ``seismic-node monitoring stop``; credentials and the WAL are preserved.
@@ -80,19 +81,26 @@ def settings(env: nodeenv.NodeEnv) -> dict[str, str]:
         raise AgentError(
             "MONITORING_NODE_NAME must be a lowercase hostname-style label"
         )
-    url = env.string("MONITORING_REMOTE_WRITE_URL")
-    if not _valid_remote_write_url(url):
+    # Only validators push to Seismic; the schema drops the key for observers.
+    url = (
+        env.string("MONITORING_REMOTE_WRITE_URL")
+        if env.applies("MONITORING_REMOTE_WRITE_URL")
+        else ""
+    )
+    if url and not _valid_remote_write_url(url):
         raise AgentError(
             "MONITORING_REMOTE_WRITE_URL requires HTTPS port 443 and /api/v1/write, "
             "without credentials, query or fragment"
         )
     operator_url = env.string("MONITORING_OPERATOR_REMOTE_WRITE_URL")
+    if not url and not operator_url:
+        raise AgentError("The agent has no remote-write destination in node.env")
     if operator_url and not _valid_remote_write_url(operator_url, any_port=True):
         raise AgentError(
             "MONITORING_OPERATOR_REMOTE_WRITE_URL requires HTTPS and /api/v1/write, "
             "without credentials, query or fragment"
         )
-    if operator_url == url:
+    if operator_url and operator_url == url:
         raise AgentError(
             "MONITORING_OPERATOR_REMOTE_WRITE_URL must differ from MONITORING_REMOTE_WRITE_URL"
         )
@@ -184,34 +192,39 @@ def render_targets(env: nodeenv.NodeEnv) -> str:
     return json.dumps(scrape_targets(env), indent=2) + "\n"
 
 
-def render_operator_remote_write(values: dict[str, str], *, token: bool) -> str:
-    """The optional second remote_write entry; empty when not configured."""
-    url = values["operator_url"]
-    if not url:
-        return ""
-    lines = [
-        "  - name: operator",
-        f'    url: "{url}"',
-    ]
-    if token:
-        lines += [
-            "    authorization:",
-            "      type: Bearer",
-            f'      credentials_file: "{OPERATOR_TOKEN}"',
-        ]
-    lines += [
-        "    remote_timeout: 30s",
-        "    queue_config:",
-        "      min_shards: 1",
-        "      max_shards: 2",
-        "      capacity: 10000",
-        "      max_samples_per_send: 2000",
-        "      batch_send_deadline: 5s",
-        "      min_backoff: 1s",
-        "      max_backoff: 30s",
-        "      retry_on_http_429: true",
-    ]
-    return "\n".join(lines) + "\n"
+QUEUE = """    remote_timeout: 30s
+    queue_config:
+      min_shards: 1
+      max_shards: 2
+      capacity: 10000
+      max_samples_per_send: 2000
+      batch_send_deadline: 5s
+      min_backoff: 1s
+      max_backoff: 30s
+      retry_on_http_429: true
+"""
+
+
+def _remote_write(name: str, url: str, token: Path | None) -> str:
+    entry = f'  - name: {name}\n    url: "{url}"\n'
+    if token is not None:
+        entry += f'    authorization:\n      type: Bearer\n      credentials_file: "{token}"\n'
+    return entry + QUEUE
+
+
+def render_remote_writes(values: dict[str, str], *, operator_token: bool) -> str:
+    """The remote_write list: Seismic's receiver when the node pushes to it
+    (validators), then the operator's own Prometheus when configured."""
+    entries = ""
+    if values["url"]:
+        entries += _remote_write("seismic-monitoring", values["url"], TOKEN)
+    if values["operator_url"]:
+        entries += _remote_write(
+            "operator",
+            values["operator_url"],
+            OPERATOR_TOKEN if operator_token else None,
+        )
+    return entries
 
 
 def render(values: dict[str, str], *, operator_token: bool = False) -> str:
@@ -219,10 +232,8 @@ def render(values: dict[str, str], *, operator_token: bool = False) -> str:
     for key, value in {
         "NODE_PLACEHOLDER": values["node"],
         "ROLE_PLACEHOLDER": values["role"],
-        "URL_PLACEHOLDER": f'"{values["url"]}"',
-        "TOKEN_PLACEHOLDER": f'"{TOKEN}"',
-        "OPERATOR_REMOTE_WRITE_PLACEHOLDER\n": render_operator_remote_write(
-            values, token=operator_token
+        "REMOTE_WRITE_PLACEHOLDER\n": render_remote_writes(
+            values, operator_token=operator_token
         ),
     }.items():
         config = config.replace(key, value)
@@ -370,10 +381,21 @@ def require_stopped() -> None:
 
 
 def install(
-    env: nodeenv.NodeEnv, token_source: Path, operator_token_source: Path | None = None
+    env: nodeenv.NodeEnv,
+    token_source: Path | None,
+    operator_token_source: Path | None = None,
 ) -> None:
     """Install or update the agent from node.env; nothing is started."""
     values = settings(env)
+    if values["url"] and token_source is None:
+        raise AgentError(
+            "--token-source is required: this node pushes to Seismic and needs "
+            "the token Seismic operations issued"
+        )
+    if not values["url"] and token_source is not None:
+        raise AgentError(
+            "--token-source is not used here: observers do not push to Seismic"
+        )
     if operator_token_source is not None and not values["operator_url"]:
         raise AgentError(
             "--operator-token-source needs MONITORING_OPERATOR_REMOTE_WRITE_URL in node.env"
@@ -385,7 +407,7 @@ def install(
                 raise AgentError(
                     "Token handoff must be outside node data and key directories"
                 )
-    token = read_token(token_source, handoff=True)
+    token = None if token_source is None else read_token(token_source, handoff=True)
     operator_token = (
         None
         if operator_token_source is None
@@ -424,14 +446,14 @@ def install(
             raise AgentError(
                 "Generated Prometheus agent configuration did not validate"
             )
-        atomic_write(TOKEN, token, 0o640, account.pw_gid)
-        if operator_token is not None:
-            atomic_write(OPERATOR_TOKEN, operator_token, 0o640, account.pw_gid)
-        elif OPERATOR_TOKEN.exists() or OPERATOR_TOKEN.is_symlink():
-            # The rendered config no longer references it; do not leave a
-            # stale credential behind.
-            fsutil.require_root_managed_file(OPERATOR_TOKEN, "Operator token")
-            OPERATOR_TOKEN.unlink()
+        # Write the tokens the rendered config references; remove any the
+        # config no longer references so no stale credential is left behind.
+        for path, data in ((TOKEN, token), (OPERATOR_TOKEN, operator_token)):
+            if data is not None:
+                atomic_write(path, data, 0o640, account.pw_gid)
+            elif path.exists() or path.is_symlink():
+                fsutil.require_root_managed_file(path, "Agent token")
+                path.unlink()
         atomic_write(TARGETS, targets.encode(), 0o640, account.pw_gid)
         atomic_write(CONFIG, config.encode(), 0o640, account.pw_gid)
     print("Prometheus Agent installed; no services were started.")
@@ -440,7 +462,8 @@ def install(
 def check_existing(env: nodeenv.NodeEnv) -> None:
     """Verify the installed artifacts match node.env."""
     values = settings(env)
-    read_token(TOKEN, handoff=False)
+    if values["url"]:
+        read_token(TOKEN, handoff=False)
     operator_token = bool(values["operator_url"]) and OPERATOR_TOKEN.exists()
     if operator_token:
         read_token(OPERATOR_TOKEN, handoff=False, operator=True)

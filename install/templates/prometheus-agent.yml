@@ -30,23 +30,10 @@ scrape_configs:
           instance: "NODE_PLACEHOLDER"
           role: "ROLE_PLACEHOLDER"
 
+# Destinations, rendered by `seismic-node monitoring install` from node.env:
+# Seismic's receiver for validators (bearer token from Seismic operations),
+# and optionally the operator's own Prometheus. Each entry has its own queue,
+# so an outage on one side never blocks the other. Observers push to the
+# operator's Prometheus only.
 remote_write:
-  - name: seismic-monitoring
-    url: URL_PLACEHOLDER
-    authorization:
-      type: Bearer
-      credentials_file: TOKEN_PLACEHOLDER
-    remote_timeout: 30s
-    queue_config:
-      min_shards: 1
-      max_shards: 2
-      capacity: 10000
-      max_samples_per_send: 2000
-      batch_send_deadline: 5s
-      min_backoff: 1s
-      max_backoff: 30s
-      retry_on_http_429: true
-  # A second destination the operator runs, rendered only when
-  # MONITORING_OPERATOR_REMOTE_WRITE_URL is set. Same samples, own queue:
-  # an outage on one side never blocks the other.
-OPERATOR_REMOTE_WRITE_PLACEHOLDER
+REMOTE_WRITE_PLACEHOLDER

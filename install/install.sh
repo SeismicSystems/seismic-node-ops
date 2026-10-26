@@ -122,6 +122,15 @@ validate_config() {
     fi
     # shellcheck disable=SC1090
     set -a && source "$CONFIG" && set +a
+    # An empty MONITORING_MODE is the role's default, as nodeenv resolves it:
+    # validators push to Seismic, observers are not monitored.
+    if [[ -z "${MONITORING_MODE:-}" ]]; then
+        case "$SEISMIC_ROLE" in
+            validator) MONITORING_MODE=push ;;
+            *) MONITORING_MODE=off ;;
+        esac
+        export MONITORING_MODE
+    fi
     success "Role: $SEISMIC_ROLE"
 }
 
@@ -172,7 +181,12 @@ print_next_steps() {
     fi
     if [[ "$MONITORING_MODE" == push ]]; then
         _out "Prometheus Agent (runbook 3.12):"
-        _out "  sudo $TOOLS_DIR/seismic-node.py monitoring install --token-source /root/monitoring-token"
+        if [[ "$SEISMIC_ROLE" == validator ]]; then
+            _out "  sudo $TOOLS_DIR/seismic-node.py monitoring install --token-source /root/monitoring-token"
+        else
+            # Observers push to the operator's own Prometheus only.
+            _out "  sudo $TOOLS_DIR/seismic-node.py monitoring install [--operator-token-source /root/operator-token]"
+        fi
     fi
 }
 

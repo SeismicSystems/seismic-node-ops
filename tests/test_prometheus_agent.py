@@ -89,25 +89,40 @@ class SettingsTests(unittest.TestCase):
             ):
                 agent.settings(env(MONITORING_DATA_DIR=data_dir))
 
-    def test_render_both_roles_without_placeholders(self):
-        for role_overrides in (
-            {},
-            {
-                "SEISMIC_ROLE": "observer",
-                "OBSERVER_PARENT_NODE_PUBLIC_KEY": "ab" * 32,
-                "OBSERVER_INDEX": "1",
-                "OBSERVER_PUBLIC_ADDRESS": "203.0.113.1:18551",
-                "OBSERVER_P2P_PORT": "18551",
-                "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
-            },
-        ):
-            config = agent.render(agent.settings(env(**role_overrides)))
-            self.assertNotIn("_PLACEHOLDER", config)
-            self.assertIn(f'credentials_file: "{agent.TOKEN}"', config)
-            self.assertIn('url: "https://metrics.example/api/v1/write"', config)
-            self.assertIn(
-                f'role: "{role_overrides.get("SEISMIC_ROLE", "validator")}"', config
+    def test_render_validator_without_placeholders(self):
+        config = agent.render(agent.settings(env()))
+        self.assertNotIn("_PLACEHOLDER", config)
+        self.assertIn(f'credentials_file: "{agent.TOKEN}"', config)
+        self.assertIn('url: "https://metrics.example/api/v1/write"', config)
+        self.assertIn('role: "validator"', config)
+
+    def test_observer_pushes_to_the_operator_only(self):
+        observer = {
+            "SEISMIC_ROLE": "observer",
+            "OBSERVER_PARENT_NODE_PUBLIC_KEY": "ab" * 32,
+            "OBSERVER_INDEX": "1",
+            "OBSERVER_PUBLIC_ADDRESS": "203.0.113.1:18551",
+            "OBSERVER_P2P_PORT": "18551",
+            "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
+        }
+        # node.env validation requires the operator destination for observers.
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "never push to Seismic"):
+            env(**observer)
+        values = agent.settings(
+            env(
+                **observer,
+                MONITORING_OPERATOR_REMOTE_WRITE_URL="https://prom.op.example/api/v1/write",
             )
+        )
+        self.assertEqual(values["url"], "")
+        self.assertEqual(values["role"], "observer")
+        config = agent.render(values)
+        self.assertEqual(config.count("- name:"), 1)
+        self.assertIn("name: operator", config)
+        self.assertNotIn("seismic-monitoring", config)
+        self.assertNotIn(str(agent.TOKEN), config)
+        self.assertIn('role: "observer"', config)
+        self.assertNotIn("_PLACEHOLDER", config)
 
     def test_operator_remote_write_is_optional_and_rendered_second(self):
         operator = "https://prom.operator.example:9443/api/v1/write"
@@ -356,6 +371,42 @@ class InstallationTests(unittest.TestCase):
             token.write_text(TOKEN)
             token.chmod(0o600)
             yield root, token, run
+
+    def test_observer_install_takes_no_seismic_token(self):
+        observer = {
+            "SEISMIC_ROLE": "observer",
+            "OBSERVER_PARENT_NODE_PUBLIC_KEY": "ab" * 32,
+            "OBSERVER_INDEX": "1",
+            "OBSERVER_PUBLIC_ADDRESS": "203.0.113.1:18551",
+            "OBSERVER_P2P_PORT": "18551",
+            "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
+            "MONITORING_OPERATOR_REMOTE_WRITE_URL": "https://prom.op.example/api/v1/write",
+        }
+        with self.fixture() as (root, token, run):
+            config = env(**observer, MONITORING_DATA_DIR=str(root / "wal"))
+            # A validator must give Seismic's token; an observer must not.
+            with self.assertRaisesRegex(agent.AgentError, "--token-source is required"):
+                agent.install(env(MONITORING_DATA_DIR=str(root / "wal")), None)
+            with self.assertRaisesRegex(agent.AgentError, "do not push to Seismic"):
+                agent.install(config, token)
+            op = root / "op-handoff"
+            op.write_text("operator-token\n")
+            op.chmod(0o600)
+            agent.install(config, None, op)
+            agent.BIN_DIR.mkdir(parents=True)
+            (agent.BIN_DIR / "prometheus").write_text("bin")
+            agent.CURRENT.symlink_to("3.5.0")
+            rendered = agent.CONFIG.read_text()
+            self.assertNotIn("seismic-monitoring", rendered)
+            self.assertIn(f'credentials_file: "{agent.OPERATOR_TOKEN}"', rendered)
+            self.assertFalse(agent.TOKEN.exists())
+            agent.check_existing(config)
+            # A Seismic token left over from a validator install is removed.
+            agent.TOKEN.write_text(TOKEN + "\n")
+            with self.reinstall_bypass():
+                agent.install(config, None, op)
+            self.assertFalse(agent.TOKEN.exists())
+            agent.check_existing(config)
 
     def test_operator_token_lifecycle(self):
         operator = "https://prom.operator.example/api/v1/write"
@@ -610,7 +661,19 @@ class LifecycleTests(unittest.TestCase):
                     operator_token_source=Path("/root/op"),
                 )
             )
-        install.assert_called_once_with(mock.ANY, Path("/root/t"), Path("/root/op"))
+            # Observers give no Seismic token; the handler passes None through.
+            monitoring.handle(
+                SimpleNamespace(
+                    monitoring_command="install",
+                    node_env=None,
+                    token_source=None,
+                    operator_token_source=Path("/root/op"),
+                )
+            )
+        self.assertEqual(
+            [c.args[1:] for c in install.call_args_list],
+            [(Path("/root/t"), Path("/root/op")), (None, Path("/root/op"))],
+        )
 
     def test_disabled_status_is_informational_and_start_refuses(self):
         with (

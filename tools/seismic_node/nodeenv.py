@@ -79,10 +79,13 @@ ROLES = ("validator", "observer")
 INSTALL_METHODS = ("download", "prebuilt", "source", "deferred")
 TLS_MODES = ("disabled", "custodian-only", "full", "external")
 MANAGED_TLS_MODES = ("custodian-only", "full")
-# How Seismic operations receives this node's metrics: nothing leaves the
-# node, the Prometheus Agent pushes them, or the HTTPS proxy publishes
-# JWT-protected /prom-* routes for Seismic to pull.
+# How metrics leave the node: not at all, pushed by the Prometheus Agent, or
+# published as JWT-protected /prom-* routes for Seismic to pull. Seismic
+# monitors validators only; an observer's agent can push to the operator's own
+# Prometheus but never to Seismic, and observers cannot use pull. An empty
+# value selects the role's default.
 MONITORING_MODES = ("off", "push", "pull")
+MONITORING_DEFAULTS = {"validator": "push", "observer": "off"}
 # Pull needs an HTTPS proxy on the node: managed OpenResty (either mode; the
 # /prom-* routes do not depend on the node's RPC being public) or the
 # operator's own proxy in `external` mode, which then has to enforce the same
@@ -331,6 +334,10 @@ def observer(raw: dict[str, str]) -> bool:
     return raw.get("SEISMIC_ROLE") == "observer"
 
 
+def validator(raw: dict[str, str]) -> bool:
+    return raw.get("SEISMIC_ROLE") == "validator"
+
+
 def flag(name: str) -> Condition:
     return lambda raw: raw.get(name) == "true"
 
@@ -422,7 +429,9 @@ SCHEMA: dict[str, Field] = {
     # Monitoring
     "MONITORING_MODE": Field(_enum(MONITORING_MODES)),
     "MONITORING_NODE_NAME": Field(_string, monitoring("push")),
-    "MONITORING_REMOTE_WRITE_URL": Field(_https_url, monitoring("push")),
+    # Only validators push to Seismic.
+    "MONITORING_REMOTE_WRITE_URL": Field(_https_url, both(validator, monitoring("push"))),
+    # Optional for validators; an observer's agent has no other destination.
     "MONITORING_OPERATOR_REMOTE_WRITE_URL": Field(_optional_https_url, monitoring("push")),
     "MONITORING_DATA_DIR": Field(_path, monitoring("push")),
 }
@@ -518,6 +527,13 @@ def _validate(raw: dict[str, str], source: Path | None) -> NodeEnv:
     if unknown:
         raise NodeEnvError(f"node.env has unknown keys: {', '.join(unknown)}")
 
+    # An empty MONITORING_MODE means the role's default. Resolve it before the
+    # conditions run, so the MONITORING_* keys are gated on the real mode.
+    # install.sh applies the same rule after sourcing node.env.
+    if raw.get("MONITORING_MODE") == "":
+        raw = dict(raw)
+        raw["MONITORING_MODE"] = MONITORING_DEFAULTS.get(raw.get("SEISMIC_ROLE", ""), "")
+
     # Condition inputs are validated first so conditions see sane values.
     values: dict[str, Any] = {}
     for key in _CONDITION_INPUTS:
@@ -577,6 +593,25 @@ def _validate_derived(env: NodeEnv) -> None:
         if env.integer("OBSERVER_P2P_PORT") != port:
             raise NodeEnvError(
                 f"node.env OBSERVER_P2P_PORT must be {port} to match OBSERVER_PUBLIC_ADDRESS"
+            )
+
+    # Seismic monitors validators only. An observer may run the agent for the
+    # operator's own Prometheus, so push needs that destination; pull would
+    # publish routes nobody scrapes.
+    if env.role == "observer":
+        if env.monitoring_mode == "pull":
+            raise NodeEnvError(
+                "node.env MONITORING_MODE=pull is not available to observers: Seismic "
+                "does not scrape observers; set off, or push with "
+                "MONITORING_OPERATOR_REMOTE_WRITE_URL for your own Prometheus"
+            )
+        if env.monitoring_mode == "push" and not env.string(
+            "MONITORING_OPERATOR_REMOTE_WRITE_URL"
+        ):
+            raise NodeEnvError(
+                "node.env MONITORING_MODE=push on an observer needs "
+                "MONITORING_OPERATOR_REMOTE_WRITE_URL: observers never push to "
+                "Seismic, so the agent has no other destination"
             )
 
     # A validator's Custodian serves purpose keys to its observers and must be

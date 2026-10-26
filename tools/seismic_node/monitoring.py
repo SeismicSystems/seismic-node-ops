@@ -51,7 +51,8 @@ def handle(args: Any) -> None:
     env = nodeenv.load(checkpoint.node_env_path(args))
     command = args.monitoring_command
     if command == "install":
-        fsutil.require_absolute(args.token_source, "Token source")
+        if args.token_source is not None:
+            fsutil.require_absolute(args.token_source, "Token source")
         operator_token_source = getattr(args, "operator_token_source", None)
         if operator_token_source is not None:
             fsutil.require_absolute(operator_token_source, "Operator token source")

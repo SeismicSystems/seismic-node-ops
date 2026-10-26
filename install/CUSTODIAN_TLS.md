@@ -16,8 +16,9 @@ none** (`TLS_MODE=disabled`): they only need outbound access to their parent.
 | `custodian-only` | Custodian only                                                |
 | `full`           | Custodian, RPC, Summit, and the other node routes             |
 
-With `MONITORING_MODE=pull` both managed modes additionally publish the
-JWT-protected `/prom-*` metrics routes (runbook 3.12).
+On a validator with `MONITORING_MODE=pull` both managed modes additionally
+publish the JWT-protected `/prom-*` metrics routes (runbook 3.12). Observers
+publish none: Seismic does not scrape them.
 
 Managed modes configure automatic certificates and write the entire OpenResty
 main configuration. The JWT secret and handlers are set up whenever a

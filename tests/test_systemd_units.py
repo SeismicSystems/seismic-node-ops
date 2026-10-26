@@ -36,7 +36,6 @@ OBSERVER_UNITS = {
     "seismic-observer-checkpoint",
     "seismic-observer-custodian",
     "seismic-checkpointer",
-    "seismic-prometheus-agent",
 }
 # Features a unit depends on; its variables need only apply when these are on.
 UNIT_FEATURES = {
@@ -95,6 +94,7 @@ EVERYTHING = {
     "MONITORING_MODE": "push",
     "MONITORING_NODE_NAME": "node-1",
     "MONITORING_REMOTE_WRITE_URL": "https://metrics.example/api/v1/write",
+    "MONITORING_OPERATOR_REMOTE_WRITE_URL": "https://prom.op.example/api/v1/write",
 }
 
 
@@ -240,7 +240,7 @@ class ExecStartExpansionTests(unittest.TestCase):
             ("validator", VALIDATOR_UNITS),
             ("observer", OBSERVER_UNITS),
         ):
-            env = full_env(**EVERYTHING, **(OBSERVER if role == "observer" else {}))
+            env = full_env(**{**EVERYTHING, **(OBSERVER if role == "observer" else {})})
             nodeenv.validate(env)
             for name in units:
                 with self.subTest(role=role, unit=name):
@@ -249,7 +249,7 @@ class ExecStartExpansionTests(unittest.TestCase):
                     self.assertFalse(any("$" in word for word in argv), argv)
 
     def test_observer_custodian_passes_parent_and_index(self):
-        env = full_env(**EVERYTHING, **OBSERVER)
+        env = full_env(**{**EVERYTHING, **OBSERVER})
         argv = expand(exec_start("seismic-observer-custodian"), env)
         self.assertEqual(argv[argv.index("--observer") + 1], "3")
         self.assertEqual(

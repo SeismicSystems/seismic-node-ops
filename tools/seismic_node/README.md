@@ -52,10 +52,12 @@ sudo ./tools/seismic-node.py monitoring status
 sudo ./tools/seismic-node.py monitoring stop
 ```
 
-The agent is used in `MONITORING_MODE=push` (the default). `install` downloads
-the checksum-pinned Prometheus release, renders
-`/etc/seismic/prometheus-agent/prometheus.yml` and `targets.json` from the
-`MONITORING_*` and service keys in `node.env`, and copies the token from a
+The agent is used in `MONITORING_MODE=push`, the validator default. A validator
+pushes to Seismic (`--token-source` required) and optionally to the operator's
+own Prometheus; an observer pushes to the operator's Prometheus only, with no
+`--token-source`. `install` downloads the checksum-pinned Prometheus release,
+renders `/etc/seismic/prometheus-agent/prometheus.yml` and `targets.json` from
+the `MONITORING_*` and service keys in `node.env`, and copies the token from a
 root-only (0600) handoff file; it never starts the service. With
 `MONITORING_OPERATOR_REMOTE_WRITE_URL` set in `node.env` the rendered
 configuration carries a second remote-write destination, the operator's own

@@ -131,9 +131,6 @@ class SchemaTests(unittest.TestCase):
                 CHECKPOINTER_ENABLED="true",
                 TLS_MODE="full",
                 DOMAIN="node.example.com",
-                MONITORING_MODE="push",
-                MONITORING_NODE_NAME="node-1",
-                MONITORING_REMOTE_WRITE_URL="https://metrics.example/api/v1/write",
             )
         )
         self.assertEqual(env.integer("OBSERVER_INDEX"), 3)
@@ -193,7 +190,7 @@ class SchemaTests(unittest.TestCase):
             nodeenv.validate(example_values(MONITORING_REMOTE_WRITE_URL=""))
 
     def test_monitoring_mode(self):
-        for bad in ("true", "false", "agent", ""):
+        for bad in ("true", "false", "agent"):
             with (
                 self.subTest(bad),
                 self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_MODE"),
@@ -226,16 +223,12 @@ class SchemaTests(unittest.TestCase):
             )
         )
         self.assertEqual(custodian_only.monitoring_mode, "pull")
-        # Pull needs some HTTPS proxy on the node.
-        with self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_MODE=pull"):
-            nodeenv.validate(
-                example_values(
-                    **OBSERVER,
-                    CUSTODIAN_PARENT_URL="https://parent.example/custodian",
-                    MONITORING_MODE="pull",
-                    TLS_MODE="disabled",
-                )
-            )
+        # Pull needs some HTTPS proxy on the node. TLS_MODE=disabled is only
+        # valid for observers, and observers cannot pull, so the role rules
+        # reject the combination before the proxy rule is reached.
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "only valid for observers"):
+            nodeenv.validate(example_values(MONITORING_MODE="pull", TLS_MODE="disabled"))
+        self.assertEqual(nodeenv.PULL_TLS_MODES, ("custodian-only", "full", "external"))
 
     def test_disabled_tls_is_for_observers_only(self):
         observer = nodeenv.validate(
@@ -252,7 +245,9 @@ class SchemaTests(unittest.TestCase):
             nodeenv.validate(example_values(TLS_MODE="disabled"))
         # The example is a validator and therefore exposes the Custodian.
         self.assertEqual(nodeenv.validate(example_values()).string("TLS_MODE"), "custodian-only")
-        # Push is the default; off is accepted and needs none of the agent's keys.
+        # Push is the validator default; the example leaves the key empty.
+        self.assertEqual(example_values()["MONITORING_MODE"], "")
+        # Off is accepted and needs none of the agent's keys.
         self.assertEqual(nodeenv.validate(example_values()).monitoring_mode, "push")
         off = nodeenv.validate(
             example_values(
@@ -261,6 +256,39 @@ class SchemaTests(unittest.TestCase):
         )
         self.assertEqual(off.monitoring_mode, "off")
         self.assertFalse(off.applies("MONITORING_NODE_NAME"))
+
+    def test_observer_monitoring(self):
+        observer = dict(
+            OBSERVER, CUSTODIAN_PARENT_URL="https://parent.example/custodian"
+        )
+        # The empty key resolves to off for observers: no agent keys needed.
+        env = nodeenv.validate(example_values(**observer))
+        self.assertEqual(env.monitoring_mode, "off")
+        self.assertFalse(env.applies("MONITORING_REMOTE_WRITE_URL"))
+        # Push is allowed, but only to the operator's own Prometheus: Seismic's
+        # URL does not apply and the operator's is required.
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "never push to Seismic"):
+            nodeenv.validate(example_values(**observer, MONITORING_MODE="push"))
+        env = nodeenv.validate(
+            example_values(
+                **observer,
+                MONITORING_MODE="push",
+                MONITORING_OPERATOR_REMOTE_WRITE_URL="https://prom.op.example/api/v1/write",
+            )
+        )
+        self.assertEqual(env.monitoring_mode, "push")
+        self.assertFalse(env.applies("MONITORING_REMOTE_WRITE_URL"))
+        self.assertEqual(env.string("MONITORING_NODE_NAME"), "node-1")
+        # Seismic does not scrape observers.
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, "not available to observers"):
+            nodeenv.validate(
+                example_values(
+                    **observer,
+                    MONITORING_MODE="pull",
+                    TLS_MODE="full",
+                    DOMAIN="node.example.com",
+                )
+            )
 
     def test_prebuilt_path_required_only_for_prebuilt_method(self):
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "SUMMIT_PREBUILT_PATH"):
