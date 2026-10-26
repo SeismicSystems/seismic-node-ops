@@ -249,6 +249,15 @@ download_component() {
     local asset="${bins[0]}_${version}_linux_amd64"
     local base="https://github.com/$GITHUB_OWNER/$repo/releases/download/$version"
     local dir="$DOWNLOAD_DIR/$repo-$version"
+    # These are the expected release workflows, not identities taken from the
+    # downloaded bundle. Refuse unknown repositories rather than weaken policy.
+    local workflow
+    case "$repo" in
+        seismic-reth) workflow=seismic-release.yml ;;
+        summit | enclave | seismic-checkpointer) workflow=release.yml ;;
+        *) die "No trusted release workflow configured for $GITHUB_OWNER/$repo" ;;
+    esac
+    local identity="https://github.com/$GITHUB_OWNER/$repo/.github/workflows/$workflow@refs/tags/$version"
 
     command -v gh >/dev/null || die "gh (GitHub CLI) is required for download mode; step 'packages' installs it."
     ensure_directory "$DOWNLOAD_DIR" root:root 0700 "download directory"
@@ -268,9 +277,10 @@ download_component() {
 
     local bin
     for bin in "${bins[@]}"; do
-        # Require provenance from this component's repository, not merely
-        # any repository in the organization. --bundle needs no GitHub login.
-        gh attestation verify "$dir/$bin" --repo "$GITHUB_OWNER/$repo" --bundle "$dir/$asset.sigstore.json" \
+        # Require the component repository AND the exact release workflow/tag
+        # certificate identity. --bundle needs no GitHub login.
+        gh attestation verify "$dir/$bin" --repo "$GITHUB_OWNER/$repo" \
+            --cert-identity "$identity" --bundle "$dir/$asset.sigstore.json" \
             >>"$LOG_FILE" 2>&1 \
             || die "$name $version: build-provenance attestation failed for $bin; see $LOG_FILE"
         success "$name $version: attestation verified for $bin"

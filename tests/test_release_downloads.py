@@ -2,7 +2,8 @@
 
 No network, root-owned paths, downloaded executables or live services are used.
 Tar extraction and checksum validation remain real; cryptographic attestation
-verification is deliberately stubbed to test repository policy and ordering.
+verification is deliberately stubbed to test repository/workflow/tag policy
+and ordering.
 """
 
 from __future__ import annotations
@@ -29,6 +30,19 @@ COMPONENTS = (
     ("CHECKPOINTER", "seismic-checkpointer", ("seismic-checkpointer",)),
     ("CUSTODIAN", "enclave", ("seismic-centralized-custodian-service",)),
 )
+WORKFLOWS = {
+    "summit": "release.yml",
+    "seismic-reth": "seismic-release.yml",
+    "seismic-checkpointer": "release.yml",
+    "enclave": "release.yml",
+}
+
+
+def certificate_identity(repo, version):
+    return (
+        f"https://github.com/SeismicSystems/{repo}/.github/workflows/"
+        f"{WORKFLOWS[repo]}@refs/tags/{version}"
+    )
 
 
 class ReleaseDownloadTests(unittest.TestCase):
@@ -60,7 +74,14 @@ class ReleaseDownloadTests(unittest.TestCase):
                     info.mode = 0o755
                     bundle.addfile(info, io.BytesIO(body))
             attestation = directory / f"{asset}.sigstore.json"
-            attestation.write_text(json.dumps({"repo": f"SeismicSystems/{repo}"}))
+            attestation.write_text(
+                json.dumps(
+                    {
+                        "repo": f"SeismicSystems/{repo}",
+                        "identity": certificate_identity(repo, version),
+                    }
+                )
+            )
             checksums = {
                 **bodies,
                 archive.name: archive.read_bytes(),
@@ -99,7 +120,10 @@ elif name == "gh":
     if "--repo" not in args or args[args.index("--repo") + 1] != expected or "--owner" in args:
         sys.exit("attestation repository policy mismatch")
     bundle = Path(args[args.index("--bundle") + 1])
-    assert json.loads(bundle.read_text())["repo"] == expected
+    certificate = json.loads(bundle.read_text())
+    assert certificate["repo"] == expected
+    if "--cert-identity" not in args or args[args.index("--cert-identity") + 1] != certificate["identity"]:
+        sys.exit("attestation workflow/tag policy mismatch")
     if artifact.name == os.environ.get("RELEASE_TEST_FAIL_BINARY"):
         sys.exit("fixture attestation verification failed")
 elif name == "fixture-install":
@@ -168,7 +192,7 @@ step_binaries
             else [],
         )
 
-    def test_each_component_and_mdbx_copy_require_their_own_repository(self):
+    def test_each_binary_requires_its_repository_release_workflow_and_tag(self):
         result, run, events = self.download()
         self.assertEqual(
             result.returncode,
@@ -191,6 +215,8 @@ step_binaries
                                 str(directory / binary),
                                 "--repo",
                                 f"SeismicSystems/{repo}",
+                                "--cert-identity",
+                                certificate_identity(repo, version),
                                 "--bundle",
                                 str(directory / f"{asset}.sigstore.json"),
                             ],
@@ -261,6 +287,90 @@ sudo() { printf 'UNEXPECTED INSTALL\\n'; exit 99; }
         self.assertIn("--repo SeismicSystems/summit", result.stdout)
         self.assertNotIn("--owner", result.stdout)
         self.assertNotIn("UNEXPECTED INSTALL", result.stdout)
+
+    def test_other_release_tags_and_workflows_are_rejected(self):
+        for key, repo, binaries in COMPONENTS:
+            version = self.values[f"{key}_VERSION"]
+            directory = self.releases / repo / version
+            bundle = next(directory.glob("*.sigstore.json"))
+            sums = directory / "SHA256SUMS"
+            original_bundle, original_sums = bundle.read_text(), sums.read_text()
+            for wrong_identity in (
+                certificate_identity(repo, "v999.0.0"),
+                certificate_identity(repo, version).replace(
+                    "/.github/workflows/", "/.github/workflows/untrusted-"
+                ),
+            ):
+                with self.subTest(repo=repo, identity=wrong_identity):
+                    certificate = json.loads(original_bundle)
+                    certificate["identity"] = wrong_identity
+                    bundle.write_text(json.dumps(certificate))
+                    digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+                    # Keep checksums valid so the attestation policy, not the
+                    # checksum guard, must reject this otherwise valid release.
+                    sums.write_text(
+                        "".join(
+                            f"{digest}  {bundle.name}\n"
+                            if line.endswith(f"  {bundle.name}\n")
+                            else line
+                            for line in original_sums.splitlines(keepends=True)
+                        )
+                    )
+                    try:
+                        result, run, events = self.download()
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn(
+                            "build-provenance attestation failed", result.stderr
+                        )
+                        self.assertIn(
+                            "attestation workflow/tag policy mismatch",
+                            (run / "install.log").read_text(),
+                        )
+                        self.assertFalse((run / "installed" / binaries[0]).exists())
+                        self.assertEqual(Path(events[-1]["args"][2]).name, binaries[0])
+                    finally:
+                        bundle.write_text(original_bundle)
+                        sums.write_text(original_sums)
+
+    def test_runbook_fetch_uses_the_same_release_policies(self):
+        text = (ROOT / "docs/RUNBOOK.md").read_text()
+        function = (
+            "fetch() {" + text.split("fetch() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        )
+        calls = "\n".join(
+            f"fetch {repo} {self.values[f'{key}_VERSION']} {' '.join(binaries)}"
+            for key, repo, binaries in COMPONENTS
+        )
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                """set -euo pipefail
+curl() { :; }
+sha256sum() { :; }
+tar() { :; }
+gh() { printf '%s\\n' "$*"; }
+sudo() { printf 'INSTALL %s\\n' "$*"; }
+"""
+                + function
+                + calls,
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for key, repo, binaries in COMPONENTS:
+            for binary in binaries:
+                self.assertIn(
+                    f"attestation verify {binary} --repo SeismicSystems/{repo} "
+                    f"--cert-identity {certificate_identity(repo, self.values[f'{key}_VERSION'])} "
+                    "--bundle ",
+                    result.stdout,
+                )
+        self.assertEqual(result.stdout.count("INSTALL "), 5)
 
     def test_checksum_failure_prevents_attestation_and_installation(self):
         directory = self.releases / "summit" / self.values["SUMMIT_VERSION"]

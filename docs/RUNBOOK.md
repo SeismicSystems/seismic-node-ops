@@ -263,17 +263,28 @@ installer checks nothing about compatibility: `node.env` records what you chose.
 **Preferred — signed release artifacts.** Every component publishes a release
 per `vX.Y.Z` tag with three assets: the tarball, a Sigstore **attestation
 bundle** (`.sigstore.json`) proving GitHub Actions built it from that tag, and
-`SHA256SUMS`. Verification uses the GitHub CLI (`gh`, from Ubuntu's
-repositories) but needs no GitHub account or login: the bundle is downloaded
-from the release and passed with `--bundle`. (The bare `gh attestation verify`
-form shown in GitHub's documentation fetches the attestation through the API and
-requires `gh auth login`.) The same four steps apply to every component; the
-tags are the `*_VERSION` keys in `node.env`. Verification requires provenance
-from the expected component repository, not just any SeismicSystems repository:
+`SHA256SUMS`. Verification uses the GitHub CLI (`gh`, from GitHub's apt
+repository as in section 3.1) but needs no GitHub account or login: the bundle
+is downloaded from the release and passed with `--bundle`. (The bare
+`gh attestation verify` form shown in GitHub's documentation fetches the
+attestation through the API and requires `gh auth login`.) The same four steps
+apply to every component; the tags are the `*_VERSION` keys in `node.env`.
+Verification requires provenance from the expected component repository and the
+exact signing workflow at that release tag. The workflow is
+`seismic-release.yml` for Reth and `release.yml` for the other components;
+unknown repositories are rejected. A different tag or workflow is rejected even
+within the same repository:
 
 ```bash
 fetch() {  # fetch <repository> <tag> <binary>...
     local repo=$1 tag=$2; shift 2
+    local workflow
+    case "$repo" in
+        seismic-reth) workflow=seismic-release.yml ;;
+        summit|enclave|seismic-checkpointer) workflow=release.yml ;;
+        *) printf 'No trusted release workflow for %s\n' "$repo" >&2; return 1 ;;
+    esac
+    local identity="https://github.com/SeismicSystems/$repo/.github/workflows/$workflow@refs/tags/$tag"
     local base="https://github.com/SeismicSystems/$repo/releases/download/$tag"
     local asset="${1}_${tag}_linux_amd64"
     curl -fsSLO "$base/$asset.tar.gz"
@@ -282,7 +293,8 @@ fetch() {  # fetch <repository> <tag> <binary>...
     sha256sum --ignore-missing -c SHA256SUMS
     tar -xzf "$asset.tar.gz"
     for bin in "$@"; do
-        gh attestation verify "$bin" --repo "SeismicSystems/$repo" --bundle "$asset.sigstore.json" \
+        gh attestation verify "$bin" --repo "SeismicSystems/$repo" \
+            --cert-identity "$identity" --bundle "$asset.sigstore.json" \
             || return 1
         sudo install -o root -g root -m 0755 "$bin" "/usr/local/bin/$bin"
     done
