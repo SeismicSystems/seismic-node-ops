@@ -338,8 +338,8 @@ PROXY_DIR = ROOT / "install/templates/proxy"
 
 class ReferenceProxyTests(unittest.TestCase):
     """The TLS_MODE=external references must carry the same rules as the
-    managed OpenResty policy. Behaviour is verified against live proxies
-    outside CI; these checks keep the files from drifting."""
+    managed OpenResty policy. These static checks keep the files from drifting;
+    live nginx/Caddy tests run when their fixture binaries are supplied."""
 
     RULES: ClassVar[dict[str, list[str]]] = {
         "nginx/custodian.conf": [
@@ -372,6 +372,9 @@ class ReferenceProxyTests(unittest.TestCase):
             "respond @chunked 400",
             "respond @upgrade 400",
             "max_size 65536",
+            "@oversized expression int({http.request.header.Content-Length}) > 65536",
+            "respond @oversized 413",
+            "request_buffers 65536",
             "reverse_proxy 127.0.0.1:CUSTODIAN_COUNCIL_PORT",
             "rewrite /v1/council",
             "header_up -*",

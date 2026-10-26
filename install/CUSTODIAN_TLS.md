@@ -133,7 +133,13 @@ parent's HTTPS endpoint and their local Custodian service.
 python3 -m unittest discover -s tests -p 'test_custodian*.py' -v
 ```
 
-Set `CUSTODIAN_OPENRESTY_BIN` to enable isolated TLS proxy tests. Optionally set
-`CUSTODIAN_SERVICE_BIN` and `COUNCIL_SIGNER_BIN` for a real protocol smoke test.
-Tests use temporary loopback services; public certificate issuance must be
-verified during deployment.
+Set `CUSTODIAN_OPENRESTY_BIN` to enable isolated managed-proxy TLS tests, or
+`CUSTODIAN_CADDY_BIN` for the Caddy reference (CI uses Caddy 2.11.7). The Caddy
+tests check that partial uploads wait for completion and oversized uploads never
+contact the backend. The reference needs both `request_buffers` and the explicit
+`Content-Length` size rejection: buffering alone can forward the prefix of an
+oversized upload before the size-limiting reader rejects it.
+
+Optionally set `CUSTODIAN_SERVICE_BIN` and `COUNCIL_SIGNER_BIN` for a real
+protocol smoke test. Tests use temporary loopback services; public certificate
+issuance must be verified during deployment.

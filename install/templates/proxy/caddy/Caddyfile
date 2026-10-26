@@ -12,8 +12,8 @@
 #     (github.com/mholt/caddy-ratelimit), configured as shown below; without
 #     it, rely on upstream DDoS protection and the Custodian's own nonce TTL.
 #   - There is no single total upload deadline; read_body and the transport
-#     timeouts bound the phases separately. request_body still guarantees the
-#     backend only ever sees a complete body no larger than 64 KiB.
+#     timeouts bound the phases separately. request_body caps the body size;
+#     reverse_proxy's request_buffers holds accepted uploads in memory.
 #   - Concurrency caps (4 per IP, 16 global) have no direct equivalent.
 #
 # Metrics: this file deliberately proxies nothing else. With the default
@@ -35,8 +35,8 @@
 }
 
 DOMAIN {
-    # Caddy orders directives by its own precedence, so every check for the
-    # council route lives inside one handle block, where order is literal.
+    # Keep the council checks in one handle block. Caddy's directive ordering
+    # runs request_body and respond before reverse_proxy.
     handle /custodian/v1/council {
         # Secret bodies: never access-logged, never cached.
         log_skip
@@ -60,7 +60,13 @@ DOMAIN {
         @no_length not header Content-Length *
         respond @no_length 411
 
-        # 64 KiB cap (inclusive), enforced before the body reaches the backend.
+        # Reject oversized fixed-length uploads before proxying: the proxy
+        # buffer is not a size limit and would otherwise forward its prefix.
+        @oversized expression int({http.request.header.Content-Length}) > 65536
+        respond @oversized 413
+
+        # 64 KiB cap (inclusive). Buffering before forwarding is configured
+        # separately on reverse_proxy; max_size alone does not buffer.
         request_body {
             max_size 65536
         }
@@ -72,6 +78,9 @@ DOMAIN {
         # }
 
         reverse_proxy 127.0.0.1:CUSTODIAN_COUNCIL_PORT {
+            # Receive the bounded request in memory before contacting Custodian.
+            request_buffers 65536
+
             # Strip the public prefix: the backend serves /v1/council. The
             # query was rejected above, so only the path is rewritten.
             rewrite /v1/council
