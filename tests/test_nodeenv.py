@@ -312,6 +312,7 @@ class SchemaTests(unittest.TestCase):
                     env = nodeenv.validate(
                         example_values(
                             CHECKPOINTER_ENABLED="true",
+                            RETH_MDBX_COPY_PREBUILT_PATH="/opt/mdbx_copy",
                             **{
                                 key: method,
                                 f"{component}_PREBUILT_PATH": f"/opt/{component.lower()}",
@@ -346,6 +347,52 @@ class SchemaTests(unittest.TestCase):
             )
         )
         self.assertEqual(env.path("SUMMIT_PREBUILT_PATH"), Path("/opt/summit"))
+
+    def test_prebuilt_reth_with_checkpointer_needs_matching_mdbx_copy_path(self):
+        prebuilt = {
+            "RETH_INSTALL_METHOD": "prebuilt",
+            "RETH_PREBUILT_PATH": "/opt/seismic-reth",
+        }
+        # Without the checkpointer, Reth is the only prebuilt binary.
+        env = nodeenv.validate(example_values(**prebuilt))
+        self.assertFalse(env.applies("RETH_MDBX_COPY_PREBUILT_PATH"))
+        # download/source derive mdbx_copy from Reth's release or checkout.
+        for method in ("download", "source"):
+            env = nodeenv.validate(
+                example_values(CHECKPOINTER_ENABLED="true", RETH_INSTALL_METHOD=method)
+            )
+            self.assertFalse(env.applies("RETH_MDBX_COPY_PREBUILT_PATH"))
+        with self.assertRaisesRegex(
+            nodeenv.NodeEnvError, r"RETH_MDBX_COPY_PREBUILT_PATH must not be empty$"
+        ):
+            nodeenv.validate(example_values(CHECKPOINTER_ENABLED="true", **prebuilt))
+        values = example_values(CHECKPOINTER_ENABLED="true", **prebuilt)
+        del values["RETH_MDBX_COPY_PREBUILT_PATH"]
+        with self.assertRaisesRegex(
+            nodeenv.NodeEnvError,
+            r"missing required keys: RETH_MDBX_COPY_PREBUILT_PATH$",
+        ):
+            nodeenv.validate(values)
+        with self.assertRaisesRegex(
+            nodeenv.NodeEnvError, "must name mdbx_copy, not the Reth binary"
+        ):
+            nodeenv.validate(
+                example_values(
+                    CHECKPOINTER_ENABLED="true",
+                    RETH_MDBX_COPY_PREBUILT_PATH="/opt/seismic-reth",
+                    **prebuilt,
+                )
+            )
+        env = nodeenv.validate(
+            example_values(
+                CHECKPOINTER_ENABLED="true",
+                RETH_MDBX_COPY_PREBUILT_PATH="/opt/mdbx_copy",
+                **prebuilt,
+            )
+        )
+        self.assertEqual(
+            env.path("RETH_MDBX_COPY_PREBUILT_PATH"), Path("/opt/mdbx_copy")
+        )
 
     def test_type_errors(self):
         cases = {

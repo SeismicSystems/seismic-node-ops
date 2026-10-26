@@ -250,7 +250,9 @@ Three binaries are required on every node and two more when the checkpointer is
 enabled. The versions are the `*_VERSION` keys in `node.env`. The values in
 `node.env.example` are the set released and tested together; they move together,
 and a component from a different release is untested against the others. The
-installer checks nothing about compatibility: `node.env` records what you chose.
+installer checks nothing about compatibility between components: `node.env`
+records what you chose. The one exception is `mdbx_copy` (below), whose libmdbx
+must match Reth's.
 
 | Binary                                                 | Repository                             | Build                                                                     |
 | ------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------- |
@@ -331,7 +333,11 @@ sudo install -o root -g root -m 0755 enclave/target/release/seismic-centralized-
 
 When the checkpointer is enabled, also build it and `mdbx_copy`. `mdbx_copy`
 must come from the **same** seismic-reth checkout as the Reth binary so its
-libmdbx matches Reth's database format:
+libmdbx matches Reth's database format. With `RETH_INSTALL_METHOD=prebuilt`
+the installer cannot derive it from the Reth binary, so point
+`RETH_MDBX_COPY_PREBUILT_PATH` at an `mdbx_copy` built as below from the same
+checkout; the installer compares the libmdbx `git describe` string embedded in
+both executables and refuses to install a mismatched pair:
 
 ```bash
 git clone --branch v0.1.1 https://github.com/SeismicSystems/seismic-checkpointer.git

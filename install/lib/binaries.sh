@@ -279,6 +279,19 @@ prepare_source_checkout() {
     success "$description source ready: $source_ref at $commit"
 }
 
+# Print the git-describe of the libmdbx compiled into an executable, e.g.
+# v0.13.7-0-g566b0f93. libmdbx embeds it as a NUL-terminated C string
+# (mdbx_version.git.describe) in both mdbx_copy and the Reth binary that
+# statically links mdbx-sys, so the two can be compared without executing
+# either file. Prints nothing when no such string is present; prints several
+# lines if the executable carries more than one.
+libmdbx_describe() {
+    local path=$1
+    tr -c '[:print:]' '\n' <"$path" \
+        | grep -xE 'v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-g[0-9a-f]+' \
+        | sort -u || true
+}
+
 install_binary_target() {
     local description=$1
     local source_path=$2

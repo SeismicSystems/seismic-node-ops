@@ -387,6 +387,11 @@ SCHEMA: dict[str, Field] = {
     "RETH_VERSION": Field(_version),
     "SUMMIT_PREBUILT_PATH": Field(_path, prebuilt("SUMMIT")),
     "RETH_PREBUILT_PATH": Field(_path, prebuilt("RETH")),
+    # The checkpointer's mdbx_copy ships in Reth's tarball and builds from
+    # Reth's checkout; a prebuilt Reth needs it supplied alongside.
+    "RETH_MDBX_COPY_PREBUILT_PATH": Field(
+        _path, both(flag("CHECKPOINTER_ENABLED"), prebuilt("RETH"))
+    ),
     # Network
     "GENESIS_PATH": Field(_path),
     "RETH_BOOTNODE": Field(_optional_url),
@@ -582,6 +587,13 @@ def _validate_derived(env: NodeEnv) -> None:
                     f"node.env {component}_VERSION must be a release tag when "
                     f"{method_key}=download; branches are not downloadable"
                 )
+    if env.applies("RETH_MDBX_COPY_PREBUILT_PATH") and env.path(
+        "RETH_MDBX_COPY_PREBUILT_PATH"
+    ) == env.path("RETH_PREBUILT_PATH"):
+        raise NodeEnvError(
+            "node.env RETH_MDBX_COPY_PREBUILT_PATH must name mdbx_copy, not the "
+            "Reth binary in RETH_PREBUILT_PATH"
+        )
     _require_flag_arg(
         env, "RETH_BOOTNODES_ARG", "--bootnodes", env.string("RETH_BOOTNODE")
     )

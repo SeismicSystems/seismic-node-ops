@@ -321,8 +321,10 @@ install_component() {
         download) download_component "$name" "$repo" "$version" "${bins[@]}" ;;
         source) build_component "$name" "$repo" "$version" "$build" "$output_dir" "${bins[@]}" ;;
         prebuilt)
-            [[ "${#bins[@]}" == 1 ]] || die "$name: prebuilt supports a single binary; install ${bins[*]:1} by hand"
-            check_service_executable_security "${!prebuilt_var}" || die "$name: ${!prebuilt_var} is not safe to install (ownership or permissions)"
+            # Only Reth carries a second binary (mdbx_copy); step_binaries
+            # routes that through install_prebuilt_mdbx_copy.
+            [[ "${#bins[@]}" == 1 ]] || die "$name: prebuilt supports a single binary; cannot install ${bins[*]:1}"
+            check_prebuilt_executable "$name" "${!prebuilt_var}"
             install_binary_target "$name" "${!prebuilt_var}" "/usr/local/bin/${bins[0]}"
             ;;
         *) die "$name: unknown install method $method" ;;
@@ -332,20 +334,60 @@ install_component() {
 step_binaries() {
     install_component Summit SUMMIT "$SUMMIT_REPO" "$SUMMIT_BUILD" "$DEFAULT_BUILD_OUTPUT" "$SUMMIT_BIN"
     if [[ "$CHECKPOINTER_ENABLED" == true ]]; then
-        # mdbx_copy must match Reth's vendored libmdbx; it ships in Reth's
-        # tarball and builds from Reth's checkout.
-        if [[ "$RETH_INSTALL_METHOD" == source ]]; then
-            install_component Reth RETH "$RETH_REPO" "$RETH_BUILD" "$RETH_BUILD_OUTPUT" "$RETH_BIN"
-            build_mdbx_copy
-        else
-            install_component Reth RETH "$RETH_REPO" "$RETH_BUILD" "$RETH_BUILD_OUTPUT" "$RETH_BIN" "$MDBX_COPY_BIN"
-        fi
+        # mdbx_copy must match Reth's vendored libmdbx: it ships in Reth's
+        # tarball, builds from Reth's checkout, and for prebuilt binaries the
+        # operator supplies it and the installer checks the libmdbx versions.
+        case "$RETH_INSTALL_METHOD" in
+            source)
+                install_component Reth RETH "$RETH_REPO" "$RETH_BUILD" "$RETH_BUILD_OUTPUT" "$RETH_BIN"
+                build_mdbx_copy
+                ;;
+            prebuilt)
+                check_prebuilt_mdbx_copy "$RETH_PREBUILT_PATH" "$RETH_MDBX_COPY_PREBUILT_PATH"
+                install_component Reth RETH "$RETH_REPO" "$RETH_BUILD" "$RETH_BUILD_OUTPUT" "$RETH_BIN"
+                install_binary_target mdbx_copy "$RETH_MDBX_COPY_PREBUILT_PATH" "/usr/local/bin/$MDBX_COPY_BIN"
+                ;;
+            *)
+                install_component Reth RETH "$RETH_REPO" "$RETH_BUILD" "$RETH_BUILD_OUTPUT" "$RETH_BIN" "$MDBX_COPY_BIN"
+                ;;
+        esac
         install_component Checkpointer CHECKPOINTER "$CHECKPOINTER_REPO" "$CHECKPOINTER_BUILD" "$DEFAULT_BUILD_OUTPUT" "$CHECKPOINTER_BIN"
     else
         install_component Reth RETH "$RETH_REPO" "$RETH_BUILD" "$RETH_BUILD_OUTPUT" "$RETH_BIN"
     fi
     install_component Custodian CUSTODIAN "$CUSTODIAN_REPO" "$CUSTODIAN_BUILD" "$DEFAULT_BUILD_OUTPUT" "$CUSTODIAN_BIN"
     success "Binaries installed."
+}
+
+check_prebuilt_executable() {
+    local name=$1 path=$2 reason
+    reason=$(check_service_executable_security "$path") \
+        || die "$name: $path is not safe to install ($reason)"
+}
+
+# A prebuilt mdbx_copy is only usable if it was built from the same libmdbx
+# revision the prebuilt Reth links: libmdbx refuses databases written by a
+# different version (MDBX_VERSION_MISMATCH) and a near-miss could still read
+# the pages differently. Both binaries embed libmdbx's git-describe, so the
+# match is checked here before either file is installed.
+check_prebuilt_mdbx_copy() {
+    local reth_path=$1 mdbx_copy_path=$2 reth_libmdbx mdbx_copy_libmdbx
+    warn "Prebuilt Reth with the checkpointer: $mdbx_copy_path must be built from the same seismic-reth checkout (vendored libmdbx) as $reth_path."
+    check_prebuilt_executable Reth "$reth_path"
+    check_prebuilt_executable mdbx_copy "$mdbx_copy_path"
+    reth_libmdbx=$(libmdbx_describe "$reth_path")
+    mdbx_copy_libmdbx=$(libmdbx_describe "$mdbx_copy_path")
+    [[ -n "$reth_libmdbx" ]] \
+        || die "Reth: no libmdbx version found in $reth_path; cannot confirm it matches $mdbx_copy_path"
+    [[ -n "$mdbx_copy_libmdbx" ]] \
+        || die "mdbx_copy: no libmdbx version found in $mdbx_copy_path; is it libmdbx's mdbx_copy?"
+    [[ "$reth_libmdbx" != *$'\n'* ]] \
+        || die "Reth: $reth_path carries several libmdbx versions (${reth_libmdbx//$'\n'/, }); cannot confirm which one mdbx_copy must match"
+    [[ "$mdbx_copy_libmdbx" != *$'\n'* ]] \
+        || die "mdbx_copy: $mdbx_copy_path carries several libmdbx versions (${mdbx_copy_libmdbx//$'\n'/, })"
+    [[ "$reth_libmdbx" == "$mdbx_copy_libmdbx" ]] \
+        || die "mdbx_copy: $mdbx_copy_path is built from libmdbx $mdbx_copy_libmdbx but $reth_path links libmdbx $reth_libmdbx; build mdbx_copy from the same seismic-reth checkout (make -C crates/storage/libmdbx-rs/mdbx-sys/libmdbx mdbx_copy)"
+    info "Prebuilt Reth and mdbx_copy both link libmdbx $reth_libmdbx."
 }
 
 build_mdbx_copy() {
