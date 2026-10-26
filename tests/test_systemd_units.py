@@ -248,6 +248,16 @@ class ExecStartExpansionTests(unittest.TestCase):
                     self.assertNotIn("", argv)
                     self.assertFalse(any("$" in word for word in argv), argv)
 
+    def test_hardening_leaves_proc_mounts_visible(self):
+        # Summit v0.1.0 collect_disk_stats() reads /proc/mounts and silently
+        # emits no summit_disk_* gauges if that fails, which blanks the disk
+        # panels and makes DiskSpaceLow unable to fire. ProcSubset=pid hides
+        # every non-PID /proc entry, /proc/mounts included.
+        hardening = configparser.RawConfigParser(strict=True, delimiters=("=",))
+        hardening.optionxform = str  # type: ignore[assignment]
+        hardening.read_string(HARDENING.read_text())
+        self.assertFalse(hardening.has_option("Service", "ProcSubset"))
+
     def test_observer_custodian_passes_parent_and_index(self):
         env = full_env(**{**EVERYTHING, **OBSERVER})
         argv = expand(exec_start("seismic-observer-custodian"), env)
