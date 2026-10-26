@@ -186,7 +186,9 @@ class SchemaTests(unittest.TestCase):
             nodeenv.validate(example_values(TLS_MODE="external"))
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_NODE_NAME"):
             nodeenv.validate(example_values(MONITORING_NODE_NAME=""))
-        with self.assertRaisesRegex(nodeenv.NodeEnvError, "MONITORING_REMOTE_WRITE_URL"):
+        with self.assertRaisesRegex(
+            nodeenv.NodeEnvError, "MONITORING_REMOTE_WRITE_URL"
+        ):
             nodeenv.validate(example_values(MONITORING_REMOTE_WRITE_URL=""))
 
     def test_monitoring_mode(self):
@@ -219,7 +221,9 @@ class SchemaTests(unittest.TestCase):
         # Publishing metrics does not require publishing the node's RPC.
         custodian_only = nodeenv.validate(
             example_values(
-                MONITORING_MODE="pull", TLS_MODE="custodian-only", DOMAIN="node.example.com"
+                MONITORING_MODE="pull",
+                TLS_MODE="custodian-only",
+                DOMAIN="node.example.com",
             )
         )
         self.assertEqual(custodian_only.monitoring_mode, "pull")
@@ -227,7 +231,9 @@ class SchemaTests(unittest.TestCase):
         # valid for observers, and observers cannot pull, so the role rules
         # reject the combination before the proxy rule is reached.
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "only valid for observers"):
-            nodeenv.validate(example_values(MONITORING_MODE="pull", TLS_MODE="disabled"))
+            nodeenv.validate(
+                example_values(MONITORING_MODE="pull", TLS_MODE="disabled")
+            )
         self.assertEqual(nodeenv.PULL_TLS_MODES, ("custodian-only", "full", "external"))
 
     def test_disabled_tls_is_for_observers_only(self):
@@ -244,14 +250,18 @@ class SchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "only valid for observers"):
             nodeenv.validate(example_values(TLS_MODE="disabled"))
         # The example is a validator and therefore exposes the Custodian.
-        self.assertEqual(nodeenv.validate(example_values()).string("TLS_MODE"), "custodian-only")
+        self.assertEqual(
+            nodeenv.validate(example_values()).string("TLS_MODE"), "custodian-only"
+        )
         # Push is the validator default; the example leaves the key empty.
         self.assertEqual(example_values()["MONITORING_MODE"], "")
         # Off is accepted and needs none of the agent's keys.
         self.assertEqual(nodeenv.validate(example_values()).monitoring_mode, "push")
         off = nodeenv.validate(
             example_values(
-                MONITORING_MODE="off", MONITORING_NODE_NAME="", MONITORING_REMOTE_WRITE_URL=""
+                MONITORING_MODE="off",
+                MONITORING_NODE_NAME="",
+                MONITORING_REMOTE_WRITE_URL="",
             )
         )
         self.assertEqual(off.monitoring_mode, "off")

@@ -403,7 +403,9 @@ def install(
     for key in ("RETH_DATA_DIR", "SUMMIT_DATA_DIR", "KEYS_DIR"):
         node_dir = env.path(key)
         for source in (token_source, operator_token_source):
-            if source is not None and (source == node_dir or node_dir in source.parents):
+            if source is not None and (
+                source == node_dir or node_dir in source.parents
+            ):
                 raise AgentError(
                     "Token handoff must be outside node data and key directories"
                 )

@@ -136,7 +136,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(values["operator_url"], operator)
         without = agent.render(values)
         self.assertEqual(without.count("- name:"), 2)
-        self.assertLess(without.index("name: seismic-monitoring"), without.index("name: operator"))
+        self.assertLess(
+            without.index("name: seismic-monitoring"), without.index("name: operator")
+        )
         self.assertIn(f'url: "{operator}"', without)
         self.assertNotIn(str(agent.OPERATOR_TOKEN), without)
         with_token = agent.render(values, operator_token=True)
@@ -148,7 +150,9 @@ class SettingsTests(unittest.TestCase):
         # Any HTTPS port is fine for the operator's own receiver, but the
         # other rules still apply, and it must not duplicate Seismic's.
         agent.settings(
-            env(MONITORING_OPERATOR_REMOTE_WRITE_URL="https://p.example:9090/api/v1/write")
+            env(
+                MONITORING_OPERATOR_REMOTE_WRITE_URL="https://p.example:9090/api/v1/write"
+            )
         )
         for url in (
             "http://p.example/api/v1/write",
@@ -382,7 +386,7 @@ class InstallationTests(unittest.TestCase):
             "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
             "MONITORING_OPERATOR_REMOTE_WRITE_URL": "https://prom.op.example/api/v1/write",
         }
-        with self.fixture() as (root, token, run):
+        with self.fixture() as (root, token, _run):
             config = env(**observer, MONITORING_DATA_DIR=str(root / "wal"))
             # A validator must give Seismic's token; an observer must not.
             with self.assertRaisesRegex(agent.AgentError, "--token-source is required"):
@@ -410,7 +414,7 @@ class InstallationTests(unittest.TestCase):
 
     def test_operator_token_lifecycle(self):
         operator = "https://prom.operator.example/api/v1/write"
-        with self.fixture() as (root, token, run):
+        with self.fixture() as (root, token, _run):
             config = env(
                 MONITORING_DATA_DIR=str(root / "wal"),
                 MONITORING_OPERATOR_REMOTE_WRITE_URL=operator,
@@ -434,16 +438,26 @@ class InstallationTests(unittest.TestCase):
             op.chmod(0o600)
             with self.reinstall_bypass():
                 agent.install(config, token, op)
-            self.assertEqual(agent.OPERATOR_TOKEN.read_text(), "glsa_operator-token.value\n")
+            self.assertEqual(
+                agent.OPERATOR_TOKEN.read_text(), "glsa_operator-token.value\n"
+            )
             self.assertEqual(agent.OPERATOR_TOKEN.stat().st_mode & 0o777, 0o640)
-            self.assertIn(f'credentials_file: "{agent.OPERATOR_TOKEN}"', agent.CONFIG.read_text())
+            self.assertIn(
+                f'credentials_file: "{agent.OPERATOR_TOKEN}"', agent.CONFIG.read_text()
+            )
             agent.check_existing(config)
             op.chmod(0o640)
-            with self.reinstall_bypass(), self.assertRaisesRegex(agent.AgentError, "root-only"):
+            with (
+                self.reinstall_bypass(),
+                self.assertRaisesRegex(agent.AgentError, "root-only"),
+            ):
                 agent.install(config, token, op)
             op.chmod(0o600)
             op.write_text("two words\n")
-            with self.reinstall_bypass(), self.assertRaisesRegex(agent.AgentError, "single-line"):
+            with (
+                self.reinstall_bypass(),
+                self.assertRaisesRegex(agent.AgentError, "single-line"),
+            ):
                 agent.install(config, token, op)
             # Reinstall without the token removes the stale credential and
             # the reference to it.

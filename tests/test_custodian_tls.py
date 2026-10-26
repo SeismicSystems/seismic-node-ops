@@ -256,7 +256,9 @@ class RenderingTests(unittest.TestCase):
     def test_custodian_only_without_pull_has_no_jwt_machinery(self):
         for monitoring in ("off", "push"):
             with self.subTest(monitoring):
-                config = render("custodian-only", monitoring=monitoring, checkpointer=True)
+                config = render(
+                    "custodian-only", monitoring=monitoring, checkpointer=True
+                )
                 self.assertNotIn("location = /prom-", config)
                 self.assertNotIn("lua_shared_dict limit_req_store", config)
                 self.assertNotIn("jwt_auth", config)

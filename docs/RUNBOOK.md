@@ -627,15 +627,15 @@ role's default, `push` for validators and `off` for observers:
   telemetry.
 
 Which combinations with `TLS_MODE` ([3.11](#311-https-endpoint)) are valid, and
-what is public on the node in each (✔ valid, ✘ rejected by `--check`; observers
+what is public on the node in each (`no` means rejected by `--check`; observers
 can only use `off` or `push`):
 
-| `TLS_MODE`                  | `push` (default)                             | `pull`                                             | `off`                        |
-| --------------------------- | -------------------------------------------- | -------------------------------------------------- | ---------------------------- |
-| `disabled` (observers only) | ✔ to your own Prometheus only               | ✘ Seismic does not scrape observers                | ✔ nothing public            |
-| `custodian-only`            | ✔ `/custodian`                              | ✔ `/custodian`, `/prom-*`                         | ✔ `/custodian`              |
-| `full`                      | ✔ `/custodian`, node routes                 | ✔ `/custodian`, node routes, `/prom-*`            | ✔ `/custodian`, node routes |
-| `external`                  | ✔ your routes; must **not** include metrics | ✔ your routes; must include JWT-checked `/prom-*` | ✔ your routes               |
+| `TLS_MODE`                  | `push` (default)                          | `pull`                                          | `off`                     |
+| --------------------------- | ----------------------------------------- | ----------------------------------------------- | ------------------------- |
+| `disabled` (observers only) | to your own Prometheus only               | no: Seismic does not scrape observers           | nothing public            |
+| `custodian-only`            | `/custodian`                              | `/custodian`, `/prom-*`                         | `/custodian`              |
+| `full`                      | `/custodian`, node routes                 | `/custodian`, node routes, `/prom-*`            | `/custodian`, node routes |
+| `external`                  | your routes; must **not** include metrics | your routes; must include JWT-checked `/prom-*` | your routes               |
 
 The rest of this section is push mode. Its CLI is `seismic-node monitoring` and
 its settings in `node.env` are:
@@ -689,9 +689,12 @@ For an observer this is the agent's only destination, and step 4 runs without
 3. If your receiver requires a bearer token, put it in a root-only file and pass
    `--operator-token-source <file>` to `monitoring install`; omit the flag for a
    receiver that authenticates another way.
-4. Rerun
-   `seismic-node monitoring install --token-source /root/monitoring-token [--operator-token-source /root/operator-token]`
-   and restart the agent.
+4. Rerun the install and restart the agent:
+
+   ```bash
+   seismic-node monitoring install --token-source /root/monitoring-token \
+       [--operator-token-source /root/operator-token]
+   ```
 
 The agent then forwards every sample to both destinations from separate queues:
 if your receiver is down, delivery to Seismic continues, and the other way

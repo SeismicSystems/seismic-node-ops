@@ -430,9 +430,13 @@ SCHEMA: dict[str, Field] = {
     "MONITORING_MODE": Field(_enum(MONITORING_MODES)),
     "MONITORING_NODE_NAME": Field(_string, monitoring("push")),
     # Only validators push to Seismic.
-    "MONITORING_REMOTE_WRITE_URL": Field(_https_url, both(validator, monitoring("push"))),
+    "MONITORING_REMOTE_WRITE_URL": Field(
+        _https_url, both(validator, monitoring("push"))
+    ),
     # Optional for validators; an observer's agent has no other destination.
-    "MONITORING_OPERATOR_REMOTE_WRITE_URL": Field(_optional_https_url, monitoring("push")),
+    "MONITORING_OPERATOR_REMOTE_WRITE_URL": Field(
+        _optional_https_url, monitoring("push")
+    ),
     "MONITORING_DATA_DIR": Field(_path, monitoring("push")),
 }
 
@@ -532,7 +536,9 @@ def _validate(raw: dict[str, str], source: Path | None) -> NodeEnv:
     # install.sh applies the same rule after sourcing node.env.
     if raw.get("MONITORING_MODE") == "":
         raw = dict(raw)
-        raw["MONITORING_MODE"] = MONITORING_DEFAULTS.get(raw.get("SEISMIC_ROLE", ""), "")
+        raw["MONITORING_MODE"] = MONITORING_DEFAULTS.get(
+            raw.get("SEISMIC_ROLE", ""), ""
+        )
 
     # Condition inputs are validated first so conditions see sane values.
     values: dict[str, Any] = {}

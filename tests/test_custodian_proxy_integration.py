@@ -33,9 +33,13 @@ def free_port():
 
 
 class ProxyFixture:
-    def __init__(self, mode="custodian", backend_port=None, expose_custodian=True):
+    """A managed OpenResty rendered for TLS_MODE `custodian-only` or `full`.
+    Both expose the Custodian: a node that must not is TLS_MODE=disabled and
+    runs no proxy at all."""
+
+    def __init__(self, mode="custodian-only", backend_port=None, monitoring="off"):
         self.backend_port = backend_port
-        self.expose_custodian = expose_custodian
+        self.monitoring = monitoring
         self.tmp = tempfile.TemporaryDirectory(prefix="custodian-proxy-")
         self.root = Path(self.tmp.name)
         self.records = []
@@ -119,11 +123,10 @@ class ProxyFixture:
             "{set=noop, init=noop, init_worker=noop, ssl_certificate=noop, "
             "challenge_server=noop, hook_server=noop} end}\n"
         )
-        if self.expose_custodian:
-            shutil.copyfile(
-                ROOT / "install/templates/openresty/lua/custodian.lua",
-                lua / "custodian.lua",
-            )
+        shutil.copyfile(
+            ROOT / "install/templates/openresty/lua/custodian.lua",
+            lua / "custodian.lua",
+        )
         # Existing non-Custodian auth is outside this fixture's scope.
         (lua / "rate_limit.lua").write_text("-- unrelated node-route limiter stub\n")
         (lua / "jwt_auth.lua").write_text("return ngx.exit(401)\n")
@@ -133,8 +136,7 @@ class ProxyFixture:
             self.mode,
             lua_dir=str(lua),
             custodian_port=self.server.server_port,
-            expose_custodian=self.expose_custodian,
-            role="validator" if self.expose_custodian else "observer",
+            monitoring=self.monitoring,
         )
         config = config.replace("user nobody nogroup;", "").replace(
             "worker_processes auto;", "worker_processes 1;"
@@ -249,8 +251,36 @@ class ProxyFixture:
 )
 class CustodianProxyTests(unittest.TestCase):
     def test_tls_prefix_headers_secret_handling_and_route_modes(self):
-        for mode in ("custodian", "full"):
-            with self.subTest(mode=mode), ProxyFixture(mode) as proxy:
+        # Node routes exist in `full` only; /prom-* routes exist in pull mode
+        # only. Every backend in the fixture is the same receiver, so a
+        # request that reached a metrics route is told apart from one that
+        # fell through to the Grafana route by the path the receiver saw.
+        node_routes = {
+            ("custodian-only", "off"): {},
+            ("full", "off"): {
+                "/": 200,
+                "/rpc": 200,
+                "/summit": 200,
+                "/ws": 200,
+                "/prom-reth": 200,  # Grafana's, not metrics: checked below
+                "/checkpointer": 401,
+                "/checkpointer/metrics": 404,
+            },
+            ("full", "pull"): {
+                "/": 200,
+                "/rpc": 200,
+                "/summit": 200,
+                "/ws": 200,
+                "/prom-reth": 403,  # GET-only; a POST is refused before the JWT
+                "/checkpointer": 401,
+                "/checkpointer/metrics": 401,
+            },
+        }
+        for (mode, monitoring), expected in node_routes.items():
+            with (
+                self.subTest(mode=mode, monitoring=monitoring),
+                ProxyFixture(mode, monitoring=monitoring) as proxy,
+            ):
                 prefix = b"secret-body-never-log-or-spill-"
                 marker = prefix + b"x" * (65536 - len(prefix))
                 status, headers, body = proxy.request(
@@ -278,14 +308,17 @@ class CustodianProxyTests(unittest.TestCase):
                     "/ws",
                     "/prom-reth",
                     "/checkpointer",
+                    "/checkpointer/metrics",
                 ):
                     status, _, _ = proxy.request(path=path)
-                    self.assertEqual(
-                        status,
-                        404
-                        if mode == "custodian"
-                        else (401 if path in ("/prom-reth", "/checkpointer") else 200),
-                    )
+                    self.assertEqual(status, expected.get(path, 404), path)
+                if monitoring == "off" and mode == "full":
+                    # Without a /prom-* route the path went to the Grafana
+                    # upstream unchanged; a metrics route would have sent "/".
+                    self.assertIn("/prom-reth", [r[0] for r in proxy.records])
+                if monitoring == "pull":
+                    status, _, _ = proxy.request(path="/prom-reth", method="GET")
+                    self.assertEqual(status, 401)
                 for path in (
                     "/custodian",
                     "/custodian/",
@@ -303,16 +336,6 @@ class CustodianProxyTests(unittest.TestCase):
                     self.assertNotIn(
                         b"secret-body-never-log-or-spill", log.read_bytes()
                     )
-
-    def test_private_observer_keeps_node_routes_but_rejects_custodian(self):
-        with ProxyFixture("full", expose_custodian=False) as proxy:
-            for tls in (True, False):
-                for path in ("/custodian", "/custodian/", "/custodian/v1/council"):
-                    self.assertEqual(proxy.request(path=path, tls=tls)[0], 404)
-            self.assertEqual(proxy.records, [])
-            self.assertEqual(proxy.request(path="/rpc")[0], 200)
-            self.assertEqual(len(proxy.records), 1)
-            self.assertEqual(proxy.records[0][0], "/")
 
     def test_rejections_never_reach_backend(self):
         cases = (
