@@ -38,14 +38,15 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run shfmt
-        run: shfmt -d install tools
+        run: shfmt -d install tools tests/vm
 
       - name: Run ShellCheck
         working-directory: install
         run: |
           shellcheck -x \
             install.sh \
-            ../tools/generate-openresty-jwt.sh
+            ../tools/generate-openresty-jwt.sh \
+            ../tests/vm/run.sh
 
       - name: Check Python formatting and lint
         run: |

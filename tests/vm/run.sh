@@ -5,9 +5,12 @@
 #   tests/vm/run.sh [--config FILE] [-- INSTALLER_ARGS...]
 #
 # Syncs this checkout to $VM_HOST:~/seismic-node-ops (excluding .git and
-# caches), uploads the config, and runs the installer as root. Defaults to the
-# example config with the network values a validator needs filled in. Set
-# VM_HOST (user@host) and optionally VM_SSH_KEY in the environment.
+# caches), uploads the config, and runs the installer as root. Defaults to a
+# test-only validator config: chain ID 5124, domain seismic-vm.invalid, and
+# monitoring off. This does not test public certificates or telemetry. Use
+# --config FILE for real network settings; supplied files are not rewritten.
+# Validates locally with Python 3 before any remote operations. Set VM_HOST
+# (user@host) and optionally VM_SSH_KEY in the environment.
 #
 # The VM is treated as disposable except for /persistence/keys, which the
 # installer preserves by design and this script never touches.
@@ -37,10 +40,16 @@ done
 if [[ -z "$CONFIG" ]]; then
     CONFIG=$(mktemp)
     trap 'rm -f "$CONFIG"' EXIT
-    # The example is a valid validator once the chain ID is set.
-    sed 's/^CUSTODIAN_CHAIN_ID=$/CUSTODIAN_CHAIN_ID=5124/' \
+    # Install-only fixture: a reserved domain, no telemetry credentials, and
+    # no remote-write destination. The installer does not activate services.
+    sed -e 's/^CUSTODIAN_CHAIN_ID=$/CUSTODIAN_CHAIN_ID=5124/' \
+        -e 's/^DOMAIN=$/DOMAIN=seismic-vm.invalid/' \
+        -e 's/^MONITORING_MODE=$/MONITORING_MODE=off/' \
         "$REPO_ROOT/install/templates/node.env.example" >"$CONFIG"
 fi
+
+echo "==> validating $CONFIG locally"
+PYTHONPATH="$REPO_ROOT/tools" python3 -m seismic_node.nodeenv --check --no-ownership "$CONFIG"
 
 echo "==> syncing $REPO_ROOT to $VM_HOST:~/$REMOTE_REPO"
 rsync -az --delete \

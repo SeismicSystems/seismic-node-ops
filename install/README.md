@@ -64,3 +64,14 @@ running their own TLS terminator are in [CUSTODIAN_TLS.md](CUSTODIAN_TLS.md).
 ```bash
 VM_HOST=user@host VM_SSH_KEY=~/.ssh/key tests/vm/run.sh [--config FILE] [-- INSTALLER_ARGS]
 ```
+
+Without `--config`, the harness generates a test-only validator configuration:
+chain ID `5124`, reserved domain `seismic-vm.invalid`, and
+`MONITORING_MODE=off`. No monitoring name, remote-write URL, or token is needed.
+This exercises installation, not public certificate issuance or telemetry;
+services are not started. Use `--config FILE` with real settings for those
+checks. Supplied files are uploaded unchanged.
+
+The harness needs Python 3 locally and validates the config before any sync,
+upload, or SSH command. `tests/test_vm_harness.py` exercises this flow with
+stubbed transports, without contacting a VM.
