@@ -18,7 +18,7 @@ from typing import ClassVar
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# Everything the installer would have sourced and defined before step_tls.
+# Everything the installer would have exported and defined before step_tls.
 PRELUDE = """set -euo pipefail
 SCRIPT_DIR="$ROOT/install"
 REPO_ROOT="$ROOT"
@@ -173,6 +173,16 @@ class RenderingTests(unittest.TestCase):
         for route in ("location /rpc", "jwt_auth", "rate_limit.lua"):
             self.assertIn(route, config)
         self.assertNotIn("_PLACEHOLDER", config)
+
+    def test_full_rejects_unprovisioned_web_routes(self):
+        for monitoring in ("off", "push", "pull"):
+            with self.subTest(monitoring=monitoring):
+                config = render("full", monitoring=monitoring)
+                catch_all = config.split("location / {", 1)[1].split("}", 1)[0]
+                self.assertIn("return 404;", catch_all)
+                self.assertNotIn("proxy_pass", catch_all)
+                for forbidden in (":3000", "location /staking", "/var/www/html"):
+                    self.assertNotIn(forbidden, config)
 
     def test_custom_port_and_lua_dir(self):
         config = render("full", lua_dir="/opt/lua", custodian_port=17876)

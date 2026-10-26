@@ -20,6 +20,10 @@ On a validator with `MONITORING_MODE=pull` both managed modes additionally
 publish the JWT-protected `/prom-*` metrics routes (runbook 3.12). Observers
 publish none: Seismic does not scrape them.
 
+`full` exposes only the configured node routes, not a Grafana or staking web UI.
+Unmatched HTTPS paths (including `/` and `/staking`) return 404. Host any
+operator-managed UI separately; the installer does not provision one.
+
 Managed modes configure automatic certificates and write the entire OpenResty
 main configuration. The JWT secret and handlers are set up whenever a
 JWT-protected route exists: always in `full`, and in `custodian-only` only with

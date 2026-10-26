@@ -151,7 +151,7 @@ class ProxyFixture:
             "/etc/ssl/resty-auto-ssl-fallback.key", str(self.root / "key.pem")
         )
         for host in ("localhost", "127.0.0.1"):
-            for port in (3000, 8545, 8546, 3030, 8552, 42069, 9090, 9001):
+            for port in (8545, 8546, 3030, 8552, 42069, 9090, 9001):
                 config = config.replace(
                     f"http://{host}:{port}",
                     f"http://127.0.0.1:{self.server.server_port}",
@@ -252,22 +252,20 @@ class ProxyFixture:
 class CustodianProxyTests(unittest.TestCase):
     def test_tls_prefix_headers_secret_handling_and_route_modes(self):
         # Node routes exist in `full` only; /prom-* routes exist in pull mode
-        # only. Every backend in the fixture is the same receiver, so a
-        # request that reached a metrics route is told apart from one that
-        # fell through to the Grafana route by the path the receiver saw.
+        # only. Unmatched paths must return 404 without reaching any upstream.
         node_routes = {
             ("custodian-only", "off"): {},
             ("full", "off"): {
-                "/": 200,
+                "/": 404,
                 "/rpc": 200,
                 "/summit": 200,
                 "/ws": 200,
-                "/prom-reth": 200,  # Grafana's, not metrics: checked below
+                "/prom-reth": 404,
                 "/checkpointer": 401,
                 "/checkpointer/metrics": 404,
             },
             ("full", "pull"): {
-                "/": 200,
+                "/": 404,
                 "/rpc": 200,
                 "/summit": 200,
                 "/ws": 200,
@@ -303,6 +301,9 @@ class CustodianProxyTests(unittest.TestCase):
                 self.assertNotIn("X-Untrusted", forwarded)
                 for path in (
                     "/",
+                    "/staking",
+                    "/staking/index.html",
+                    "/unconfigured-route",
                     "/rpc",
                     "/summit",
                     "/ws",
@@ -310,12 +311,11 @@ class CustodianProxyTests(unittest.TestCase):
                     "/checkpointer",
                     "/checkpointer/metrics",
                 ):
+                    before = len(proxy.records)
                     status, _, _ = proxy.request(path=path)
                     self.assertEqual(status, expected.get(path, 404), path)
-                if monitoring == "off" and mode == "full":
-                    # Without a /prom-* route the path went to the Grafana
-                    # upstream unchanged; a metrics route would have sent "/".
-                    self.assertIn("/prom-reth", [r[0] for r in proxy.records])
+                    if status == 404:
+                        self.assertEqual(len(proxy.records), before, path)
                 if monitoring == "pull":
                     status, _, _ = proxy.request(path="/prom-reth", method="GET")
                     self.assertEqual(status, 401)
