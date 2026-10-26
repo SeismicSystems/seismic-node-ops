@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -454,6 +458,115 @@ class SchemaTests(unittest.TestCase):
             env.integer("CHECKPOINTER_ENABLED")
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "does not apply"):
             env.get("CUSTODIAN_PARENT_URL")
+
+
+def bash_eval(exports: str, keys: list[str]) -> dict[str, str]:
+    """Eval the export block in a real bash and read the variables back."""
+    script = 'eval "$1"; shift; for k; do printf "%s\\0" "${!k}"; done'
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script, "bash", exports, *keys],
+        capture_output=True,
+        check=True,
+        cwd="/",
+    )
+    values = result.stdout.decode().split("\0")
+    assert values.pop() == ""
+    return dict(zip(keys, values, strict=True))
+
+
+@unittest.skipUnless(shutil.which("bash"), "bash not available")
+class ShellExportTests(unittest.TestCase):
+    """The installer must see the values this parser validated, not bash's."""
+
+    def test_bash_reproduces_every_value_byte_for_byte(self):
+        # Each of these is valid EnvironmentFile= syntax that bash would read
+        # differently or execute if the file were sourced.
+        values = example_values(
+            RETH_DATA_DIR="/persistence/reth # fast disk",
+            SUMMIT_DATA_DIR="/persistence/$HOSTNAME/summit",
+            SUMMIT_CRITICAL_LOG_DIR="/persistence/$HOSTNAME/summit/critical",
+            MONITORING_NODE_NAME='$(id -u) it\'s \\ "q" `x` ;&|',
+        )
+        env = nodeenv.validate(values)
+        seen = bash_eval(nodeenv.shell_exports(env), list(values))
+        self.assertEqual(seen, env.raw)
+        self.assertEqual(seen["RETH_DATA_DIR"], "/persistence/reth # fast disk")
+        self.assertEqual(seen["SUMMIT_DATA_DIR"], "/persistence/$HOSTNAME/summit")
+        self.assertEqual(seen["MONITORING_NODE_NAME"], '$(id -u) it\'s \\ "q" `x` ;&|')
+
+    def test_sourcing_the_same_file_would_differ(self):
+        # Documents the gap the export closes: bash drops the inline comment
+        # and expands the substitution when it sources the raw file.
+        values = example_values(
+            RETH_DATA_DIR="/persistence/reth # fast disk",
+            MONITORING_NODE_NAME="$(id -u)",
+        )
+        nodeenv.validate(values)
+        text = "".join(f"{key}={value}\n" for key, value in values.items())
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "node.env"
+            path.write_text(text)
+            sourced = bash_eval(
+                f"source {path}", ["RETH_DATA_DIR", "MONITORING_NODE_NAME"]
+            )
+        self.assertEqual(sourced["RETH_DATA_DIR"], "/persistence/reth")
+        self.assertEqual(sourced["MONITORING_NODE_NAME"], str(os.getuid()))
+
+    def test_exports_are_assignments_only(self):
+        env = nodeenv.validate(example_values())
+        for line in nodeenv.shell_exports(env).splitlines():
+            self.assertRegex(
+                line, r"^export [A-Z][A-Z0-9_]*=('.*'|[A-Za-z0-9_./:@-]*)$"
+            )
+
+    def test_blank_monitoring_mode_is_exported_resolved(self):
+        observer = dict(
+            OBSERVER, CUSTODIAN_PARENT_URL="https://parent.example/custodian"
+        )
+        for role, expected in (({}, "push"), (observer, "off")):
+            env = nodeenv.validate(example_values(**role, MONITORING_MODE=""))
+            seen = bash_eval(nodeenv.shell_exports(env), ["MONITORING_MODE"])
+            self.assertEqual(seen["MONITORING_MODE"], expected)
+
+    def test_multiline_and_empty_values_survive(self):
+        env = nodeenv.validate(
+            example_values(
+                MONITORING_OPERATOR_REMOTE_WRITE_URL="",
+                MONITORING_NODE_NAME="two\nlines",
+            )
+        )
+        seen = bash_eval(
+            nodeenv.shell_exports(env),
+            ["MONITORING_OPERATOR_REMOTE_WRITE_URL", "MONITORING_NODE_NAME"],
+        )
+        self.assertEqual(seen["MONITORING_OPERATOR_REMOTE_WRITE_URL"], "")
+        self.assertEqual(seen["MONITORING_NODE_NAME"], "two\nlines")
+
+    def test_cli_export_prints_the_block_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "node.env"
+            values = example_values(RETH_DATA_DIR="/persistence/reth # fast disk")
+            path.write_text("".join(f"{k}={v}\n" for k, v in values.items()))
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = nodeenv.main(["--export", "--no-ownership", str(path)])
+            self.assertEqual(code, 0)
+            seen = bash_eval(stdout.getvalue(), ["RETH_DATA_DIR"])
+            self.assertEqual(seen["RETH_DATA_DIR"], "/persistence/reth # fast disk")
+
+    def test_cli_export_prints_nothing_for_an_invalid_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "node.env"
+            path.write_text("SEISMIC_ROLE=validator\nBOGUS=1\n")
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = nodeenv.main(["--export", "--no-ownership", str(path)])
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("unknown keys", stderr.getvalue())
 
 
 class LoadTests(unittest.TestCase):

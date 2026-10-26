@@ -115,23 +115,18 @@ step_selected() {
 
 validate_config() {
     section "Validating $CONFIG"
-    # The same parser systemd's EnvironmentFile= semantics are mirrored by, so
-    # what passes here is what the units will read.
-    if ! (cd "$TOOLS_DIR" && /usr/bin/python3 -m seismic_node.nodeenv --check --no-ownership "$CONFIG"); then
+    # The parser mirrors systemd's EnvironmentFile= grammar, so what passes
+    # here is what the units will read. The installer takes its values from
+    # that same parse rather than sourcing the file: bash would expand $,
+    # treat a mid-line # as a comment, and execute anything that is not an
+    # assignment. --export prints one quoted `export KEY='value'` per key,
+    # with an empty MONITORING_MODE already resolved to the role's default.
+    local exports
+    if ! exports=$(cd "$TOOLS_DIR" && /usr/bin/python3 -m seismic_node.nodeenv --export --no-ownership "$CONFIG"); then
         die "node.env validation failed; nothing was changed."
     fi
-    # shellcheck disable=SC1090
-    set -a && source "$CONFIG" && set +a
-    # An empty MONITORING_MODE is the role's default, as nodeenv resolves it:
-    # validators push to Seismic, observers are not monitored.
-    if [[ -z "${MONITORING_MODE:-}" ]]; then
-        case "$SEISMIC_ROLE" in
-            validator) MONITORING_MODE=push ;;
-            *) MONITORING_MODE=off ;;
-        esac
-        export MONITORING_MODE
-    fi
-    success "Role: $SEISMIC_ROLE"
+    eval "$exports"
+    success "$CONFIG: valid $SEISMIC_ROLE configuration"
 }
 
 # --- steps ------------------------------------------------------------------

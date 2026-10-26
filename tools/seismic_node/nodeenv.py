@@ -533,7 +533,7 @@ def _validate(raw: dict[str, str], source: Path | None) -> NodeEnv:
 
     # An empty MONITORING_MODE means the role's default. Resolve it before the
     # conditions run, so the MONITORING_* keys are gated on the real mode.
-    # install.sh applies the same rule after sourcing node.env.
+    # install.sh receives the resolved value through ``shell_exports``.
     if raw.get("MONITORING_MODE") == "":
         raw = dict(raw)
         raw["MONITORING_MODE"] = MONITORING_DEFAULTS.get(
@@ -739,8 +739,28 @@ def load(path: Path = DEFAULT_PATH) -> NodeEnv:
 # ---------------------------------------------------------------------------
 
 
+def shell_exports(env: NodeEnv) -> str:
+    """Render the validated settings as ``export KEY='value'`` lines for bash.
+
+    The installer is written in bash, which parses ``KEY=value`` files with
+    its own grammar: ``$`` expands, a mid-line ``#`` starts a comment, and
+    anything that is not an assignment is executed. Sourcing node.env would
+    therefore give the installer different values from the ones this parser
+    validated and the units will read. Every value is single-quoted, so bash
+    reproduces it byte for byte and cannot expand or execute anything in it.
+
+    Every key present in the file is exported, as ``source`` would have done,
+    with MONITORING_MODE already resolved to the role's default when blank.
+    """
+    import shlex
+
+    return "".join(
+        f"export {key}={shlex.quote(value)}\n" for key, value in env.raw.items()
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
-    """``python3 -m seismic_node.nodeenv [--check] [PATH]``: validate a file."""
+    """``python3 -m seismic_node.nodeenv [--check|--export] [PATH]``."""
     import argparse
     import sys
 
@@ -749,10 +769,16 @@ def main(argv: list[str] | None = None) -> int:
         description="Validate a node.env file the way systemd and seismic-node read it.",
     )
     parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_PATH)
-    parser.add_argument(
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument(
         "--check",
         action="store_true",
-        help="validate and exit 0 on success (the default and only action)",
+        help="validate and exit 0 on success (the default action)",
+    )
+    action.add_argument(
+        "--export",
+        action="store_true",
+        help="validate, then print the settings as bash export statements",
     )
     parser.add_argument(
         "--no-ownership",
@@ -770,6 +796,9 @@ def main(argv: list[str] | None = None) -> int:
     except (NodeError, OSError) as error:
         print(f"node.env: {error}", file=sys.stderr)
         return 1
+    if args.export:
+        sys.stdout.write(shell_exports(env))
+        return 0
     applicable = sum(1 for key in SCHEMA if env.applies(key))
     print(f"{args.path}: valid {env.role} configuration ({applicable} keys apply)")
     return 0

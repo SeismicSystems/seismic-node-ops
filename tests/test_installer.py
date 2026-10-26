@@ -143,6 +143,23 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("not found", result.stderr)
 
+    def test_installer_reads_the_parsed_values_and_never_executes_the_file(self):
+        # All three lines are valid EnvironmentFile= syntax that bash would
+        # mangle or execute if the installer sourced the file instead of
+        # taking the values from the parser that validated them.
+        marker = self.root / "executed"
+        text = example(
+            RETH_DATA_DIR="/persistence/reth # fast disk",
+            MONITORING_NODE_NAME=f"$(touch {marker})",
+        ).replace("SEISMIC_ROLE=validator\n", "SEISMIC_ROLE = validator\n")
+        self.assertIn("SEISMIC_ROLE = validator", text)
+        result = self.run_installer("--config", str(self.config(text)), "--dry-run")
+        out = self.strip_ansi(result.stdout)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("valid validator configuration", out)
+        self.assertIn("Dry run: no changes were made.", out)
+        self.assertFalse(marker.exists(), "node.env was executed by the installer")
+
     def test_real_run_requires_root(self):
         if os.geteuid() == 0:
             self.skipTest("running as root")
