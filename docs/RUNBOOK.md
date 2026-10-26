@@ -160,12 +160,17 @@ Automatic restart is distinct from starting at boot; see
 | `/var/lib/seismic-prometheus-agent` | `0750` | Agent WAL (owner `seismic-prometheus`)                                                                                                             |
 | `/run/seismic`                      | `0750` | Engine API and Custodian sockets (tmpfs, recreated)                                                                                                |
 
-All services log to stdout and stderr, which systemd captures in the journal.
+All node services log to stdout and stderr, which systemd captures in the
+journal; none writes a log file of its own, with one deliberate exception.
 Summit additionally writes its most serious errors (fatal database errors,
 engine client failures — tracing target `critical`) as rotating JSON files to
-`$SUMMIT_DATA_DIR/critical/` (100 MB × 5), so an incident record survives
-journal retention and can be collected without `journalctl`. The same events are
-in the journal and increment the `critical_errors_total` metric for alerting.
+`$SUMMIT_DATA_DIR/critical/` (100 MB × 5, rotated by Summit itself), so an
+incident record survives journal retention and can be collected without
+`journalctl`. The same events are in the journal and increment the
+`critical_errors_total` metric for alerting. (The managed OpenResty keeps its
+own access and error logs under `/usr/local/openresty/nginx/logs/`, rotated by
+the `logrotate` rule the `tls` step installs from
+`install/templates/openresty/logrotate-openresty`.)
 
 ```bash
 journalctl -u seismic-reth -f
@@ -242,7 +247,10 @@ sudo install -d -o seismic -g seismic -m 0750 /persistence/checkpoints
 _Installer step: `binaries`._
 
 Four binaries are required on every node and two more when the checkpointer is
-enabled. The versions are the `*_VERSION` keys in `node.env`.
+enabled. The versions are the `*_VERSION` keys in `node.env`. The values in
+`node.env.example` are the set released and tested together; they move together,
+and a component from a different release is untested against the others. The
+installer checks nothing about compatibility: `node.env` records what you chose.
 
 | Binary                                                 | Repository                             | Build                                                                     |
 | ------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------- |
@@ -833,7 +841,9 @@ checks.
    `node.env` so the file records what is deployed.
 3. `seismic-node validator start`.
 
-Nothing else changes: units and `node.env` do not reference versions.
+Nothing else changes: units do not reference versions. Upgrade the components
+together, to the set a release of this repository pins in `node.env.example`,
+unless its notes say one may move alone.
 
 ### Checkpoints
 
