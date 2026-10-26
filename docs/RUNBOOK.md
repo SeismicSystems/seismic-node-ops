@@ -268,7 +268,8 @@ repositories) but needs no GitHub account or login: the bundle is downloaded
 from the release and passed with `--bundle`. (The bare `gh attestation verify`
 form shown in GitHub's documentation fetches the attestation through the API and
 requires `gh auth login`.) The same four steps apply to every component; the
-tags are the `*_VERSION` keys in `node.env`:
+tags are the `*_VERSION` keys in `node.env`. Verification requires provenance
+from the expected component repository, not just any SeismicSystems repository:
 
 ```bash
 fetch() {  # fetch <repository> <tag> <binary>...
@@ -281,7 +282,8 @@ fetch() {  # fetch <repository> <tag> <binary>...
     sha256sum --ignore-missing -c SHA256SUMS
     tar -xzf "$asset.tar.gz"
     for bin in "$@"; do
-        gh attestation verify "$bin" --owner SeismicSystems --bundle "$asset.sigstore.json"
+        gh attestation verify "$bin" --repo "SeismicSystems/$repo" --bundle "$asset.sigstore.json" \
+            || return 1
         sudo install -o root -g root -m 0755 "$bin" "/usr/local/bin/$bin"
     done
     rm -f SHA256SUMS

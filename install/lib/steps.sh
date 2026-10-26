@@ -268,8 +268,9 @@ download_component() {
 
     local bin
     for bin in "${bins[@]}"; do
-        # --bundle verifies against the downloaded attestation; no login needed.
-        gh attestation verify "$dir/$bin" --owner "$GITHUB_OWNER" --bundle "$dir/$asset.sigstore.json" \
+        # Require provenance from this component's repository, not merely
+        # any repository in the organization. --bundle needs no GitHub login.
+        gh attestation verify "$dir/$bin" --repo "$GITHUB_OWNER/$repo" --bundle "$dir/$asset.sigstore.json" \
             >>"$LOG_FILE" 2>&1 \
             || die "$name $version: build-provenance attestation failed for $bin; see $LOG_FILE"
         success "$name $version: attestation verified for $bin"
