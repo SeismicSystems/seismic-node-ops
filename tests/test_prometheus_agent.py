@@ -689,22 +689,107 @@ class LifecycleTests(unittest.TestCase):
             [(Path("/root/t"), Path("/root/op")), (None, Path("/root/op"))],
         )
 
-    def test_disabled_status_is_informational_and_start_refuses(self):
-        with (
-            mock.patch.object(fsutil, "require_root"),
-            mock.patch.object(nodeenv, "load", return_value=env(MONITORING_MODE="off")),
-            mock.patch.object(systemd, "start_service") as start,
-            contextlib.redirect_stdout(io.StringIO()) as out,
-        ):
-            monitoring.handle(
-                SimpleNamespace(monitoring_command="status", node_env=None)
-            )
-            with self.assertRaisesRegex(NodeError, "not enabled"):
-                monitoring.handle(
-                    SimpleNamespace(monitoring_command="start", node_env=None)
-                )
-        self.assertIn("not enabled", out.getvalue())
-        start.assert_not_called()
+    def test_stop_after_switching_from_push_only_touches_the_agent(self):
+        unit = "seismic-prometheus-agent.service"
+        for mode in ("off", "pull"):
+            for load, state in (
+                ("loaded", "active"),
+                ("loaded", "inactive"),
+                ("not-found", "inactive"),
+            ):
+                with (
+                    self.subTest(mode=mode, load=load, state=state),
+                    mock.patch.object(fsutil, "require_root"),
+                    mock.patch.object(
+                        nodeenv,
+                        "load",
+                        return_value=env(
+                            MONITORING_MODE=mode,
+                            MONITORING_NODE_NAME="",
+                            MONITORING_REMOTE_WRITE_URL="",
+                        ),
+                    ),
+                    mock.patch.object(agent, "check_existing") as check,
+                    mock.patch.object(
+                        systemd,
+                        "run_systemctl",
+                        return_value=SimpleNamespace(
+                            returncode=0,
+                            stdout=f"LoadState={load}\nActiveState={state}\nSubState=\n",
+                            stderr="",
+                        ),
+                    ) as systemctl,
+                    contextlib.redirect_stdout(io.StringIO()) as out,
+                ):
+                    monitoring.handle(
+                        SimpleNamespace(monitoring_command="stop", node_env=None)
+                    )
+                    expected = [
+                        mock.call(
+                            "show",
+                            unit,
+                            "--property=LoadState,ActiveState,SubState,Result",
+                        )
+                    ]
+                    if state == "active":
+                        expected.append(mock.call("stop", unit))
+                    self.assertEqual(systemctl.call_args_list, expected)
+                    check.assert_not_called()
+                    self.assertIn("Node services were not changed", out.getvalue())
+
+    def test_status_reports_actual_state_when_push_is_disabled(self):
+        unit = "seismic-prometheus-agent.service"
+        for mode in ("off", "pull"):
+            for state, detail, exists in (
+                ("active", "running", True),
+                ("inactive", "dead", True),
+                ("failed", "failed (exit-code)", True),
+                ("missing", unit, False),
+            ):
+                with (
+                    self.subTest(mode=mode, state=state),
+                    mock.patch.object(fsutil, "require_root"),
+                    mock.patch.object(
+                        nodeenv, "load", return_value=env(MONITORING_MODE=mode)
+                    ),
+                    mock.patch.object(agent, "check_existing") as check,
+                    mock.patch.object(systemd, "start_service") as start,
+                    mock.patch.object(systemd, "stop_service") as stop,
+                    mock.patch.object(
+                        systemd,
+                        "status",
+                        return_value=systemd.ServiceStatus(
+                            "prometheus-agent", state, detail, exists=exists
+                        ),
+                    ) as status,
+                    contextlib.redirect_stdout(io.StringIO()) as out,
+                ):
+                    monitoring.handle(
+                        SimpleNamespace(monitoring_command="status", node_env=None)
+                    )
+                    status.assert_called_once_with("prometheus-agent")
+                    self.assertEqual(out.getvalue(), f"{unit}: {state} {detail}\n")
+                    check.assert_not_called()
+                    start.assert_not_called()
+                    stop.assert_not_called()
+
+    def test_start_still_refuses_when_push_is_disabled(self):
+        for mode in ("off", "pull"):
+            with (
+                self.subTest(mode=mode),
+                mock.patch.object(fsutil, "require_root"),
+                mock.patch.object(
+                    nodeenv, "load", return_value=env(MONITORING_MODE=mode)
+                ),
+                mock.patch.object(agent, "check_existing") as check,
+                mock.patch.object(systemd, "run_systemctl") as systemctl,
+            ):
+                with self.assertRaisesRegex(NodeError, "not enabled"):
+                    monitoring.handle(
+                        SimpleNamespace(monitoring_command="start", node_env=None)
+                    )
+                check.assert_not_called()
+                systemctl.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -62,19 +62,20 @@ def handle(args: Any) -> None:
         agent.check_existing(env)
         print("Prometheus Agent installation matches node.env.")
         return
+    # Disabling push in node.env does not stop an already-running agent.
+    # Stop and status must remain available after switching to off or pull.
+    if command == "stop":
+        systemd.stop_service(PROGRAM)
+        print("Prometheus Agent stopped. Node services were not changed.")
+        return
+    if command == "status":
+        value = systemd.status(PROGRAM)
+        print(f"{systemd.unit_for(PROGRAM)}: {value.state} {value.detail}".rstrip())
+        return
     if not enabled(env):
-        if command == "status":
-            print("Prometheus Agent is not enabled in node.env.")
-            return
         raise NodeError("Prometheus Agent is not enabled in node.env")
     if command == "start":
         agent.check_existing(env)
         systemd.reload_units()
         systemd.start_service(PROGRAM)
         print("Prometheus Agent is running.")
-    elif command == "stop":
-        systemd.stop_service(PROGRAM)
-        print("Prometheus Agent stopped. Node services were not changed.")
-    else:
-        value = systemd.status(PROGRAM)
-        print(f"{systemd.unit_for(PROGRAM)}: {value.state} {value.detail}".rstrip())
