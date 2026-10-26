@@ -220,7 +220,9 @@ prepare_source_checkout() {
         [[ "$origin" == "$repository" ]] \
             || die "$description checkout has unexpected origin: $origin"
 
-        if [[ "$description" == "seismic-reth" ]]; then
+        # Key cleanup on the repository identity, not its display label
+        # (build_component calls this "Reth"). The origin was verified above.
+        if [[ "${repository##*/}" == "seismic-reth.git" ]]; then
             clean_reth_mdbx_build_artifacts "$source_dir"
         fi
 

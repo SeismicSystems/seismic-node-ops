@@ -1,6 +1,7 @@
-"""Exercise installer Git refs using local repositories, never live hosts."""
+"""Exercise installer Git refs and build cleanup locally, never on live hosts."""
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -8,6 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TAG = "internal-testnet-v0"
+LIBMDBX = Path("crates/storage/libmdbx-rs/mdbx-sys/libmdbx")
+MDBX_ARTIFACTS = ("mdbx_copy", "config-gnumake.h", "mdbx-static.o", "@buildflags.tag")
 
 
 class SourceCheckoutTests(unittest.TestCase):
@@ -61,7 +64,7 @@ class SourceCheckoutTests(unittest.TestCase):
         self.git(*args, name, cwd=self.seed)
         self.git("push", "origin", f"refs/tags/{name}", cwd=self.seed)
 
-    def prepare(self, ref=f"refs/tags/{TAG}", expected=True):
+    def prepare(self, ref=f"refs/tags/{TAG}", expected=True, description="Fixture"):
         result = subprocess.run(
             [
                 "bash",
@@ -75,7 +78,7 @@ prepare_source_root() { mkdir -p "$SERVICE_HOME/src"; }
 info() { printf '%s\\n' "$*"; }
 success() { printf '%s\\n' "$*"; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
-prepare_source_checkout "Fixture" "$3" "$4" "$5"
+prepare_source_checkout "$6" "$3" "$4" "$5"
 """,
                 "fixture",
                 str(ROOT),
@@ -83,6 +86,7 @@ prepare_source_checkout "Fixture" "$3" "$4" "$5"
                 self.remote.as_uri(),
                 str(self.checkout),
                 ref,
+                description,
             ],
             env=self.env,
             capture_output=True,
@@ -98,6 +102,53 @@ prepare_source_checkout "Fixture" "$3" "$4" "$5"
         else:
             self.assertNotEqual(result.returncode, 0, diagnostic)
         return result
+
+    def mdbx_fixture(self, reth=True):
+        if not shutil.which("make"):
+            self.skipTest("make is not installed")
+        if reth:
+            # Match the repository identity used by build_component, while
+            # retaining a file:// origin so no test can contact GitHub.
+            remote = self.root / "seismic-reth.git"
+            self.remote.rename(remote)
+            self.remote = remote
+            self.git("remote", "set-url", "origin", remote.as_uri(), cwd=self.seed)
+        libmdbx = self.seed / LIBMDBX
+        libmdbx.mkdir(parents=True)
+        (self.seed / ".gitignore").write_text("*.o\n")
+        # A tiny, deterministic stand-in for the vendored Makefiles. The real
+        # build leaves both ignored objects and untracked generated headers.
+        (libmdbx / "Makefile").write_text("include GNUmakefile\n")
+        (libmdbx / "GNUmakefile").write_text(
+            ".PHONY: mdbx_copy clean\n"
+            "mdbx_copy:\n"
+            "\tprintf '#!/bin/sh\\nexit 0\\n' > mdbx_copy\n"
+            "\tchmod +x mdbx_copy\n"
+            "\ttouch config-gnumake.h mdbx-static.o @buildflags.tag\n"
+            "clean:\n"
+            "\trm -f mdbx_copy config-gnumake.h mdbx-static.o @buildflags.tag\n"
+        )
+        self.git("add", ".", cwd=self.seed)
+        self.first = self.commit("vendored libmdbx fixture")
+        self.publish_tag("mdbx-fixture")
+        return "refs/tags/mdbx-fixture"
+
+    def build_mdbx_copy(self):
+        result = subprocess.run(
+            ["make", "-C", str(self.checkout / LIBMDBX), "mdbx_copy"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in MDBX_ARTIFACTS:
+            self.assertTrue((self.checkout / LIBMDBX / name).exists(), name)
+        self.assertTrue(
+            self.git("status", "--porcelain", cwd=self.checkout).stdout,
+            "the fixture must reproduce an untracked, dirty source checkout",
+        )
 
     def head(self):
         return self.git("rev-parse", "HEAD", cwd=self.checkout).stdout.strip()
@@ -331,6 +382,98 @@ prepare_source_checkout "Fixture" "$3" "$4" "$5"
         self.commit("replacement history")
         self.git("push", "--force", "origin", "HEAD:refs/heads/main", cwd=self.seed)
         self.prepare("main", expected=False)
+        self.assertEqual(self.head(), self.first)
+
+    def test_reth_rerun_cleans_mdbx_artifacts_independent_of_display_name(self):
+        ref = self.mdbx_fixture()
+        self.prepare(ref, description="Reth")
+        for description in ("Reth", "Execution client"):
+            with self.subTest(description=description):
+                self.build_mdbx_copy()
+                result = self.prepare(ref, description=description)
+                self.assertIn("Cleaning generated libmdbx artifacts", result.stdout)
+                self.assert_detached(self.first)
+                for name in MDBX_ARTIFACTS:
+                    self.assertFalse((self.checkout / LIBMDBX / name).exists(), name)
+
+    def test_reth_tracked_edits_are_preserved_without_running_clean(self):
+        ref = self.mdbx_fixture()
+        self.prepare(ref, description="Reth")
+        for relative, staged in (
+            (Path("payload"), False),
+            (Path("payload"), True),
+            (LIBMDBX / "GNUmakefile", False),
+        ):
+            with self.subTest(path=relative, staged=staged):
+                self.build_mdbx_copy()
+                path = self.checkout / relative
+                original = path.read_bytes()
+                changed = original + b"# operator changes\n"
+                path.write_bytes(changed)
+                if staged:
+                    self.git("add", str(relative), cwd=self.checkout)
+                result = self.prepare(ref, expected=False, description="Reth")
+                self.assertIn("local changes", result.stderr)
+                self.assertNotIn("Cleaning generated libmdbx artifacts", result.stdout)
+                self.assertEqual(path.read_bytes(), changed)
+                self.assertEqual(self.head(), self.first)
+                if staged:
+                    self.assertTrue(
+                        self.git("diff", "--cached", cwd=self.checkout).stdout
+                    )
+                for name in MDBX_ARTIFACTS:
+                    self.assertTrue((self.checkout / LIBMDBX / name).exists(), name)
+                self.git(
+                    "restore",
+                    "--staged",
+                    "--worktree",
+                    "--",
+                    str(relative),
+                    cwd=self.checkout,
+                )
+
+    def test_reth_unrelated_untracked_files_are_preserved_and_refused(self):
+        ref = self.mdbx_fixture()
+        self.prepare(ref, description="Reth")
+        self.build_mdbx_copy()
+        for relative in (Path("operator-notes"), LIBMDBX / "operator-notes"):
+            path = self.checkout / relative
+            path.write_text("operator changes\n")
+        result = self.prepare(ref, expected=False, description="Reth")
+        self.assertIn("local changes", result.stderr)
+        for relative in (Path("operator-notes"), LIBMDBX / "operator-notes"):
+            self.assertEqual(
+                (self.checkout / relative).read_text(), "operator changes\n"
+            )
+        self.assertEqual(self.head(), self.first)
+
+    def test_reth_origin_mismatch_is_refused_before_cleanup(self):
+        ref = self.mdbx_fixture()
+        self.prepare(ref, description="Reth")
+        self.build_mdbx_copy()
+        self.git(
+            "remote",
+            "set-url",
+            "origin",
+            (self.root / "wrong.git").as_uri(),
+            cwd=self.checkout,
+        )
+        result = self.prepare(ref, expected=False, description="Reth")
+        self.assertIn("unexpected origin", result.stderr)
+        self.assertNotIn("Cleaning generated libmdbx artifacts", result.stdout)
+        for name in MDBX_ARTIFACTS:
+            self.assertTrue((self.checkout / LIBMDBX / name).exists(), name)
+        self.assertEqual(self.head(), self.first)
+
+    def test_other_repository_is_not_cleaned_even_with_old_reth_label(self):
+        ref = self.mdbx_fixture(reth=False)
+        self.prepare(ref, description="seismic-reth")
+        self.build_mdbx_copy()
+        result = self.prepare(ref, expected=False, description="seismic-reth")
+        self.assertIn("local changes", result.stderr)
+        self.assertNotIn("Cleaning generated libmdbx artifacts", result.stdout)
+        for name in MDBX_ARTIFACTS:
+            self.assertTrue((self.checkout / LIBMDBX / name).exists(), name)
         self.assertEqual(self.head(), self.first)
 
     def test_invalid_refs_refused_before_creating_checkout(self):
