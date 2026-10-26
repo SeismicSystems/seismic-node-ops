@@ -115,6 +115,22 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("SEISMIC_ROLE", result.stderr)
         self.assertNotIn("Plan", self.strip_ansi(result.stdout))
 
+    def test_deferred_is_rejected_before_the_plan_for_each_component(self):
+        for component in ("SUMMIT", "RETH", "CUSTODIAN", "CHECKPOINTER"):
+            with self.subTest(component=component):
+                key = f"{component}_INSTALL_METHOD"
+                path = self.config(
+                    example(CHECKPOINTER_ENABLED="true", **{key: "deferred"})
+                )
+                result = self.run_installer("--config", str(path), "--dry-run")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(key, result.stderr)
+                self.assertIn(
+                    "must be one of: download, prebuilt, source", result.stderr
+                )
+                self.assertNotIn("Plan", self.strip_ansi(result.stdout))
+                self.assertFalse((self.root / "install.log").exists())
+
     def test_only_selects_steps_in_canonical_order(self):
         result = self.run_installer(
             "--config",

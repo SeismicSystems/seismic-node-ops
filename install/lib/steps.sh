@@ -315,7 +315,6 @@ install_component() {
             check_service_executable_security "${!prebuilt_var}" || die "$name: ${!prebuilt_var} is not safe to install (ownership or permissions)"
             install_binary_target "$name" "${!prebuilt_var}" "/usr/local/bin/${bins[0]}"
             ;;
-        deferred) warn "$name: deferred; place the executable at /usr/local/bin/${bins[0]} before starting" ;;
         *) die "$name: unknown install method $method" ;;
     esac
 }

@@ -19,18 +19,18 @@ sudo install/install.sh --config node.env
 
 The steps, each implementing one section of the runbook:
 
-| Step           | Runbook | Does                                                                              |
-| -------------- | ------- | --------------------------------------------------------------------------------- |
-| `packages`     | 3.1     | apt packages; GitHub's `gh` repository for `download` installs                    |
-| `account`      | 3.2     | the `seismic` system account                                                      |
-| `directories`  | 3.3     | config, data, key, Custodian, and checkpoint directories                          |
-| `binaries`     | 3.4     | per component: `download` (attested release), `source`, `prebuilt`, or `deferred` |
-| `runner`       | 3.5     | the checkpoint-start runner                                                       |
-| `config`       | 3.6     | `/etc/seismic/node.env` and the genesis file                                      |
-| `keys`         | 3.7     | Reth and Summit keys; existing keys are preserved, never regenerated              |
-| `checkpointer` | 3.8     | `seismic-checkpointer.toml`, when enabled                                         |
-| `units`        | 3.10    | the systemd units and hardening drop-in; nothing enabled                          |
-| `tls`          | 3.11    | managed OpenResty for `TLS_MODE=custodian-only` or `full`; not activated          |
+| Step           | Runbook | Does                                                                     |
+| -------------- | ------- | ------------------------------------------------------------------------ |
+| `packages`     | 3.1     | apt packages; GitHub's `gh` repository for `download` installs           |
+| `account`      | 3.2     | the `seismic` system account                                             |
+| `directories`  | 3.3     | config, data, key, Custodian, and checkpoint directories                 |
+| `binaries`     | 3.4     | per component: `download` (attested release), `source`, or `prebuilt`    |
+| `runner`       | 3.5     | the checkpoint-start runner                                              |
+| `config`       | 3.6     | `/etc/seismic/node.env` and the genesis file                             |
+| `keys`         | 3.7     | Reth and Summit keys; existing keys are preserved, never regenerated     |
+| `checkpointer` | 3.8     | `seismic-checkpointer.toml`, when enabled                                |
+| `units`        | 3.10    | the systemd units and hardening drop-in; nothing enabled                 |
+| `tls`          | 3.11    | managed OpenResty for `TLS_MODE=custodian-only` or `full`; not activated |
 
 Every step is idempotent and says what it changed. Nothing is ever started:
 first start is `seismic-node … start` (runbook section 4), and the Prometheus

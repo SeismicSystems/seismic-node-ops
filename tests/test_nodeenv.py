@@ -304,6 +304,39 @@ class SchemaTests(unittest.TestCase):
                 )
             )
 
+    def test_supported_install_methods_for_every_component(self):
+        for component in ("SUMMIT", "RETH", "CUSTODIAN", "CHECKPOINTER"):
+            for method in ("download", "source", "prebuilt"):
+                with self.subTest(component=component, method=method):
+                    key = f"{component}_INSTALL_METHOD"
+                    env = nodeenv.validate(
+                        example_values(
+                            CHECKPOINTER_ENABLED="true",
+                            **{
+                                key: method,
+                                f"{component}_PREBUILT_PATH": f"/opt/{component.lower()}",
+                            },
+                        )
+                    )
+                    self.assertEqual(env.string(key), method)
+                    self.assertEqual(
+                        env.applies(f"{component}_PREBUILT_PATH"), method == "prebuilt"
+                    )
+
+    def test_deferred_install_method_is_rejected_for_every_component(self):
+        for component in ("SUMMIT", "RETH", "CUSTODIAN", "CHECKPOINTER"):
+            key = f"{component}_INSTALL_METHOD"
+            with (
+                self.subTest(component=component),
+                self.assertRaisesRegex(
+                    nodeenv.NodeEnvError,
+                    f"{key} must be one of: download, prebuilt, source$",
+                ),
+            ):
+                nodeenv.validate(
+                    example_values(CHECKPOINTER_ENABLED="true", **{key: "deferred"})
+                )
+
     def test_prebuilt_path_required_only_for_prebuilt_method(self):
         with self.assertRaisesRegex(nodeenv.NodeEnvError, "SUMMIT_PREBUILT_PATH"):
             nodeenv.validate(example_values(SUMMIT_INSTALL_METHOD="prebuilt"))

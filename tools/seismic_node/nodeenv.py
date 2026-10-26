@@ -76,7 +76,7 @@ CHECKPOINTER_PORT = 42069
 
 KEY_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 ROLES = ("validator", "observer")
-INSTALL_METHODS = ("download", "prebuilt", "source", "deferred")
+INSTALL_METHODS = ("download", "prebuilt", "source")
 TLS_MODES = ("disabled", "custodian-only", "full", "external")
 MANAGED_TLS_MODES = ("custodian-only", "full")
 # How metrics leave the node: not at all, pushed by the Prometheus Agent, or
