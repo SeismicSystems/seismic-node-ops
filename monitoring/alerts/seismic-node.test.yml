@@ -1,0 +1,347 @@
+# promtool unit tests for seismic-node.yml. Run from this directory:
+#
+#   promtool test rules seismic-node.test.yml
+#
+# tests/test_operator_monitoring.py runs them when promtool is available.
+
+rule_files:
+  - seismic-node.yml
+
+evaluation_interval: 15s
+
+tests:
+  # Each critical reason fires its own alert; there is no fleet layer to
+  # collapse them.
+  - name: every critical error reason alerts on its own
+    interval: 15s
+    input_series:
+      - series: 'summit_critical_errors_total{node="node-0",reason="engine_client_error"}'
+        values: "0 1+0x24"
+      - series: 'summit_critical_errors_total{node="node-0",reason="fatal_db_error"}'
+        values: "0 1+0x24"
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: SummitCriticalError
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+              reason: engine_client_error
+            exp_annotations:
+              summary: "Critical Summit error on node-0"
+              description: "reason=engine_client_error — inspect the Summit journal on the node (journalctl -u seismic-summit)"
+          - exp_labels:
+              severity: critical
+              node: node-0
+              reason: fatal_db_error
+            exp_annotations:
+              summary: "Critical Summit error on node-0"
+              description: "reason=fatal_db_error — inspect the Summit journal on the node (journalctl -u seismic-summit)"
+      # An event, not a condition: once the counter is flat again, nothing fires.
+      - eval_time: 3m
+        alertname: SummitCriticalError
+        exp_alerts: []
+
+  # A counter whose first scrape is already nonzero is an event too.
+  - name: a series born nonzero is an event
+    interval: 15s
+    input_series:
+      - series: 'summit_critical_errors_total{node="node-0",reason="fatal_db_error"}'
+        values: "_ _ _ _ 3+0x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SummitCriticalError
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+              reason: fatal_db_error
+            exp_annotations:
+              summary: "Critical Summit error on node-0"
+              description: "reason=fatal_db_error — inspect the Summit journal on the node (journalctl -u seismic-summit)"
+
+  - name: equivocation observed by this node is a byzantine fault alert
+    interval: 15s
+    input_series:
+      - series: 'summit_critical_errors_total{node="node-0",reason="equivocation_notarize"}'
+        values: "0 1+0x24"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SummitByzantineFault
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+              reason: equivocation_notarize
+            exp_annotations:
+              summary: "Summit Byzantine fault observed on node-0: equivocation_notarize"
+              description: "Inspect the Summit journal on the node for the equivocation evidence"
+
+  # Scrape failures qualify after 2m; a blip shorter than that is silent.
+  - name: scrape failures alert after two minutes, checkpointer as a warning
+    interval: 15s
+    input_series:
+      - series: 'up{job="summit/node-0",instance="node-0",node="node-0"}'
+        values: "0+0x24"
+      - series: 'up{job="reth/node-0",instance="node-0",node="node-0"}'
+        values: "1 1 1 1 0 0 0 1+0x17"
+      - series: 'up{job="custodian/node-0",instance="node-0",node="node-0"}'
+        values: "0+0x24"
+      - series: 'up{job="checkpointer/node-0",instance="node-0",node="node-0"}'
+        values: "0+0x24"
+    alert_rule_test:
+      - eval_time: 1m45s
+        alertname: SummitDown
+        exp_alerts: []
+      - eval_time: 2m15s
+        alertname: SummitDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: summit/node-0
+              instance: node-0
+              node: node-0
+            exp_annotations:
+              summary: "Summit metrics unavailable on node-0"
+              description: "Prometheus cannot scrape node-0; this proves metrics unavailability, not necessarily process shutdown"
+      - eval_time: 5m
+        alertname: RethDown
+        exp_alerts: []
+      - eval_time: 2m15s
+        alertname: CustodianDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: custodian/node-0
+              instance: node-0
+              node: node-0
+            exp_annotations:
+              summary: "Custodian metrics unavailable on node-0"
+              description: "Prometheus cannot scrape node-0; Reth and observers may be unable to obtain purpose keys"
+      - eval_time: 2m15s
+        alertname: CheckpointerDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: checkpointer/node-0
+              instance: node-0
+              node: node-0
+            exp_annotations:
+              summary: "Checkpointer metrics unavailable on node-0"
+              description: "Prometheus cannot scrape node-0; snapshots from this node are not being produced or served"
+
+  # Summit committing 5 blocks per scrape for 2m, then nothing; Reth's head
+  # flat throughout. Nothing fires while blocks flow.
+  - name: progress stalls fire once the window shows no progress
+    interval: 15s
+    input_series:
+      - series: 'summit_blocks_committed_total{node="node-0",job="summit/node-0",instance="node-0"}'
+        values: "0+5x8 40+0x16"
+      - series: 'reth_blockchain_tree_canonical_chain_height{node="node-0",job="reth/node-0",instance="node-0"}'
+        values: "100+0x24"
+    alert_rule_test:
+      - eval_time: 1m45s
+        alertname: SummitStalled
+        exp_alerts: []
+      - eval_time: 4m15s
+        alertname: SummitStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+              job: summit/node-0
+              instance: node-0
+            exp_annotations:
+              summary: "Summit is not finalizing blocks on node-0"
+              description: "No block committed in 2m while Summit is up; the node is partitioned, stuck syncing, or the network has halted"
+      - eval_time: 2m15s
+        alertname: RethStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+              job: reth/node-0
+              instance: node-0
+            exp_annotations:
+              summary: "Reth is not advancing on node-0"
+              description: "Canonical head unchanged for 2m while Reth is up; execution is stuck or receives no payloads from Summit"
+
+  - name: no execution peers warns after five minutes
+    interval: 15s
+    input_series:
+      - series: 'reth_network_connected_peers{node="node-0",job="reth/node-0",instance="node-0"}'
+        values: "0+0x40"
+      - series: 'reth_network_connected_peers{node="node-1",job="reth/node-1",instance="node-1"}'
+        values: "0 0 0 0 0 0 0 0 3+0x32"
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RethNoPeers
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: RethNoPeers
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: node-0
+              job: reth/node-0
+              instance: node-0
+            exp_annotations:
+              summary: "Reth has no execution-layer peers on node-0"
+              description: "No connected peers for 5m; check RETH_BOOTNODE, port 30303, and the host firewall"
+
+  - name: missing rotation keys and custodian socket failures
+    interval: 15s
+    input_series:
+      - series: 'reth_seismic_rotation_pending_unfetched_epochs{node="node-0",job="reth/node-0",instance="node-0"}'
+        values: "0 0 0 0 1+0x20"
+      - series: 'custodian_socket_requests_total{node="node-0",job="custodian/node-0",instance="node-0",request="get_tx_io_keypair",response="epoch_key_unavailable"}'
+        values: "0 0 0 0 0 1+1x19"
+      - series: 'custodian_socket_requests_total{node="node-0",job="custodian/node-0",instance="node-0",request="get_tx_io_keypair",response="tx_io_keypair"}'
+        values: "0+10x24"
+    alert_rule_test:
+      - eval_time: 45s
+        alertname: RethMissingRotationKeys
+        exp_alerts: []
+      - eval_time: 1m
+        alertname: RethMissingRotationKeys
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+              job: reth/node-0
+              instance: node-0
+            exp_annotations:
+              summary: "Reth is missing purpose keys for 1 announced epoch(s) on node-0"
+              description: "A key rotation was announced on chain and this node's Custodian has not served its keys; check that the council delivered the epoch root key to this Custodian"
+      - eval_time: 2m15s
+        alertname: CustodianSocketFailures
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+              response: epoch_key_unavailable
+            exp_annotations:
+              summary: "Custodian refused or failed Reth key requests on node-0 (epoch_key_unavailable)"
+              description: "5 socket requests answered epoch_key_unavailable in 2m; Reth cannot obtain purpose keys from this Custodian"
+
+  - name: council rejections warn
+    interval: 15s
+    input_series:
+      - series: 'custodian_council_requests_total{node="node-0",job="custodian/node-0",instance="node-0",outcome="observer_rejected"}'
+        values: "0 0 0 0 0 1 2 2+0x18"
+      - series: 'custodian_council_requests_total{node="node-0",job="custodian/node-0",instance="node-0",outcome="delivered"}'
+        values: "0 0 0 0 0 1+0x20"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: CustodianCouncilRejections
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: node-0
+              outcome: observer_rejected
+            exp_annotations:
+              summary: "Custodian on node-0 refused council requests (observer_rejected)"
+              description: "2 requests ended observer_rejected in 2m. rejected: a root-key delivery failed verification (signature, network, epoch order). observer_rejected: an observer failed the challenge; check its index and key against the parent"
+
+  # node-0's newest snapshot ages past 1h; node-1 restarted and has never
+  # completed one; node-2 is fresh.
+  - name: checkpointer staleness
+    interval: 1m
+    input_series:
+      - series: 'up{job="checkpointer/node-0",instance="node-0",node="node-0"}'
+        values: "1+0x70"
+      - series: 'checkpointer_last_checkpoint_timestamp_seconds{job="checkpointer/node-0",instance="node-0",node="node-0"}'
+        values: "0+0x70"
+      - series: 'up{job="checkpointer/node-1",instance="node-1",node="node-1"}'
+        values: "1+0x70"
+      - series: 'up{job="checkpointer/node-2",instance="node-2",node="node-2"}'
+        values: "1+0x70"
+      - series: 'checkpointer_last_checkpoint_timestamp_seconds{job="checkpointer/node-2",instance="node-2",node="node-2"}'
+        values: "0+60x70"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: CheckpointerStale
+        exp_alerts: []
+      - eval_time: 61m
+        alertname: CheckpointerStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: checkpointer/node-0
+              instance: node-0
+              node: node-0
+            exp_annotations:
+              summary: "Checkpointer on node-0 has not produced a snapshot for 1h 1m 0s"
+              description: 'Newest checkpoint is older than 1h; check checkpointer_checkpoints_total{result="error"} and checkpointer_monitor_errors_total on the node'
+      - eval_time: 61m
+        alertname: CheckpointerNoCheckpoint
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: node-1
+            exp_annotations:
+              summary: "Checkpointer on node-1 has produced no snapshot since it started"
+              description: 'Up for 1h without completing a checkpoint; check checkpointer_checkpoints_total{result="error"} and checkpointer_monitor_errors_total on the node'
+
+  # A nearly full 100 GiB data disk warns; a nearly full 1 GiB /boot/efi
+  # does not.
+  - name: low disk space on large filesystems only
+    interval: 1m
+    input_series:
+      - series: 'summit_disk_available_bytes{node="node-0",mountpoint="/persistence"}'
+        values: "10737418240+0x20"
+      - series: 'summit_disk_total_bytes{node="node-0",mountpoint="/persistence"}'
+        values: "107374182400+0x20"
+      - series: 'summit_disk_available_bytes{node="node-0",mountpoint="/boot/efi"}'
+        values: "10485760+0x20"
+      - series: 'summit_disk_total_bytes{node="node-0",mountpoint="/boot/efi"}'
+        values: "1073741824+0x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: DiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: node-0
+              mountpoint: /persistence
+            exp_annotations:
+              summary: "Low disk space on node-0 (/persistence)"
+              description: "/persistence: 10% available"
+
+  # Push mode: one destination healthy, the other failing and falling behind.
+  - name: agent remote-write failures and lag
+    interval: 15s
+    input_series:
+      - series: 'prometheus_remote_storage_samples_failed_total{node="node-0",job="prometheus-agent/node-0",instance="node-0",url="https://metrics.seismic.example/api/v1/write"}'
+        values: "0+0x48"
+      - series: 'prometheus_remote_storage_samples_failed_total{node="node-0",job="prometheus-agent/node-0",instance="node-0",url="https://prom.operator.example/api/v1/write"}'
+        values: "0+100x48"
+      - series: 'prometheus_remote_storage_highest_timestamp_in_seconds{node="node-0",job="prometheus-agent/node-0",instance="node-0"}'
+        values: "0+15x48"
+      - series: 'prometheus_remote_storage_queue_highest_sent_timestamp_seconds{node="node-0",job="prometheus-agent/node-0",instance="node-0",url="https://metrics.seismic.example/api/v1/write"}'
+        values: "0+15x48"
+      - series: 'prometheus_remote_storage_queue_highest_sent_timestamp_seconds{node="node-0",job="prometheus-agent/node-0",instance="node-0",url="https://prom.operator.example/api/v1/write"}'
+        values: "0+0x48"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: AgentRemoteWriteFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: node-0
+              url: https://prom.operator.example/api/v1/write
+            exp_annotations:
+              summary: "Prometheus Agent on node-0 is failing to deliver samples to https://prom.operator.example/api/v1/write"
+              description: "Samples have been dropped for 5m; check the agent journal (journalctl -u seismic-prometheus-agent) for the destination's response"
+      - eval_time: 11m
+        alertname: AgentRemoteWriteLagging
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              node: node-0
+              job: prometheus-agent/node-0
+              instance: node-0
+              url: https://prom.operator.example/api/v1/write
+            exp_annotations:
+              summary: "Prometheus Agent on node-0 is 11m 0s behind on https://prom.operator.example/api/v1/write"
+              description: "Delivery lag has exceeded 2m for 5m; the destination is slow or unreachable and the agent's WAL (6h at most) is filling"

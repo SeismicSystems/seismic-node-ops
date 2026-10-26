@@ -689,9 +689,11 @@ The agent then forwards every sample to both destinations from separate queues:
 if your receiver is down, delivery to Seismic continues, and the other way
 round. Your Prometheus gets the same series and labels Seismic gets, so a
 dashboard built against either works against both. [`METRICS.md`](METRICS.md)
-describes what each service exports and what a healthy node looks like. To stop,
-clear the key, rerun `monitoring install` without `--operator-token-source`, and
-restart the agent; the second destination and its token are removed.
+describes what each service exports and what a healthy node looks like;
+[`monitoring/`](../monitoring/README.md) holds alert rules and a Grafana
+dashboard for it, ready to load. To stop, clear the key, rerun
+`monitoring install` without `--operator-token-source`, and restart the agent;
+the second destination and its token are removed.
 
 ### 3.13 Pre-start verification
 

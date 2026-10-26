@@ -1,0 +1,311 @@
+# Alert rules for one Seismic node, for the operator's own Prometheus.
+#
+# These are the per-node rules Seismic operations run centrally
+# (deploy/monitoring/templates/alert_rules.yml), with the fleet-level layer
+# removed: Seismic pages when K validators are affected at once, which is a
+# question only a fleet view can ask. For a single node every signal below is
+# the whole story, so each fires on its own with a `severity` label and no
+# routing labels; where it goes (page, chat, mail) is your Alertmanager's
+# decision. docs/METRICS.md explains every series and its healthy range;
+# monitoring/README.md explains how to load this file and which labels it
+# expects.
+#
+# Thresholds are the central defaults, stated in network units where they
+# are: 2m is roughly 60 leader timeouts on a chain with leader_timeout_ms =
+# 2000, so a healthy chain cannot go that long without a block. Change them
+# in place if your network's parameters differ.
+
+groups:
+  - name: seismic-node-availability
+    rules:
+      # A scrape must fail continuously for 2m before alerting: a restart
+      # finishing within that window never produces a message. `up == 0`
+      # proves metrics unavailability, not necessarily process shutdown.
+      - alert: SummitDown
+        expr: up{job=~"summit/.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Summit metrics unavailable on {{ $labels.node }}"
+          description: "Prometheus cannot scrape {{ $labels.instance }}; this proves metrics unavailability, not necessarily process shutdown"
+
+      - alert: RethDown
+        expr: up{job=~"reth/.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reth metrics unavailable on {{ $labels.node }}"
+          description: "Prometheus cannot scrape {{ $labels.instance }}; this proves metrics unavailability, not necessarily process shutdown"
+
+      # The Custodian serves purpose keys to Reth and to observers; every
+      # node runs one.
+      - alert: CustodianDown
+        expr: up{job=~"custodian/.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Custodian metrics unavailable on {{ $labels.node }}"
+          description: "Prometheus cannot scrape {{ $labels.instance }}; Reth and observers may be unable to obtain purpose keys"
+
+      # Only nodes with CHECKPOINTER_ENABLED=true produce this series, so a
+      # node without a checkpointer never fires it.
+      - alert: CheckpointerDown
+        expr: up{job=~"checkpointer/.*"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Checkpointer metrics unavailable on {{ $labels.node }}"
+          description: "Prometheus cannot scrape {{ $labels.instance }}; snapshots from this node are not being produced or served"
+
+  - name: seismic-node-progress
+    rules:
+      # Progress stalls: the process answers scrapes and reports no error, but
+      # the chain is not moving on this node. Each fires as soon as the window
+      # shows no progress.
+      - alert: SummitStalled
+        expr: increase(summit_blocks_committed_total[2m]) == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Summit is not finalizing blocks on {{ $labels.node }}"
+          description: "No block committed in 2m while Summit is up; the node is partitioned, stuck syncing, or the network has halted"
+
+      - alert: RethStalled
+        expr: changes(reth_blockchain_tree_canonical_chain_height[2m]) == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reth is not advancing on {{ $labels.node }}"
+          description: "Canonical head unchanged for 2m while Reth is up; execution is stuck or receives no payloads from Summit"
+
+      # Execution-layer peers. Consensus traffic rides Summit's own P2P, so a
+      # peerless Reth still follows the chain through Summit's payloads; what
+      # it cannot do is receive or propagate transactions. Peers take a few
+      # minutes to accumulate after a restart.
+      - alert: RethNoPeers
+        expr: reth_network_connected_peers == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reth has no execution-layer peers on {{ $labels.node }}"
+          description: "No connected peers for 5m; check RETH_BOOTNODE, port 30303, and the host firewall"
+
+  - name: seismic-node-keys
+    rules:
+      # Purpose-key delivery. A rotation announced on chain whose keys this
+      # Reth cannot obtain, or a Custodian refusing Reth's key requests: in
+      # both cases key-dependent transactions cannot execute here.
+      - alert: RethMissingRotationKeys
+        expr: reth_seismic_rotation_pending_unfetched_epochs > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reth is missing purpose keys for {{ $value }} announced epoch(s) on {{ $labels.node }}"
+          description: "A key rotation was announced on chain and this node's Custodian has not served its keys; check that the council delivered the epoch root key to this Custodian"
+
+      - alert: CustodianSocketFailures
+        expr: |
+          sum by (node, response) (
+            increase(
+              custodian_socket_requests_total{
+                response=~"epoch_key_unavailable|denied|error"
+              }[2m]
+            )
+          ) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Custodian refused or failed Reth key requests on {{ $labels.node }} ({{ $labels.response }})"
+          description: "{{ $value | printf \"%.0f\" }} socket requests answered {{ $labels.response }} in 2m; Reth cannot obtain purpose keys from this Custodian"
+
+      # The Custodian's public council route refusing requests. A `rejected`
+      # outcome is a root-key delivery the Custodian would not install (bad
+      # signature, wrong network, out-of-order or conflicting epoch); an
+      # `observer_rejected` outcome is an observer that failed the challenge
+      # protocol, usually a wrong index or key.
+      - alert: CustodianCouncilRejections
+        expr: |
+          sum by (node, outcome) (
+            increase(
+              custodian_council_requests_total{
+                outcome=~"rejected|observer_rejected"
+              }[2m]
+            )
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Custodian on {{ $labels.node }} refused council requests ({{ $labels.outcome }})"
+          description: "{{ $value | printf \"%.0f\" }} requests ended {{ $labels.outcome }} in 2m. rejected: a root-key delivery failed verification (signature, network, epoch order). observer_rejected: an observer failed the challenge; check its index and key against the parent"
+
+  - name: seismic-node-summit-errors
+    rules:
+      # Convert process-local critical counters into event signals. increase()
+      # catches increments on established series. The second branch catches a
+      # newly created series whose first scrape is already nonzero, which
+      # increase() alone reads as zero.
+      - record: summit:critical_error_event_by_node_reason
+        expr: |
+          (
+            sum by (node, reason) (
+              increase(summit_critical_errors_total[1m])
+            ) > 0
+          )
+          or
+          (
+            sum by (node, reason) (
+              summit_critical_errors_total
+            ) > 0
+            unless
+            sum by (node, reason) (
+              summit_critical_errors_total offset 1m
+            )
+          )
+
+      - alert: SummitCriticalError
+        expr: summit:critical_error_event_by_node_reason > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical Summit error on {{ $labels.node }}"
+          description: "reason={{ $labels.reason }} — inspect the Summit journal on the node (journalctl -u seismic-summit)"
+
+      # Equivocation is direct evidence of Byzantine or double-signing
+      # behaviour observed by this node. Seismic aggregates it across the
+      # fleet; for one node it is simply "my node saw it".
+      - alert: SummitByzantineFault
+        expr: |
+          sum by (node, reason) (
+            summit_critical_errors_total{
+              reason=~"equivocation_notarize|equivocation_finalize|nullify_finalize"
+            }
+          ) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Summit Byzantine fault observed on {{ $labels.node }}: {{ $labels.reason }}"
+          description: "Inspect the Summit journal on the node for the equivocation evidence"
+
+      - record: summit:warning_error_event_by_node_reason
+        expr: |
+          (
+            sum by (node, reason) (
+              increase(summit_warning_errors_total[1m])
+            ) > 0
+          )
+          or
+          (
+            sum by (node, reason) (
+              summit_warning_errors_total
+            ) > 0
+            unless
+            sum by (node, reason) (
+              summit_warning_errors_total offset 1m
+            )
+          )
+
+      - alert: SummitWarningError
+        expr: summit:warning_error_event_by_node_reason > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Summit warning on {{ $labels.node }}"
+          description: "reason={{ $labels.reason }} — inspect the Summit journal on the node (journalctl -u seismic-summit)"
+
+  - name: seismic-node-checkpointer
+    rules:
+      # Checkpointer staleness: the process is up but has not produced a
+      # snapshot recently, so nodes onboarding from it get an old snapshot or
+      # none. The timestamp gauge is set only when a checkpoint completes and
+      # is absent after a restart until the next one, so the two cases are
+      # separate rules. 1h: set it to a few epochs of wall-clock time.
+      - alert: CheckpointerStale
+        expr: |
+          time() - checkpointer_last_checkpoint_timestamp_seconds
+            > 3600
+        labels:
+          severity: warning
+        annotations:
+          summary: "Checkpointer on {{ $labels.node }} has not produced a snapshot for {{ $value | humanizeDuration }}"
+          description: "Newest checkpoint is older than 1h; check checkpointer_checkpoints_total{result=\"error\"} and checkpointer_monitor_errors_total on the node"
+
+      - alert: CheckpointerNoCheckpoint
+        expr: |
+          max by (node) (up{job=~"checkpointer/.*"}) == 1
+            unless on (node) checkpointer_last_checkpoint_timestamp_seconds
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Checkpointer on {{ $labels.node }} has produced no snapshot since it started"
+          description: "Up for 1h without completing a checkpoint; check checkpointer_checkpoints_total{result=\"error\"} and checkpointer_monitor_errors_total on the node"
+
+  - name: seismic-node-host
+    rules:
+      # Disk filling up. Summit reports every block-device filesystem on the
+      # node, labelled by mount point, so this needs no knowledge of where
+      # the chain data lives: any large filesystem that is nearly full
+      # alerts. The size floor skips small partitions such as /boot/efi,
+      # which are full by design.
+      - alert: DiskSpaceLow
+        expr: |
+          (
+            summit_disk_available_bytes / summit_disk_total_bytes < 0.15
+          )
+          and on (node, mountpoint)
+          (
+            summit_disk_total_bytes > 8 * 1024 * 1024 * 1024
+          )
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.node }} ({{ $labels.mountpoint }})"
+          description: "{{ $labels.mountpoint }}: {{ $value | humanizePercentage }} available"
+
+  - name: seismic-node-agent
+    rules:
+      # MONITORING_MODE=push only: the Prometheus Agent's own view of each
+      # remote-write destination (Seismic's and, if set, yours). Nothing here
+      # fires on a node without the agent.
+      - alert: AgentRemoteWriteFailing
+        expr: |
+          sum by (node, url) (
+            rate(prometheus_remote_storage_samples_failed_total[5m])
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus Agent on {{ $labels.node }} is failing to deliver samples to {{ $labels.url }}"
+          description: "Samples have been dropped for 5m; check the agent journal (journalctl -u seismic-prometheus-agent) for the destination's response"
+
+      - alert: AgentRemoteWriteLagging
+        expr: |
+          (
+            prometheus_remote_storage_highest_timestamp_in_seconds
+            - on (node) group_right ()
+            prometheus_remote_storage_queue_highest_sent_timestamp_seconds
+          ) > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus Agent on {{ $labels.node }} is {{ $value | humanizeDuration }} behind on {{ $labels.url }}"
+          description: "Delivery lag has exceeded 2m for 5m; the destination is slow or unreachable and the agent's WAL (6h at most) is filling"
+
+  - name: seismic-node-watchdog
+    rules:
+      # Always-firing alert. Route it to a dead man's switch (for example
+      # healthchecks.io) to be notified if the alerting pipeline itself dies.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Alerting pipeline is functional"

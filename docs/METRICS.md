@@ -171,9 +171,14 @@ epoch, Custodian socket failures), Summit critical and warning errors, disk
 space, checkpointer staleness, Custodian council rejections, and missing push
 telemetry, and page on Byzantine faults or when at least K validators are
 affected at once by any of the critical ones. The disk rule covers every
-filesystem Summit reports, wherever the node state lives. The healthy ranges
-above remain what to watch for yourself in your own Prometheus; operator alert
-rules for them will ship with this repository.
+filesystem Summit reports, wherever the node state lives.
+
+The per-node half of those rules, with the fleet layer removed and the healthy
+ranges above as thresholds, is in
+[`monitoring/alerts/seismic-node.yml`](../monitoring/alerts/seismic-node.yml)
+for your own Prometheus, with a matching Grafana dashboard in
+`monitoring/dashboards/`; [`monitoring/README.md`](../monitoring/README.md)
+explains how to load them and which labels they expect.
 
 ## Items to confirm against a running network
 
