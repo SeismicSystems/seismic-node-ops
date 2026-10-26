@@ -25,7 +25,10 @@ def start_observer(args: Any) -> None:
         conflicting_program = "summit-observer-checkpoint"
     systemd.reload_units()
     systemd.start_node(
-        summit_program, conflicting_program, custodian_program="observer-custodian"
+        summit_program,
+        conflicting_program,
+        checkpointer=inventory["env"].flag("CHECKPOINTER_ENABLED"),
+        custodian_program="observer-custodian",
     )
     monitoring.ensure_running(inventory, "observer")
     print(f"Observer {args.mode} startup requested successfully.")

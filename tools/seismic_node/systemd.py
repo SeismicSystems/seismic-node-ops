@@ -196,30 +196,36 @@ def stop_service(name: str) -> bool:
     return True
 
 
-def optional_services(custodian_program: str) -> tuple[bool, bool]:
-    """Detect optional Custodian and checkpointer units."""
-    return status(custodian_program).exists, status("checkpointer").exists
-
-
 def start_node(
     summit_program: str,
     conflicting_summit_program: str,
     *,
+    checkpointer: bool,
     custodian_program: str = "custodian",
 ) -> list[str]:
-    """Start a node in dependency order and reverse-clean partial startup."""
+    """Start a node in dependency order and reverse-clean partial startup.
+
+    The installer ships every unit file on every host, so unit existence says
+    nothing about what was configured. ``checkpointer`` must therefore come
+    from the validated node.env (``CHECKPOINTER_ENABLED``): the checkpointer
+    unit is present even when its binary and configuration were never
+    installed, and starting it would fail and unwind the rest of the node.
+    The Custodian is not optional; the caller selects the role-specific unit.
+    """
     # Normal and checkpoint Summit units declare Conflicts= with each other,
     # but refusing here keeps the CLI's own safety check independent of unit
     # metadata and supplements the shared kernel lock.
     require_stopped((conflicting_summit_program, "summit-deposit-rpc"))
+    require_service(custodian_program)
     require_service("reth")
     require_service(summit_program)
-    has_custodian, has_checkpointer = optional_services(custodian_program)
+    if checkpointer:
+        require_service("checkpointer")
     sequence = [
-        *([custodian_program] if has_custodian else []),
+        custodian_program,
         "reth",
         summit_program,
-        *(["checkpointer"] if has_checkpointer else []),
+        *(["checkpointer"] if checkpointer else []),
     ]
     started: list[str] = []
     try:

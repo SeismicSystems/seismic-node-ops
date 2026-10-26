@@ -43,6 +43,13 @@ node_cli = importlib.util.module_from_spec(CLI_SPEC)
 CLI_SPEC.loader.exec_module(node_cli)
 
 
+def inventory_with(**flags: bool) -> dict[str, object]:
+    """Minimal ``load_node`` result whose env answers only the given flags."""
+    env = mock.Mock(spec=nodeenv.NodeEnv)
+    env.flag.side_effect = lambda key: flags[key]
+    return {"env": env}
+
+
 class FixtureHandler(BaseHTTPRequestHandler):
     archive = b"checkpoint-archive"
     manifest = b""
@@ -632,7 +639,11 @@ class ValidatorTests(unittest.TestCase):
                 return_value=validator.StartDecision(start=True),
             ),
             mock.patch.object(checkpoint, "validate_checkpoint_start_configuration"),
-            mock.patch.object(checkpoint, "load_node"),
+            mock.patch.object(
+                checkpoint,
+                "load_node",
+                return_value=inventory_with(CHECKPOINTER_ENABLED=True),
+            ),
             mock.patch.object(
                 validator, "installed_node_public_key", return_value="11" * 32
             ),
@@ -654,7 +665,9 @@ class ValidatorTests(unittest.TestCase):
             )
         self.assertEqual(events, ["prepare", "start"])
         prepare.assert_called_once_with()
-        start_node.assert_called_once_with("summit-checkpoint", "summit")
+        start_node.assert_called_once_with(
+            "summit-checkpoint", "summit", checkpointer=True
+        )
 
     def test_stop_validates_inventory_and_stops_all_validator_modes(self) -> None:
         args = SimpleNamespace(node_env=None)
@@ -791,7 +804,11 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.output = io.StringIO()
         self.stack.enter_context(contextlib.redirect_stdout(self.output))
-        self.inventory = self.patch(checkpoint, "load_node")
+        self.inventory = self.patch(
+            checkpoint,
+            "load_node",
+            return_value=inventory_with(CHECKPOINTER_ENABLED=False),
+        )
         self.identity = self.patch(
             validator, "installed_node_public_key", return_value="11" * 32
         )
@@ -863,7 +880,9 @@ class ValidatorOnboardTests(unittest.TestCase):
         self.inventory.assert_has_calls(
             [mock.call("validator", Path("/etc/seismic/custom.env"))] * 2
         )
-        self.start.assert_called_once_with("summit", "summit-checkpoint")
+        self.start.assert_called_once_with(
+            "summit", "summit-checkpoint", checkpointer=False
+        )
         self.validate_checkpoint.assert_not_called()
         self.install.assert_not_called()
 
@@ -934,7 +953,9 @@ class ValidatorOnboardTests(unittest.TestCase):
         node_cli.handle_validator(args)
         self.validate_checkpoint.assert_has_calls([mock.call("validator")] * 2)
         self.install.assert_not_called()
-        self.start.assert_called_once_with("summit-checkpoint", "summit")
+        self.start.assert_called_once_with(
+            "summit-checkpoint", "summit", checkpointer=False
+        )
 
     def test_checkpoint_download_follows_authorization(self) -> None:
         self.account.side_effect = [
@@ -948,7 +969,9 @@ class ValidatorOnboardTests(unittest.TestCase):
             self.args("--snapshot-api-url", "https://snapshot.example")
         )
         self.install.assert_called_once()
-        self.start.assert_called_once_with("summit-checkpoint", "summit")
+        self.start.assert_called_once_with(
+            "summit-checkpoint", "summit", checkpointer=False
+        )
 
     def test_normal_rejects_checkpoint_sources_and_install_modifiers(self) -> None:
         for options in (
@@ -1102,16 +1125,26 @@ class ValidatorStartTests(unittest.TestCase):
 
     def test_normal_start_ignores_installed_checkpoint_config(self) -> None:
         with (
-            mock.patch.object(checkpoint, "load_node"),
+            mock.patch.object(
+                checkpoint,
+                "load_node",
+                return_value=inventory_with(CHECKPOINTER_ENABLED=False),
+            ),
             mock.patch.object(systemd, "reload_units"),
             mock.patch.object(systemd, "start_node") as start_node,
         ):
             validator.start_validator(self.start_args("normal"))
-        start_node.assert_called_once_with("summit", "summit-checkpoint")
+        start_node.assert_called_once_with(
+            "summit", "summit-checkpoint", checkpointer=False
+        )
 
     def test_checkpoint_start_validates_installed_configuration(self) -> None:
         with (
-            mock.patch.object(checkpoint, "load_node"),
+            mock.patch.object(
+                checkpoint,
+                "load_node",
+                return_value=inventory_with(CHECKPOINTER_ENABLED=True),
+            ),
             mock.patch.object(
                 checkpoint, "validate_checkpoint_start_configuration"
             ) as validate,
@@ -1120,7 +1153,9 @@ class ValidatorStartTests(unittest.TestCase):
         ):
             validator.start_validator(self.start_args("checkpoint"))
         validate.assert_called_once_with("validator")
-        start_node.assert_called_once_with("summit-checkpoint", "summit")
+        start_node.assert_called_once_with(
+            "summit-checkpoint", "summit", checkpointer=True
+        )
 
 
 class ObserverTests(unittest.TestCase):
@@ -1138,7 +1173,11 @@ class ObserverTests(unittest.TestCase):
                 mock.patch.object(
                     checkpoint, "CHECKPOINT_CONFIG_PATH", checkpoint_config
                 ),
-                mock.patch.object(checkpoint, "load_node"),
+                mock.patch.object(
+                    checkpoint,
+                    "load_node",
+                    return_value=inventory_with(CHECKPOINTER_ENABLED=False),
+                ),
                 mock.patch.object(
                     systemd,
                     "reload_units",
@@ -1156,6 +1195,7 @@ class ObserverTests(unittest.TestCase):
         start_node.assert_called_once_with(
             "summit-observer",
             "summit-observer-checkpoint",
+            checkpointer=False,
             custodian_program="observer-custodian",
         )
 

@@ -228,7 +228,9 @@ class NodeOrchestrationTests(unittest.TestCase):
             }
         )
         with mock.patch.object(systemd, "run_systemctl", side_effect=fake):
-            started = systemd.start_node("summit-checkpoint", "summit")
+            started = systemd.start_node(
+                "summit-checkpoint", "summit", checkpointer=True
+            )
         self.assertEqual(
             started, ["custodian", "reth", "summit-checkpoint", "checkpointer"]
         )
@@ -241,6 +243,72 @@ class NodeOrchestrationTests(unittest.TestCase):
                 "seismic-checkpointer.service",
             ],
         )
+
+    def test_disabled_checkpointer_is_not_started_even_when_unit_exists(self):
+        # The installer ships seismic-checkpointer.service unconditionally;
+        # with CHECKPOINTER_ENABLED=false its binary and config are absent, so
+        # starting it would fail and unwind the whole node. The configured
+        # flag, not unit presence, must decide.
+        fake = FakeSystemctl(
+            {
+                f"seismic-{u}.service": "inactive"
+                for u in (
+                    "reth",
+                    "summit",
+                    "summit-checkpoint",
+                    "deposit-rpc",
+                    "custodian",
+                    "checkpointer",
+                )
+            }
+        )
+        fake.fail_start.add("seismic-checkpointer.service")
+        with mock.patch.object(systemd, "run_systemctl", side_effect=fake):
+            started = systemd.start_node(
+                "summit", "summit-checkpoint", checkpointer=False
+            )
+        self.assertEqual(started, ["custodian", "reth", "summit"])
+        self.assertNotIn("seismic-checkpointer.service", fake.units("start"))
+        self.assertEqual(fake.units("stop"), [])
+        self.assertEqual(fake.states["seismic-checkpointer.service"], "inactive")
+
+    def test_enabled_checkpointer_requires_its_unit_before_starting_anything(self):
+        fake = FakeSystemctl(
+            {
+                f"seismic-{u}.service": "inactive"
+                for u in (
+                    "reth",
+                    "summit",
+                    "summit-checkpoint",
+                    "deposit-rpc",
+                    "custodian",
+                )
+            }
+        )
+        with (
+            mock.patch.object(systemd, "run_systemctl", side_effect=fake),
+            self.assertRaisesRegex(
+                systemd.ServiceError, "not installed: seismic-checkpointer.service"
+            ),
+        ):
+            systemd.start_node("summit", "summit-checkpoint", checkpointer=True)
+        self.assertEqual(fake.units("start"), [])
+
+    def test_custodian_unit_is_required(self):
+        fake = FakeSystemctl(
+            {
+                f"seismic-{u}.service": "inactive"
+                for u in ("reth", "summit", "summit-checkpoint", "deposit-rpc")
+            }
+        )
+        with (
+            mock.patch.object(systemd, "run_systemctl", side_effect=fake),
+            self.assertRaisesRegex(
+                systemd.ServiceError, "not installed: seismic-custodian.service"
+            ),
+        ):
+            systemd.start_node("summit", "summit-checkpoint", checkpointer=False)
+        self.assertEqual(fake.units("start"), [])
 
     def test_observer_uses_observer_custodian_unit(self):
         fake = FakeSystemctl(
@@ -258,6 +326,7 @@ class NodeOrchestrationTests(unittest.TestCase):
             started = systemd.start_node(
                 "summit-observer",
                 "summit-observer-checkpoint",
+                checkpointer=False,
                 custodian_program="observer-custodian",
             )
         self.assertEqual(started, ["observer-custodian", "reth", "summit-observer"])
@@ -273,7 +342,7 @@ class NodeOrchestrationTests(unittest.TestCase):
             mock.patch.object(systemd, "run_systemctl", side_effect=fake),
             self.assertRaisesRegex(systemd.ServiceError, "summit=active"),
         ):
-            systemd.start_node("summit-checkpoint", "summit")
+            systemd.start_node("summit-checkpoint", "summit", checkpointer=False)
         self.assertEqual(fake.units("start"), [])
 
     def test_partial_start_failure_stops_only_started_in_reverse(self):
@@ -296,7 +365,7 @@ class NodeOrchestrationTests(unittest.TestCase):
                 systemd.ServiceError, "summit-checkpoint failed during startup"
             ),
         ):
-            systemd.start_node("summit-checkpoint", "summit")
+            systemd.start_node("summit-checkpoint", "summit", checkpointer=False)
         # The failed unit is already quiescent (failed is a stopped state), so
         # only the units this command actually brought up are stopped.
         self.assertEqual(
@@ -319,7 +388,7 @@ class NodeOrchestrationTests(unittest.TestCase):
             mock.patch.object(systemd, "run_systemctl", side_effect=fake),
             self.assertRaises(systemd.ServiceError),
         ):
-            systemd.start_node("summit", "summit-checkpoint")
+            systemd.start_node("summit", "summit-checkpoint", checkpointer=False)
         self.assertEqual(fake.units("stop"), [])
         self.assertEqual(fake.states["seismic-reth.service"], "active")
         self.assertEqual(fake.states["seismic-custodian.service"], "active")

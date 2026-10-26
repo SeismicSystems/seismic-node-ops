@@ -468,7 +468,11 @@ def start_validator(args: Any, *, expected_node_public_key: str | None = None) -
         summit_program = "summit"
         conflicting_program = "summit-checkpoint"
     systemd.reload_units()
-    systemd.start_node(summit_program, conflicting_program)
+    systemd.start_node(
+        summit_program,
+        conflicting_program,
+        checkpointer=inventory["env"].flag("CHECKPOINTER_ENABLED"),
+    )
     monitoring.ensure_running(inventory, "validator")
     print(f"Validator {args.mode} startup requested successfully.")
 
