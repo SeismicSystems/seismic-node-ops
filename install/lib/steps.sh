@@ -536,12 +536,18 @@ step_keys() {
 render_template() {
     local source=$1 target=$2 mode=$3 description=$4
     shift 4
-    local vars=("$@") staging
+    local vars=("$@") staging unresolved
     staging=$(mktemp)
-    envsubst "$(printf '${%s} ' "${vars[@]}")" <"$source" >"$staging"
-    if grep -q '\${[A-Z_]*}' "$staging"; then
+    if ! envsubst "$(printf '${%s} ' "${vars[@]}")" <"$source" >"$staging"; then
         rm -f -- "$staging"
-        die "$description template has unresolved variables: $(grep -o '\${[A-Z_]*}' "$source" | sort -u | paste -sd' ')"
+        die "$description template rendering failed"
+    fi
+    # Diagnose only placeholders that remain after substitution, including
+    # ones introduced by a substituted value, before removing the staging file.
+    if grep -q '\${[A-Za-z_][A-Za-z0-9_]*}' "$staging"; then
+        unresolved=$(grep -o '\${[A-Za-z_][A-Za-z0-9_]*}' "$staging" | sort -u | paste -sd' ')
+        rm -f -- "$staging"
+        die "$description template has unresolved variables: $unresolved"
     fi
     install_file "$staging" "$target" "$mode" "$description"
     rm -f -- "$staging"

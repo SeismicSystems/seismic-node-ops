@@ -21,10 +21,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ShellCheck
+      - name: Install ShellCheck and template-rendering dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          sudo apt-get install --yes shellcheck gettext-base
 
       - name: Set up Go
         uses: actions/setup-go@v5
