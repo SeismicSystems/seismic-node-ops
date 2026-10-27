@@ -156,6 +156,19 @@ class UnitSchemaTests(unittest.TestCase):
                     f"--config {nodeenv.CHECKPOINT_START_CONFIG}", exec_start(name)
                 )
 
+    def test_agent_unit_gates_on_the_rendered_config(self):
+        """`monitoring install` renders prometheus.yml and creates the service
+        account; an enabled-but-uninstalled agent must skip before user lookup
+        (217/USER would loop under Restart=always), so the gate is a [Unit]
+        condition on that file, not the ExecCondition which runs as the user."""
+        from seismic_node import agent
+
+        unit = read_unit("seismic-prometheus-agent")
+        self.assertEqual(unit.get("Unit", "ConditionPathExists"), str(agent.CONFIG))
+        self.assertIn(
+            f"--config.file={agent.CONFIG}", exec_start("seismic-prometheus-agent")
+        )
+
     def test_summit_variants_conflict_with_each_other(self):
         validator = {
             "seismic-summit",

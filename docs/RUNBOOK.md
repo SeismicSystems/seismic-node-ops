@@ -834,8 +834,9 @@ operational choice, not a safety one:
   optional ones check `node.env` before starting (`ExecCondition=`) and skip
   cleanly unless `CHECKPOINTER_ENABLED=true` or, for the agent, the effective
   `MONITORING_MODE` is `push`, so they can stay enabled across a later change of
-  mode. The agent still needs `seismic-node monitoring install` before its first
-  start.
+  mode. The agent unit additionally skips until
+  `seismic-node monitoring install` has rendered its configuration, so enabling
+  it before that is harmless.
 
   ```bash
   sudo systemctl enable seismic-custodian seismic-checkpointer seismic-prometheus-agent
@@ -885,7 +886,8 @@ is back. For a controlled restart prefer `validator stop` followed by
 1. `seismic-node validator stop` (or `observer stop`).
 2. Install the new binary at its fixed path (step 3.4). Update `*_VERSION` in
    `node.env` so the file records what is deployed.
-3. `seismic-node validator start`.
+3. `seismic-node validator start --mode normal` (or `--mode checkpoint` if the
+   node was started that way; `observer start` likewise).
 
 Nothing else changes: units do not reference versions. Upgrade the components
 together, to the set a release of this repository pins in `node.env.example`,
@@ -905,8 +907,11 @@ sudo "$REPO/tools/seismic-node.py" checkpoint install --role validator \
 Roll back to the state before the last install:
 
 ```bash
-sudo "$REPO/tools/seismic-node.py" checkpoint rollback --role validator
+sudo "$REPO/tools/seismic-node.py" checkpoint rollback                 # lists the backups to choose from
+sudo "$REPO/tools/seismic-node.py" checkpoint rollback --backup /persistence/checkpoint-rollback/<backup> --yes
 ```
+
+The role comes from the backup's receipt, not from a flag.
 
 Backups are never deleted automatically; `checkpoint delete-backup` removes one
 after explicit confirmation.
@@ -958,9 +963,10 @@ had none before, creates the JWT secret at `OPENRESTY_JWT_SECRET_PATH`. Hand the
 printed token and `https://DOMAIN` to Seismic operations; they register the pull
 target and retire the push one. The agent's token and WAL stay on disk unused;
 if the unit is enabled at boot it stays enabled but its `ExecCondition=` skips
-the start while `MONITORING_MODE` is not `push`. With `TLS_MODE=external`, add
-the JWT-checked routes to your own proxy instead of running the `tls` step
-([3.12](#312-monitoring)).
+the start while `MONITORING_MODE` is not `push`. With `TLS_MODE=external`, run
+the `tls` step as above (in this mode it only creates and records the JWT
+secret; a host that was in `push` has none yet), skip the `openresty` line, and
+add the JWT-checked routes to your own proxy ([3.12](#312-monitoring)).
 
 **`pull` → `push`**
 

@@ -10,6 +10,10 @@ Description=Seismic Prometheus Agent
 Documentation=https://github.com/SeismicSystems/seismic-node-ops
 After=network-online.target
 Wants=network-online.target
+# `seismic-node monitoring install` renders this file and creates the service
+# account the unit runs as; before that, a start would fail on the missing
+# user (217/USER) and loop. The condition is checked before user lookup.
+ConditionPathExists=/etc/seismic/prometheus-agent/prometheus.yml
 
 [Service]
 Type=simple
