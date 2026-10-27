@@ -337,8 +337,8 @@ sudo install -o root -g root -m 0755 enclave/target/release/seismic-centralized-
 
 When the checkpointer is enabled, also build it and `mdbx_copy`. `mdbx_copy`
 must come from the **same** seismic-reth checkout as the Reth binary so its
-libmdbx matches Reth's database format. With `RETH_INSTALL_METHOD=prebuilt`
-the installer cannot derive it from the Reth binary, so point
+libmdbx matches Reth's database format. With `RETH_INSTALL_METHOD=prebuilt` the
+installer cannot derive it from the Reth binary, so point
 `RETH_MDBX_COPY_PREBUILT_PATH` at an `mdbx_copy` built as below from the same
 checkout; the installer compares the libmdbx `git describe` string embedded in
 both executables and refuses to install a mismatched pair:
@@ -690,12 +690,12 @@ the token. It starts nothing.
 The agent scrapes every endpoint in `targets.json` and itself (`9091`) every 15
 seconds, labelling each series with `node=<MONITORING_NODE_NAME>`,
 `instance=<MONITORING_NODE_NAME>`, `role=<SEISMIC_ROLE>`, `service=<service>`
-and `job=<service>/<node>`, and remote-writes over
-outbound HTTPS; port `9091` is a local status listener, not an inbound
-requirement. Its WAL keeps at least 5 minutes and at most 6 hours of unsent
-samples — an outage longer than that loses data, so watch free space. Seismic
-operations must register the node as a push source before the agent starts, and
-stop any central pull of the same node so series are not collected twice.
+and `job=<service>/<node>`, and remote-writes over outbound HTTPS; port `9091`
+is a local status listener, not an inbound requirement. Its WAL keeps at least 5
+minutes and at most 6 hours of unsent samples — an outage longer than that loses
+data, so watch free space. Seismic operations must register the node as a push
+source before the agent starts, and stop any central pull of the same node so
+series are not collected twice.
 
 #### Seeing your own metrics
 
@@ -862,11 +862,10 @@ Agent running. Equivalent manual commands are printed by `--help`; the units
 declare `Conflicts=` so the normal and checkpoint Summit variants can never run
 together.
 
-`systemctl restart seismic-reth` restarts Summit with it (`Requires=`
-propagates the restart job; Summit does not fail or wait `RestartSec`), ordered
-after Reth is back. For a controlled restart prefer
-`validator stop` followed by `validator start`, which also re-runs the CLI's
-checks.
+`systemctl restart seismic-reth` restarts Summit with it (`Requires=` propagates
+the restart job; Summit does not fail or wait `RestartSec`), ordered after Reth
+is back. For a controlled restart prefer `validator stop` followed by
+`validator start`, which also re-runs the CLI's checks.
 
 ### Upgrading a binary
 
