@@ -97,7 +97,7 @@ This is the contract every step below establishes. All paths except those under
 | `/etc/seismic/checkpoint-start.toml`     | `0644` | Written by `seismic-node checkpoint install`. Its presence allows the `*-checkpoint` units. |
 | `/etc/seismic/weak-subjectivity.toml`    | `0644` | Trust anchor named by the above; obtained from an independent source.                       |
 | `/etc/seismic/prometheus-agent/`         | `0750` | Agent config and token, group `seismic-prometheus`.                                         |
-| `/etc/seismic/openresty-jwt-secret`      | `0640` | `root:nogroup`; JWT secret for full mode or Custodian-only with pull monitoring.            |
+| `/etc/seismic/openresty-jwt-secret`      | `0640` | `root:nogroup`; JWT secret for full mode, or any other TLS mode with pull monitoring.       |
 
 ### Services (`/etc/systemd/system`, shipped verbatim from `install/templates/systemd/`)
 
