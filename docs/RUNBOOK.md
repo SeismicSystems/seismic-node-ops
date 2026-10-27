@@ -329,7 +329,7 @@ git clone --branch v0.1.0 https://github.com/SeismicSystems/seismic-reth.git
 (cd seismic-reth && cargo build --locked --profile maxperf --bin seismic-reth)
 sudo install -o root -g root -m 0755 seismic-reth/target/maxperf/seismic-reth /usr/local/bin/seismic-reth
 
-git clone --branch v0.1.0 https://github.com/SeismicSystems/enclave.git
+git clone --branch v0.1.1 https://github.com/SeismicSystems/enclave.git
 (cd enclave && cargo build --locked --release -p seismic-centralized-custodian-service)
 sudo install -o root -g root -m 0755 enclave/target/release/seismic-centralized-custodian-service \
         /usr/local/bin/seismic-centralized-custodian-service

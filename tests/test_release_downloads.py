@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -257,6 +258,24 @@ step_binaries
                     binaries[: index + 1],
                 )
                 self.assertFalse((run / "installed" / binary).exists())
+
+    def test_runbook_manual_installs_pin_the_node_env_versions(self):
+        """Section 3.4's fetch and git clone lines must name the same release
+        as node.env.example, or a manual install gets a different binary than
+        the installer (the v0.1.0 Custodian has no /metrics, for one)."""
+        text = (ROOT / "docs/RUNBOOK.md").read_text()
+        for key, repo, _ in COMPONENTS:
+            version = self.values[f"{key}_VERSION"]
+            with self.subTest(repo=repo):
+                fetches = re.findall(rf"^fetch {repo}\s+(\S+)", text, re.MULTILINE)
+                clones = re.findall(
+                    rf"git clone --branch (\S+) https://github.com/SeismicSystems/{repo}\.git",
+                    text,
+                )
+                self.assertEqual(len(fetches), 1, fetches)
+                self.assertEqual(len(clones), 1, clones)
+                self.assertEqual(fetches[0], version)
+                self.assertEqual(clones[0], version)
 
     def test_runbook_fetch_refuses_failed_verification_without_errexit(self):
         text = (ROOT / "docs/RUNBOOK.md").read_text()
