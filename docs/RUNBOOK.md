@@ -484,7 +484,7 @@ sudo chmod 0600 /persistence/keys/reth/p2p-key
 
 ```bash
 sudo -u seismic /usr/local/bin/summit keys generate --key-store-path /persistence/keys/summit -y
-sudo chmod 0600 /persistence/keys/summit/*.pem
+sudo chmod 0600 /persistence/keys/summit/node_key.pem /persistence/keys/summit/consensus_key.pem
 ```
 
 **observer** — an observer uses the **parent validator's** `node_key.pem`
@@ -581,15 +581,20 @@ sudo systemctl daemon-reload
 sudo systemd-analyze verify /etc/systemd/system/seismic-*.service
 ```
 
-`verify` prints one notice at this point, which is expected:
+`verify` reports units whose binary is not installed, which is expected for:
 
 ```text
 seismic-prometheus-agent.service: Command /usr/local/lib/seismic/prometheus-agent/current/prometheus is not executable: No such file or directory
+seismic-checkpointer.service: Command /usr/local/bin/seismic-checkpointer is not executable: No such file or directory
 ```
 
-The agent binary is installed by `seismic-node monitoring install` in step 3.12;
-until then the unit loads but has nothing to run, and `ConditionPathExists=`
-keeps it from starting. Any other output from `verify` is a real problem.
+The agent binary is installed by `seismic-node monitoring install` in step 3.12,
+so its notice disappears then. The checkpointer's appears only with
+`CHECKPOINTER_ENABLED=false`, where step 3.4 did not fetch the binary; with the
+checkpointer enabled it must not appear, or step 3.4 is incomplete. Both units
+load but have nothing to run, and their conditions (`ConditionPathExists=`,
+`ExecCondition=`) keep them from starting. Any other output from `verify` is a
+real problem.
 
 Installing all ten units on every host is intentional: the units that do not
 apply to this role or to disabled features are inert. Nothing starts them, and
