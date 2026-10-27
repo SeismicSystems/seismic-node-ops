@@ -176,6 +176,77 @@ class InstallerTests(unittest.TestCase):
         self.assertIn("Dry run: no changes were made.", out)
         self.assertFalse(marker.exists(), "node.env was executed by the installer")
 
+    def test_package_step_bootstraps_curl_and_gpg_before_using_them(self):
+        """Download mode adds GitHub's apt repository with curl and gpg; a
+        minimal image has neither, so the step must install them from
+        Ubuntu's repositories first. Replayed with the real step function on
+        a PATH that lacks curl, gpg, gh and apt-get; every host operation is
+        intercepted and recorded in order."""
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        for tool in ("apt-get", "curl", "gpg", "dpkg", "gh"):
+            stub = bin_dir / tool
+            stub.write_text(
+                "#!/bin/sh\n"
+                '[ -e "$STUB_DIR/$(basename "$0").available" ] || exit 127\n'
+                'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$STUB_LOG"\n'
+                'case "$(basename "$0") $1" in\n'
+                '  "gpg --show-keys") echo "fpr:::::::::7F38BBB59D064DBCB3D84D725612B36462313325:" ;;\n'
+                '  "dpkg --print-architecture") echo amd64 ;;\n'
+                '  "apt-get install") for p; do case $p in curl) touch "$STUB_DIR/curl.available" ;; gnupg) touch "$STUB_DIR/gpg.available" ;; esac; done ;;\n'
+                "esac\n"
+                "exit 0\n"
+            )
+            stub.chmod(0o755)
+        # apt-get and dpkg are always present; curl and gpg appear only once
+        # the step has installed them (gnupg provides gpg).
+        (bin_dir / "apt-get.available").touch()
+        (bin_dir / "dpkg.available").touch()
+        (bin_dir / "gh.available").touch()
+        log = self.root / "ops.log"
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                """set -euo pipefail
+export PATH="$STUB_DIR:/usr/bin:/bin"
+source "$ROOT/install/lib/common.sh"
+source "$ROOT/install/lib/steps.sh"
+LOG_FILE=/dev/null
+SUMMIT_INSTALL_METHOD=download RETH_INSTALL_METHOD=download CUSTODIAN_INSTALL_METHOD=download
+CHECKPOINTER_ENABLED=false TLS_MODE=disabled
+ensure_directory() { :; }
+install_file() { printf 'install_file %s\\n' "$2" >> "$STUB_LOG"; }
+step_packages
+""",
+            ],
+            env={
+                **os.environ,
+                "ROOT": str(ROOT),
+                "STUB_DIR": str(bin_dir),
+                "STUB_LOG": str(log),
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        ops = log.read_text().splitlines()
+        self.assertEqual(ops[0], "apt-get update")
+        self.assertEqual(ops[1], "apt-get install -y -- curl ca-certificates gnupg")
+        self.assertTrue(ops[2].startswith("curl "), ops)
+        self.assertTrue(ops[3].startswith("gpg --show-keys"), ops)
+        self.assertIn(
+            "install_file /etc/apt/keyrings/githubcli-archive-keyring.gpg", ops
+        )
+        self.assertIn("install_file /etc/apt/sources.list.d/github-cli.list", ops)
+        self.assertEqual(ops.index("apt-get update", 1), len(ops) - 3)
+        self.assertTrue(
+            ops[-2].startswith("apt-get install -y -- python3 curl jq"), ops
+        )
+        self.assertEqual(ops[-1], "gh attestation --help")
+
     def test_real_run_requires_root(self):
         if os.geteuid() == 0:
             self.skipTest("running as root")

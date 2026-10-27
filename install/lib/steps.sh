@@ -111,8 +111,15 @@ step_packages() {
     _out "Packages: ${PACKAGES[*]}"
     export DEBIAN_FRONTEND=noninteractive
     if needs_download; then
-        # gpg is needed to check the key fingerprint before trusting the repo.
-        command -v gpg >/dev/null || apt-get install -y -qq gnupg >>"$LOG_FILE" 2>&1 || die "Could not install gnupg; see $LOG_FILE"
+        # Adding GitHub's repository needs curl for its key and gpg to check
+        # the fingerprint before trusting it. Neither is guaranteed on a
+        # minimal image, so install them from Ubuntu's own repositories
+        # first, with an index refresh so that works on a fresh host too.
+        info "Updating apt package metadata..."
+        apt-get update >>"$LOG_FILE" 2>&1 || die "apt-get update failed; see $LOG_FILE"
+        info "Installing bootstrap packages for the GitHub CLI repository..."
+        apt-get install -y -- curl ca-certificates gnupg >>"$LOG_FILE" 2>&1 \
+            || die "Could not install curl, ca-certificates and gnupg; see $LOG_FILE"
         add_github_cli_repository
     fi
     info "Updating apt package metadata..."
