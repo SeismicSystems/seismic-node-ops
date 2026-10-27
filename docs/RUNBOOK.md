@@ -969,9 +969,14 @@ for u in /etc/systemd/system/seismic-*.service; do
     printf '[Service]\nUser=%s\nGroup=%s\n' "$NEW" "$NEW" > "$u.d/20-user.conf"
 done
 # Custodian grants socket access by uid; it must name the account Reth runs as.
-printf '[Service]\nExecStart=\n' > /etc/systemd/system/seismic-custodian.service.d/20-user.conf
-sed -n '/^ExecStart=/,/--allow/p' /etc/systemd/system/seismic-custodian.service \
-    | sed "s/--allow seismic:/--allow $NEW:/" >> /etc/systemd/system/seismic-custodian.service.d/20-user.conf
+# Append to the drop-in written above so User=/Group= survive, and cover whichever
+# Custodian unit this host has (validator or observer).
+for u in /etc/systemd/system/seismic-custodian.service /etc/systemd/system/seismic-observer-custodian.service; do
+    [ -f "$u" ] || continue
+    printf 'ExecStart=\n' >> "$u.d/20-user.conf"
+    sed -n '/^ExecStart=/,/--allow/p' "$u" \
+        | sed "s/--allow seismic:/--allow $NEW:/" >> "$u.d/20-user.conf"
+done
 chown -R "$NEW:$NEW" /persistence/reth /persistence/summit /persistence/keys \
                      /persistence/custodian /persistence/checkpoints 2>/dev/null
 systemctl daemon-reload

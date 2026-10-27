@@ -297,6 +297,114 @@ class ExecStartExpansionTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--council-listen") + 1], "127.0.0.1:7876")
 
 
+def runbook_block(heading: str) -> str:
+    """The first ```bash block under a RUNBOOK heading."""
+    text = (ROOT / "docs/RUNBOOK.md").read_text()
+    section = text.split(heading, 1)[1]
+    return section.split("```bash\n", 1)[1].split("```", 1)[0]
+
+
+def effective_service_settings(unit: Path) -> dict[str, list[str]]:
+    """[Service] values of a unit with its drop-ins applied the way systemd
+    does: later assignments append to list settings, and an empty assignment
+    resets the list, so ``ExecStart=`` followed by ``ExecStart=...`` replaces."""
+    settings: dict[str, list[str]] = {}
+    for path in [unit, *sorted((unit.parent / f"{unit.name}.d").glob("*.conf"))]:
+        text = re.sub(r"\\\n\s*", " ", path.read_text())
+        section = None
+        for line in text.splitlines():
+            if line.startswith("["):
+                section = line.strip()
+                continue
+            if section != "[Service]" or not line.strip() or line.startswith("#"):
+                continue
+            key, _, value = line.partition("=")
+            if value:
+                settings.setdefault(key, []).append(value)
+            else:
+                settings[key] = []
+    return settings
+
+
+class RunbookAccountOverrideTests(unittest.TestCase):
+    """Replay runbook section 7 (running as a different account) against the
+    shipped units, as the installer lays them out."""
+
+    def override(self, units: set[str]) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        system = root / "etc/systemd/system"
+        system.mkdir(parents=True)
+        for name in units:
+            shutil.copy(UNITS_DIR / f"{name}.service", system / f"{name}.service")
+            dropin = system / f"{name}.service.d"
+            dropin.mkdir()
+            shutil.copy(HARDENING, dropin / "10-hardening.conf")
+        script = runbook_block("## 7. Running as a different account").replace(
+            "/etc/systemd/system", str(system)
+        )
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "set -euo pipefail\n"
+                'useradd() { printf "%s\\n" "$*" >> "$ROOT/useradd"; }\n'
+                'chown() { printf "%s\\n" "$*" >> "$ROOT/chown"; }\n'
+                'systemctl() { printf "%s\\n" "$*" >> "$ROOT/systemctl"; }\n' + script,
+            ],
+            env={"PATH": "/usr/bin:/bin", "ROOT": str(root)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((root / "systemctl").read_text(), "daemon-reload\n")
+        self.assertIn("--user-group ops", (root / "useradd").read_text())
+        self.assertIn("/persistence/custodian", (root / "chown").read_text())
+        return system
+
+    def test_every_node_service_runs_as_the_new_account(self):
+        for role, units in (
+            ("validator", VALIDATOR_UNITS),
+            ("observer", OBSERVER_UNITS),
+        ):
+            system = self.override(units)
+            for name in units:
+                with self.subTest(role=role, unit=name):
+                    settings = effective_service_settings(system / f"{name}.service")
+                    if name == "seismic-prometheus-agent":
+                        self.assertNotEqual(settings["User"][-1], "ops")
+                        continue
+                    self.assertEqual(settings["User"][-1], "ops")
+                    self.assertEqual(settings["Group"][-1], "ops")
+
+    def test_custodian_keeps_its_account_and_allows_the_new_one(self):
+        for role, units, custodian in (
+            ("validator", VALIDATOR_UNITS, "seismic-custodian"),
+            ("observer", OBSERVER_UNITS, "seismic-observer-custodian"),
+        ):
+            with self.subTest(role=role):
+                system = self.override(units)
+                unit = system / f"{custodian}.service"
+                original = shlex.split(exec_start(custodian))
+                settings = effective_service_settings(unit)
+                # User=/Group= from the loop must survive the ExecStart rewrite:
+                # the data directory is chowned to the new account right after.
+                self.assertEqual(settings["User"][-1], "ops")
+                self.assertEqual(settings["Group"][-1], "ops")
+                # Exactly one ExecStart remains, identical to the shipped one
+                # except for the socket ACL naming the account Reth runs as.
+                self.assertEqual(len(settings["ExecStart"]), 1)
+                rewritten = shlex.split(settings["ExecStart"][0])
+                self.assertEqual(rewritten[-1], "ops:tx-io,rng")
+                self.assertEqual(rewritten[:-1], original[:-1])
+                self.assertNotIn("seismic:tx-io,rng", rewritten)
+                dropin = (unit.parent / f"{unit.name}.d/20-user.conf").read_text()
+                self.assertEqual(dropin.count("[Service]"), 1)
+
+
 @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze not available")
 class SystemdAnalyzeTests(unittest.TestCase):
     def setUp(self):
