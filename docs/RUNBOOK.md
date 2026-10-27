@@ -1007,7 +1007,11 @@ systemctl daemon-reload
 ```
 
 Drop-ins survive reinstalling the unit files; editing the units in place does
-not.
+not. The installer, however, still owns the state for `seismic`: a full rerun
+(or `--only directories` / `--only keys`) re-owns `/persistence/*` and
+`KEYS_DIR` to `seismic:seismic`, after which the units above cannot read them.
+After any rerun that is not limited to `--only units,tls`, repeat the `chown`
+line.
 
 ## 8. Automating with configuration management
 

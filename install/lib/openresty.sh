@@ -313,7 +313,7 @@ openresty_needs_jwt() {
 # checkpointer only exists when enabled. Empty outside pull mode.
 render_metrics_locations() {
     [[ "${MONITORING_MODE:-off}" == pull ]] || return 0
-    local template snippet service upstream
+    local template snippet service upstream entry
     template=$(<"$TEMPLATES_DIR/openresty/metrics-location.conf")
     local -a services=(
         "summit=9090/"
