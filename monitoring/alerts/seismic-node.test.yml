@@ -130,6 +130,130 @@ tests:
               summary: "Checkpointer metrics unavailable on node-0"
               description: "Prometheus cannot scrape node-0; snapshots from this node are not being produced or served"
 
+  # A node that stops delivering: healthy samples for 1m, then none. In push
+  # mode this is what a dead host, stopped agent or lost connectivity looks
+  # like. The `up == 0` alerts never fire (there is no 0); the telemetry
+  # group does, from 2m without samples plus 2m `for`, and keeps firing.
+  # A second node that keeps reporting, even with a failed scrape, is left
+  # alone.
+  - name: a node whose samples stop is reported missing, not down
+    interval: 15s
+    input_series:
+      - series: 'up{job="summit/node-0",instance="node-0",node="node-0"}'
+        values: "1x4"
+      - series: 'up{job="reth/node-0",instance="node-0",node="node-0"}'
+        values: "1x4"
+      - series: 'up{job="custodian/node-0",instance="node-0",node="node-0"}'
+        values: "1x4"
+      - series: 'up{job="prometheus-agent/node-0",instance="node-0",node="node-0"}'
+        values: "1x4"
+      - series: 'summit_blocks_committed_total{job="summit/node-0",instance="node-0",node="node-0"}'
+        values: "0+5x4"
+      - series: 'up{job="summit/node-1",instance="node-1",node="node-1"}'
+        values: "1x600"
+      - series: 'up{job="reth/node-1",instance="node-1",node="node-1"}'
+        values: "0x600"
+    promql_expr_test:
+      # The inventory learns every stream from its first sample.
+      - eval_time: 1m
+        expr: count by (node) (monitoring:expected_push_stream)
+        exp_samples:
+          - labels: '{node="node-0"}'
+            value: 4
+          - labels: '{node="node-1"}'
+            value: 2
+      # ...and keeps it long after the samples are gone.
+      - eval_time: 2h
+        expr: count by (node) (monitoring:expected_push_stream)
+        exp_samples:
+          - labels: '{node="node-0"}'
+            value: 4
+          - labels: '{node="node-1"}'
+            value: 2
+      - eval_time: 2h
+        expr: monitoring:push_stream_missing
+        exp_samples:
+          - labels: 'monitoring:push_stream_missing{job="custodian/node-0",node="node-0"}'
+            value: 1
+          - labels: 'monitoring:push_stream_missing{job="prometheus-agent/node-0",node="node-0"}'
+            value: 1
+          - labels: 'monitoring:push_stream_missing{job="reth/node-0",node="node-0"}'
+            value: 1
+          - labels: 'monitoring:push_stream_missing{job="summit/node-0",node="node-0"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SummitDown
+        exp_alerts: []
+      # Only node-1's failed scrape is a Down alert; node-0's silence is not.
+      - eval_time: 10m
+        alertname: RethDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: reth/node-1
+              instance: node-1
+              node: node-1
+            exp_annotations:
+              summary: "Reth metrics unavailable on node-1"
+              description: "Prometheus cannot scrape node-1; this proves metrics unavailability, not necessarily process shutdown"
+      - eval_time: 10m
+        alertname: CustodianDown
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: SummitStalled
+        exp_alerts: []
+      - eval_time: 4m45s
+        alertname: NodeTelemetryMissing
+        exp_alerts: []
+      - eval_time: 5m15s
+        alertname: NodeTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+            exp_annotations:
+              summary: "Node telemetry missing on node-0"
+              description: "An expected agent, Summit, Reth or Custodian stream has no samples in the last 2m, continuously for 2m. Check the host, the agent (journalctl -u seismic-prometheus-agent), the network and the remote-write credentials; this does not prove the node stopped. Query monitoring:push_stream_missing for the missing jobs"
+      - eval_time: 2h
+        alertname: NodeTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+            exp_annotations:
+              summary: "Node telemetry missing on node-0"
+              description: "An expected agent, Summit, Reth or Custodian stream has no samples in the last 2m, continuously for 2m. Check the host, the agent (journalctl -u seismic-prometheus-agent), the network and the remote-write credentials; this does not prove the node stopped. Query monitoring:push_stream_missing for the missing jobs"
+
+  # Samples resume: the alert clears. A checkpointer stream that disappears
+  # (CHECKPOINTER_ENABLED switched off) is not missing telemetry.
+  - name: telemetry that resumes clears, a retired checkpointer does not alert
+    interval: 15s
+    input_series:
+      - series: 'up{job="summit/node-0",instance="node-0",node="node-0"}'
+        values: "1x4 _x40 1x40"
+      - series: 'up{job="checkpointer/node-0",instance="node-0",node="node-0"}'
+        values: "1x4"
+    alert_rule_test:
+      - eval_time: 5m15s
+        alertname: NodeTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              node: node-0
+            exp_annotations:
+              summary: "Node telemetry missing on node-0"
+              description: "An expected agent, Summit, Reth or Custodian stream has no samples in the last 2m, continuously for 2m. Check the host, the agent (journalctl -u seismic-prometheus-agent), the network and the remote-write credentials; this does not prove the node stopped. Query monitoring:push_stream_missing for the missing jobs"
+      - eval_time: 12m
+        alertname: NodeTelemetryMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeTelemetryMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: CheckpointerDown
+        exp_alerts: []
+
   # Summit committing 5 blocks per scrape for 2m, then nothing; Reth's head
   # flat throughout. Nothing fires while blocks flow.
   - name: progress stalls fire once the window shows no progress

@@ -59,7 +59,6 @@ class OperatorRulesTests(unittest.TestCase):
     def test_fleet_layer_is_absent_and_per_node_alerts_present(self):
         for fleet_only in (
             "ValidatorFleetCritical",
-            "NodeTelemetryMissing",
             "validator:affected",
             "validator:blackbox_failure_active",
             "validator:progress_stall_active",
@@ -76,6 +75,7 @@ class OperatorRulesTests(unittest.TestCase):
                 "RethDown",
                 "CustodianDown",
                 "CheckpointerDown",
+                "NodeTelemetryMissing",
                 "SummitStalled",
                 "RethStalled",
                 "RethNoPeers",
@@ -96,6 +96,33 @@ class OperatorRulesTests(unittest.TestCase):
         # The one recording rule each event alert is defined on.
         self.assertIn("record: summit:critical_error_event_by_node_reason", self.text)
         self.assertIn("record: summit:warning_error_event_by_node_reason", self.text)
+
+    def test_missing_telemetry_inventory_is_self_maintained(self):
+        """Seismic renders the expected streams from its node inventory; the
+        operator file has no inventory to render from, so the expected set
+        must learn from arriving samples and latch on its own last value."""
+        self.assertIn("record: monitoring:expected_push_stream", self.text)
+        self.assertIn("record: monitoring:push_stream_missing", self.text)
+        expected = re.search(
+            r"record: monitoring:expected_push_stream\n\s+expr: \|\n(.*?)\n\n",
+            self.text,
+            re.DOTALL,
+        ).group(1)
+        self.assertIn(
+            'present_over_time(up{job=~"(summit|reth|custodian|prometheus-agent)/.*"}[2m])',
+            expected,
+        )
+        self.assertNotIn("checkpointer", expected)
+        self.assertIn("max by (node, job) (monitoring:expected_push_stream)", expected)
+        # The missing check and the alert match the central push rules.
+        self.assertIn(
+            "monitoring:expected_push_stream\n          unless on (node, job)\n"
+            "          present_over_time(up[2m])",
+            self.text,
+        )
+        self.assertIn(
+            "expr: max by (node) (monitoring:push_stream_missing) > 0", self.text
+        )
 
     def test_thresholds_are_the_central_defaults(self):
         for expected in (

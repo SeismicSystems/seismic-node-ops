@@ -27,7 +27,7 @@
       "id": 2,
       "type": "stat",
       "title": "Service up",
-      "description": "1 when the scrape succeeded. 0 proves metrics unavailability, not necessarily that the process is down (alerts SummitDown, RethDown, CustodianDown after 2m; CheckpointerDown as a warning). A node without CHECKPOINTER_ENABLED has no checkpointer series.",
+      "description": "1 when the scrape succeeded. 0 proves metrics unavailability, not necessarily that the process is down (alerts SummitDown, RethDown, CustodianDown after 2m; CheckpointerDown as a warning). A gap with no value at all means samples stopped arriving: in push mode a dead host, stopped agent or lost connectivity (NodeTelemetryMissing after 2m + 2m). A node without CHECKPOINTER_ENABLED has no checkpointer series.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

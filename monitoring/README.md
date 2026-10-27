@@ -86,6 +86,31 @@ tests state the expected behaviour at the defaults.
 `Watchdog` always fires. Route it to a dead man's switch (for example
 healthchecks.io) so you learn when the alerting pipeline itself stops.
 
+### A node that stops sending
+
+The `…Down` alerts need the agent to deliver a failed scrape (`up == 0`). In
+push mode a dead host, a stopped agent, or lost remote-write connectivity
+delivers nothing, and after a few minutes those alerts simply have no series to
+evaluate. `NodeTelemetryMissing` covers that case: it fires when a stream that
+has been arriving stops for 2m, continuously for 2m, the same thresholds Seismic
+uses centrally.
+
+Seismic renders its expected streams from a node inventory. These rules have no
+inventory to render from, so `monitoring:expected_push_stream` builds its own:
+every `summit/<node>`, `reth/<node>`, `custodian/<node>` and
+`prometheus-agent/<node>` stream joins on its first sample and stays because the
+rule re-reads its own last value. The checkpointer is not expected, since it is
+optional and can be switched off later. Consequences:
+
+- Nothing to configure for a new node; it is expected from its first sample.
+- A retired node keeps alerting until you delete its
+  `monitoring:expected_push_stream{node="<node>"}` series (Prometheus admin API,
+  `--web.enable-admin-api`) or keep Prometheus stopped for 5m; nodes that are
+  still live re-register on their next sample.
+- With your own scraper instead of push mode (`MONITORING_MODE=off` above), a
+  target you remove from `scrape_configs` is reported missing in the same way
+  until retired.
+
 ## Loading the dashboard
 
 Import `dashboards/seismic-node.json` in Grafana (Dashboards → New → Import) and

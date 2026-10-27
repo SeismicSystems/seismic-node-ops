@@ -61,6 +61,47 @@ groups:
           summary: "Checkpointer metrics unavailable on {{ $labels.node }}"
           description: "Prometheus cannot scrape {{ $labels.instance }}; snapshots from this node are not being produced or served"
 
+  - name: seismic-node-telemetry
+    rules:
+      # The `up == 0` alerts above need the agent to report a failed scrape.
+      # In MONITORING_MODE=push a dead host, a stopped agent, or lost
+      # remote-write connectivity simply stops the samples: `up` goes stale
+      # and the rules above evaluate to nothing. This group expects every
+      # stream that has ever arrived to keep arriving.
+      #
+      # Seismic's central rules render the expected streams from their node
+      # inventory. Here the inventory maintains itself: a (node, job) pair
+      # joins when its first `up` sample arrives and stays because the rule
+      # re-reads its own last value. It is kept only while this Prometheus
+      # keeps evaluating the rule; if Prometheus is down for more than 5m the
+      # inventory starts empty and live nodes re-register on their next
+      # sample. To retire a node, delete its monitoring:expected_push_stream
+      # series (admin API), or stop Prometheus for 5m. The checkpointer is not
+      # expected: it is optional and can be disabled later.
+      - record: monitoring:expected_push_stream
+        expr: |
+          max by (node, job) (
+            present_over_time(up{job=~"(summit|reth|custodian|prometheus-agent)/.*"}[2m])
+          )
+          or
+          max by (node, job) (monitoring:expected_push_stream)
+
+      # Expected streams with no sample in the last 2m, whatever its value.
+      - record: monitoring:push_stream_missing
+        expr: |
+          monitoring:expected_push_stream
+          unless on (node, job)
+          present_over_time(up[2m])
+
+      - alert: NodeTelemetryMissing
+        expr: max by (node) (monitoring:push_stream_missing) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node telemetry missing on {{ $labels.node }}"
+          description: "An expected agent, Summit, Reth or Custodian stream has no samples in the last 2m, continuously for 2m. Check the host, the agent (journalctl -u seismic-prometheus-agent), the network and the remote-write credentials; this does not prove the node stopped. Query monitoring:push_stream_missing for the missing jobs"
+
   - name: seismic-node-progress
     rules:
       # Progress stalls: the process answers scrapes and reports no error, but
