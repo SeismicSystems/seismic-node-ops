@@ -257,7 +257,7 @@ must match Reth's.
 | Binary                                                 | Repository                             | Build                                                                     |
 | ------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------- |
 | `/usr/local/bin/summit`                                | `SeismicSystems/summit`                | `cargo build --locked --release --features prom`                          |
-| `/usr/local/bin/seismic-reth`                          | `SeismicSystems/seismic-reth`          | `cargo build --locked --release`                                          |
+| `/usr/local/bin/seismic-reth`                          | `SeismicSystems/seismic-reth`          | `cargo build --locked --profile maxperf --bin seismic-reth`               |
 | `/usr/local/bin/seismic-centralized-custodian-service` | `SeismicSystems/enclave`               | `cargo build --locked --release -p seismic-centralized-custodian-service` |
 | `/usr/local/bin/seismic-checkpointer` (optional)       | `SeismicSystems/seismic-checkpointer`  | `cargo build --locked --release`                                          |
 | `/usr/local/bin/mdbx_copy` (optional)                  | vendored libmdbx inside `seismic-reth` | `make mdbx_copy` — see below                                              |
@@ -322,8 +322,10 @@ git clone --branch v0.1.0 https://github.com/SeismicSystems/summit.git
 sudo install -o root -g root -m 0755 summit/target/release/summit /usr/local/bin/summit
 
 git clone --branch v0.1.0 https://github.com/SeismicSystems/seismic-reth.git
-(cd seismic-reth && cargo build --locked --release)
-sudo install -o root -g root -m 0755 seismic-reth/target/release/seismic-reth /usr/local/bin/seismic-reth
+# The release profile for Reth is maxperf (fat LTO, one codegen unit), as in
+# seismic-reth's release workflow; it builds slower and lands in target/maxperf.
+(cd seismic-reth && cargo build --locked --profile maxperf --bin seismic-reth)
+sudo install -o root -g root -m 0755 seismic-reth/target/maxperf/seismic-reth /usr/local/bin/seismic-reth
 
 git clone --branch v0.1.0 https://github.com/SeismicSystems/enclave.git
 (cd enclave && cargo build --locked --release -p seismic-centralized-custodian-service)
