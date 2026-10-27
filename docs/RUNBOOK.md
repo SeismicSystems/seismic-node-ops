@@ -822,16 +822,24 @@ operational choice, not a safety one:
 
 - **validator** — the shipped policy is to leave `seismic-reth` and the Summit
   units disabled and run `seismic-node validator start` after a reboot. The
-  auxiliary units may be enabled:
+  auxiliary units may be enabled. Every unit is installed on every host, so
+  enable `seismic-checkpointer` only with `CHECKPOINTER_ENABLED=true` and
+  `seismic-prometheus-agent` only after `seismic-node monitoring install`:
+  without their binaries both start cleanly as far as systemd is concerned and
+  then restart the exec failure every 5 s until stopped.
 
   ```bash
-  systemctl enable seismic-custodian seismic-checkpointer seismic-prometheus-agent
+  sudo systemctl enable seismic-custodian
+  sudo systemctl enable seismic-checkpointer        # CHECKPOINTER_ENABLED=true
+  sudo systemctl enable seismic-prometheus-agent    # after monitoring install
   ```
 
-- **observer** — enabling the observer Summit unit also pulls in Reth at boot:
+- **observer** — enabling the observer Summit unit also pulls in Reth at boot;
+  the same checkpointer caveat applies:
 
   ```bash
-  systemctl enable seismic-observer seismic-observer-custodian seismic-checkpointer
+  sudo systemctl enable seismic-observer seismic-observer-custodian
+  sudo systemctl enable seismic-checkpointer        # CHECKPOINTER_ENABLED=true
   ```
 
 Operators who prefer validators to come back unattended after a reboot may

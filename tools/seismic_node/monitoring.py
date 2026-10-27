@@ -33,9 +33,25 @@ def enabled(env: nodeenv.NodeEnv) -> bool:
 def ensure_running(inventory: dict[str, Any], role: str) -> None:
     """Do not let telemetry errors undo authorized node startup."""
     try:
-        if configured(inventory, role):
-            systemd.start_service(PROGRAM)
-            print("Prometheus Agent is running.")
+        if not configured(inventory, role):
+            return
+        # The unit is installed on every host; its binary, config and token
+        # only exist after `monitoring install`. Starting it before that
+        # succeeds as far as systemd is concerned and then restarts the exec
+        # failure every RestartSec forever, so check first.
+        env = inventory["env"]
+        try:
+            agent.check_existing(env)
+        except NodeError as error:
+            print(
+                "WARNING: Prometheus Agent not started: "
+                f"{error}. Install it with `seismic-node monitoring install` "
+                "and start it with `seismic-node monitoring start`.",
+                file=sys.stderr,
+            )
+            return
+        systemd.start_service(PROGRAM)
+        print("Prometheus Agent is running.")
     except (NodeError, OSError):
         print(
             "WARNING: Prometheus Agent could not be started or verified. "

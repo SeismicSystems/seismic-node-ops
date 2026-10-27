@@ -587,10 +587,15 @@ class InstallationTests(unittest.TestCase):
 class LifecycleTests(unittest.TestCase):
     def test_ensure_running_is_best_effort(self):
         inventory = {"env": env()}
-        with mock.patch.object(systemd, "start_service") as start:
+        with (
+            mock.patch.object(agent, "check_existing") as check,
+            mock.patch.object(systemd, "start_service") as start,
+        ):
             monitoring.ensure_running(inventory, "validator")
+        check.assert_called_once_with(inventory["env"])
         start.assert_called_once_with("prometheus-agent")
         with (
+            mock.patch.object(agent, "check_existing"),
             mock.patch.object(
                 systemd, "start_service", side_effect=systemd.ServiceError("x")
             ),
@@ -598,6 +603,27 @@ class LifecycleTests(unittest.TestCase):
         ):
             monitoring.ensure_running(inventory, "validator")
         self.assertIn("WARNING", err.getvalue())
+
+    def test_ensure_running_does_not_start_an_uninstalled_agent(self):
+        """The unit exists on every host, but before `monitoring install` its
+        binary does not: systemctl start would succeed and the unit would
+        restart the exec failure every RestartSec forever."""
+        inventory = {"env": env()}
+        with (
+            mock.patch.object(
+                agent,
+                "check_existing",
+                side_effect=agent.AgentError("Prometheus Agent is not installed"),
+            ),
+            mock.patch.object(systemd, "start_service") as start,
+            contextlib.redirect_stderr(io.StringIO()) as err,
+            contextlib.redirect_stdout(io.StringIO()) as out,
+        ):
+            monitoring.ensure_running(inventory, "validator")
+        start.assert_not_called()
+        self.assertNotIn("is running", out.getvalue())
+        self.assertIn("not started: Prometheus Agent is not installed", err.getvalue())
+        self.assertIn("seismic-node monitoring install", err.getvalue())
 
     def test_ensure_running_skips_when_disabled_and_rejects_wrong_role(self):
         with mock.patch.object(systemd, "start_service") as start:
