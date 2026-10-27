@@ -723,8 +723,8 @@ its settings in `node.env` are:
 **Validators.** The token is the bearer credential the agent presents on every
 remote-write request to Seismic; Seismic operations issues one per node (64 hex
 characters) and registers it against `MONITORING_NODE_NAME`. Put it in a
-root-only file outside the node's data and key directories — the CLI refuses
-anything else — and run:
+root-only file outside the node's data and key directories (the CLI refuses
+anything else) and run:
 
 ```bash
 sudo install -o root -g root -m 0600 /path/from/ops/token /root/monitoring-token
