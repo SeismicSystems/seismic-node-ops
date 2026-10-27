@@ -309,6 +309,115 @@ check_genesis_matches_reth "$1"
             "is not installed yet; cannot confirm", result.stdout + result.stderr
         )
 
+    def test_config_step_resolves_the_bootnode_enode_from_its_rpc(self):
+        """RETH_BOOTNODE_RPC is the operator-facing input; the installer asks
+        that Reth for its enode (seismic_nodeInfo) and writes it into
+        RETH_BOOTNODE and RETH_BOOTNODES_ARG of the installed node.env."""
+        enode = "enode://" + "ab" * 64 + "@203.0.113.7:30303"
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        curl = bin_dir / "curl"
+        source = self.root / "node.env"
+
+        def run(
+            rpc: str, response: str | None
+        ) -> tuple[subprocess.CompletedProcess[str], str]:
+            if response is None:
+                curl.write_text("#!/bin/sh\nexit 7\n")
+            else:
+                curl.write_text(
+                    '#!/bin/sh\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$STUB_LOG"\n'
+                    f"printf '%s' '{response}'\n"
+                )
+            curl.chmod(0o755)
+            source.write_text(example(RETH_BOOTNODE_RPC=rpc))
+            target = self.root / "installed.env"
+            target.unlink(missing_ok=True)
+            log = self.root / "ops.log"
+            log.unlink(missing_ok=True)
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    """set -euo pipefail
+export PATH="$STUB_DIR:/usr/bin:/bin"
+source "$ROOT/install/lib/common.sh"
+source "$ROOT/install/lib/steps.sh"
+LOG_FILE=/dev/null
+export RETH_BOOTNODE_RPC="$1" RETH_BOOTNODE="" RETH_BOOTNODES_ARG=""
+resolve_reth_bootnode "$2" "$3"
+printf 'shell: %s | %s\\n' "$RETH_BOOTNODE" "$RETH_BOOTNODES_ARG"
+""",
+                    "fixture",
+                    rpc,
+                    str(source),
+                    str(target),
+                ],
+                env={
+                    **os.environ,
+                    "ROOT": str(ROOT),
+                    "STUB_DIR": str(bin_dir),
+                    "STUB_LOG": str(log),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            return result, target.read_text() if target.exists() else ""
+
+        rpc = "https://bootnode.example/rpc"
+        result, installed = run(
+            rpc, '{"jsonrpc":"2.0","id":1,"result":{"enode":"' + enode + '"}}'
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"RETH_BOOTNODE={enode}\n", installed)
+        self.assertIn(f"RETH_BOOTNODES_ARG=--bootnodes {enode}\n", installed)
+        self.assertIn(f"RETH_BOOTNODE_RPC={rpc}\n", installed)  # kept as the record
+        self.assertIn(f"shell: {enode} | --bootnodes {enode}", result.stdout)
+        ops = (self.root / "ops.log").read_text()
+        self.assertIn(f"-X POST {rpc}", ops)
+        self.assertIn('"method":"seismic_nodeInfo"', ops)
+        # The result validates, and the units get a two-word --bootnodes.
+        nodeenv.validate(nodeenv.parse(installed))
+        # The rest of the file is untouched.
+        before = [
+            l
+            for l in source.read_text().splitlines()
+            if not l.startswith("RETH_BOOTNODE")
+        ]
+        after = [l for l in installed.splitlines() if not l.startswith("RETH_BOOTNODE")]
+        self.assertEqual(before, after)
+
+        for name, response, message in (
+            ("no enode", '{"result":{}}', "did not return result.enode"),
+            (
+                "malformed",
+                '{"result":{"enode":"enode://ab@h:30303"}}',
+                "malformed enode",
+            ),
+            (
+                "bad port",
+                '{"result":{"enode":"enode://' + "ab" * 64 + '@h:70000"}}',
+                "invalid port",
+            ),
+            ("unreachable", None, "Could not query the bootnode Reth RPC"),
+        ):
+            with self.subTest(case=name):
+                result, installed = run(rpc, response)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+
+        # Without the RPC key the file is copied as is and curl is never run.
+        curl.write_text("#!/bin/sh\necho CURL_MUST_NOT_RUN >&2; exit 9\n")
+        result, installed = run("", None)
+        curl.chmod(0o755)
+        source.write_text(example(RETH_BOOTNODE_RPC=""))
+        result, installed = run("", "unused")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(installed, source.read_text())
+        self.assertFalse((self.root / "ops.log").exists())
+
     def test_real_run_requires_root(self):
         if os.geteuid() == 0:
             self.skipTest("running as root")

@@ -35,7 +35,8 @@ apply to both.
   components. Checkpoint installation moves state with `rename(2)` and requires
   this.
 - Outbound network access to the Seismic release artifacts (or source
-  repositories) and, when monitoring is enabled, to the central Prometheus.
+  repositories), to the bootnode's RPC when `RETH_BOOTNODE_RPC` is set, and,
+  when monitoring is enabled, to the central Prometheus.
 - For `download` installs, the GitHub CLI (`gh`) 2.49 or newer to verify release
   attestations. Ubuntu 24.04's own `gh` package is 2.45 and lacks
   `gh attestation`, so the installer adds GitHub's apt repository (signing key
@@ -402,16 +403,39 @@ sudo install -o root -g root -m 0640 "$REPO/install/templates/node.env.example" 
 Edit `/etc/seismic/node.env`. Its comments (from `node.env.example`) document
 every key; the ones you must decide are:
 
-| Key                                                                                                                                      | Set to                                                                                         |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `SEISMIC_ROLE`                                                                                                                           | `validator` or `observer`                                                                      |
-| `RETH_BOOTNODE` / `RETH_BOOTNODES_ARG`                                                                                                   | The `enode` from `POST <bootnode>/rpc` method `seismic_nodeInfo`, or both empty                |
-| `SUMMIT_BOOTSTRAPPERS_FILE` / `SUMMIT_BOOTSTRAPPERS_ARG`                                                                                 | `/persistence/keys/summit/bootstrappers.toml` and `--bootstrappers <that path>`, or both empty |
-| `CUSTODIAN_COUNCIL_ADDRESS`, `CUSTODIAN_CHAIN_ID`                                                                                        | Address has a testnet default; chain ID from Seismic operations                                |
-| `CHECKPOINTER_ENABLED`                                                                                                                   | Usually `false` for a plain validator                                                          |
-| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See [3.11](#311-https-endpoint); validators must expose the Custodian                          |
-| `MONITORING_MODE`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                                 | See [3.12](#312-monitoring); empty mode means push for validators, off for observers           |
-| **observer** `OBSERVER_PARENT_NODE_PUBLIC_KEY`, `OBSERVER_INDEX`, `OBSERVER_PUBLIC_ADDRESS`, `OBSERVER_P2P_PORT`, `CUSTODIAN_PARENT_URL` | From the parent's operator                                                                     |
+| Key                                                                                                                                      | Set to                                                                                                                                       |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SEISMIC_ROLE`                                                                                                                           | `validator` or `observer`                                                                                                                    |
+| `RETH_BOOTNODE_RPC`, or `RETH_BOOTNODE` / `RETH_BOOTNODES_ARG`                                                                           | The bootnode's Reth RPC URL (the installer resolves the enode), or the enode itself (below), or all empty for the chain's built-in bootnodes |
+| `SUMMIT_BOOTSTRAPPERS_FILE` / `SUMMIT_BOOTSTRAPPERS_ARG`                                                                                 | `/persistence/keys/summit/bootstrappers.toml` and `--bootstrappers <that path>`, or both empty                                               |
+| `CUSTODIAN_COUNCIL_ADDRESS`, `CUSTODIAN_CHAIN_ID`                                                                                        | Address has a testnet default; chain ID from Seismic operations                                                                              |
+| `CHECKPOINTER_ENABLED`                                                                                                                   | Usually `false` for a plain validator                                                                                                        |
+| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See [3.11](#311-https-endpoint); validators must expose the Custodian                                                                        |
+| `MONITORING_MODE`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                                 | See [3.12](#312-monitoring); empty mode means push for validators, off for observers                                                         |
+| **observer** `OBSERVER_PARENT_NODE_PUBLIC_KEY`, `OBSERVER_INDEX`, `OBSERVER_PUBLIC_ADDRESS`, `OBSERVER_P2P_PORT`, `CUSTODIAN_PARENT_URL` | From the parent's operator                                                                                                                   |
+
+**Bootnode.** With the installer, set `RETH_BOOTNODE_RPC` to the bootnode's Reth
+JSON-RPC URL and leave the other two empty: the `config` step asks it for its
+enode and writes `RETH_BOOTNODE` and `RETH_BOOTNODES_ARG` into the installed
+`node.env`, on every run, so the installed file always holds the bootnode's
+current address. Installing by hand, or to pin a specific peer, do the same
+query yourself and set both keys:
+
+```bash
+curl -fsS --max-time 30 -X POST https://<bootnode>/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"seismic_nodeInfo","params":[],"id":1}' \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["enode"])'
+```
+
+```ini
+RETH_BOOTNODE=enode://<128 hex>@<host>:30303
+RETH_BOOTNODES_ARG=--bootnodes enode://<128 hex>@<host>:30303
+```
+
+Write the enode out in both keys; `node.env` does not expand `$RETH_BOOTNODE`.
+All three keys empty means the chain's built-in bootnodes, which is right for a
+validator listed in the genesis.
 
 Keys marked `(computed)` in `node.env.example` (`RETH_BOOTNODES_ARG`,
 `SUMMIT_BOOTSTRAPPERS_ARG`, `OBSERVER_P2P_PORT`) repeat another key in the form

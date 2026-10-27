@@ -329,6 +329,23 @@ def _optional_url(value: str, key: str) -> str:
     return value
 
 
+def _optional_enode(value: str, key: str) -> str:
+    """An enode:// URL as Reth prints it: 64-byte node id, host, port."""
+    if value and not re.fullmatch(
+        r"enode://[0-9a-fA-F]{128}@[A-Za-z0-9.:\[\]-]+:[0-9]{1,5}", value
+    ):
+        raise NodeEnvError(
+            f"node.env {key} must be an enode://<id>@<host>:<port> URL or empty"
+        )
+    return value
+
+
+def _optional_http_url(value: str, key: str) -> str:
+    if value and not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", value):
+        raise NodeEnvError(f"node.env {key} must be an http(s):// URL or empty")
+    return value
+
+
 def _public_key(value: str, key: str) -> str:
     if not PUBLIC_KEY.fullmatch(value):
         raise NodeEnvError(f"node.env {key} must be 64 lowercase hex characters")
@@ -431,7 +448,8 @@ SCHEMA: dict[str, Field] = {
     ),
     # Network
     "GENESIS_PATH": Field(_path),
-    "RETH_BOOTNODE": Field(_optional_url),
+    "RETH_BOOTNODE_RPC": Field(_optional_http_url),
+    "RETH_BOOTNODE": Field(_optional_enode),
     "RETH_BOOTNODES_ARG": Field(_optional_string),
     "RETH_ENGINE_IPC": Field(_path),
     "OBSERVER_PARENT_NODE_PUBLIC_KEY": Field(_public_key, observer),

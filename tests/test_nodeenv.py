@@ -509,7 +509,7 @@ class SchemaTests(unittest.TestCase):
                 nodeenv.validate(example_values(**{key: value}))
 
     def test_derived_keys_must_match_their_sources(self):
-        enode = "enode://ab@203.0.113.1:30303"
+        enode = "enode://" + "ab" * 64 + "@203.0.113.1:30303"
         cases = {
             "bootnode without arg": {"RETH_BOOTNODE": enode},
             "arg without bootnode": {"RETH_BOOTNODES_ARG": f"--bootnodes {enode}"},
