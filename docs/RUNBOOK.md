@@ -130,8 +130,10 @@ Summit depends on Reth's Engine API socket and fails whenever Reth fails. The
 Summit units therefore declare `Requires=seismic-reth.service` and
 `After=seismic-reth.service`: when Summit restarts, systemd starts Reth first,
 so a Reth crash recovers the whole chain in order. The reverse is deliberately
-not wired (`PartOf=` is not used): an explicit `systemctl restart seismic-reth`
-makes Summit fail, and Summit then restarts itself through the same path.
+not wired (`PartOf=` is not used), but `Requires=` already propagates an
+explicit `systemctl restart seismic-reth` to Summit: systemd queues a restart
+job for Summit, so it gets a new process immediately (no `RestartSec` wait, no
+failed state, `NRestarts` unchanged), ordered after Reth is up again.
 
 Automatic restart is distinct from starting at boot; see
 [Enabling at boot](#enabling-at-boot).
@@ -687,7 +689,8 @@ the token. It starts nothing.
 
 The agent scrapes every endpoint in `targets.json` and itself (`9091`) every 15
 seconds, labelling each series with `node=<MONITORING_NODE_NAME>`,
-`role=<SEISMIC_ROLE>` and `job=<service>/<node>`, and remote-writes over
+`instance=<MONITORING_NODE_NAME>`, `role=<SEISMIC_ROLE>`, `service=<service>`
+and `job=<service>/<node>`, and remote-writes over
 outbound HTTPS; port `9091` is a local status listener, not an inbound
 requirement. Its WAL keeps at least 5 minutes and at most 6 hours of unsent
 samples — an outage longer than that loses data, so watch free space. Seismic
@@ -859,8 +862,9 @@ Agent running. Equivalent manual commands are printed by `--help`; the units
 declare `Conflicts=` so the normal and checkpoint Summit variants can never run
 together.
 
-`systemctl restart seismic-reth` makes Summit fail; Summit then restarts itself
-after `RestartSec` and pulls Reth in first. For a controlled restart prefer
+`systemctl restart seismic-reth` restarts Summit with it (`Requires=`
+propagates the restart job; Summit does not fail or wait `RestartSec`), ordered
+after Reth is back. For a controlled restart prefer
 `validator stop` followed by `validator start`, which also re-runs the CLI's
 checks.
 
@@ -1000,7 +1004,7 @@ it maps directly onto a configuration-management role:
 | 3.6 `node.env`           | `template` from `node.env.example`, then `command: python3 -m seismic_node.nodeenv --check`                                 |
 | 3.7 keys                 | `command` with `creates:`; never templated                                                                                  |
 | 3.8, 3.11 rendered files | `template`                                                                                                                  |
-| 3.10 units               | `copy` ×11, `systemd: daemon_reload`                                                                                        |
+| 3.10 units               | `copy` ×10 units + the hardening drop-in, `systemd: daemon_reload`                                                          |
 | 3.12 Prometheus Agent    | `command: seismic-node monitoring install`                                                                                  |
 | 4 start                  | `command: seismic-node validator start` — or `systemd: state=started` per unit if you accept the CLI's checks being skipped |
 

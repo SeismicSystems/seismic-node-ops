@@ -52,7 +52,7 @@ install/templates/node.env.example and docs/RUNBOOK.md section 3).
 
   --config PATH   node.env to install; validated first, then copied to
                   $NODE_ENV_PATH
-  --dry-run       validate, render, and print the plan; change nothing
+  --dry-run       validate and print the plan; change nothing
   --only STEPS    run only these steps, in canonical order
 
 Steps: $(step_names | paste -sd,)
