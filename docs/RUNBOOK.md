@@ -828,24 +828,21 @@ operational choice, not a safety one:
 
 - **validator** — the shipped policy is to leave `seismic-reth` and the Summit
   units disabled and run `seismic-node validator start` after a reboot. The
-  auxiliary units may be enabled. Every unit is installed on every host, so
-  enable `seismic-checkpointer` only with `CHECKPOINTER_ENABLED=true` and
-  `seismic-prometheus-agent` only after `seismic-node monitoring install`:
-  without their binaries both start cleanly as far as systemd is concerned and
-  then restart the exec failure every 5 s until stopped.
+  auxiliary units may be enabled. Every unit is installed on every host; the two
+  optional ones check `node.env` before starting (`ExecCondition=`) and skip
+  cleanly unless `CHECKPOINTER_ENABLED=true` or, for the agent, the effective
+  `MONITORING_MODE` is `push`, so they can stay enabled across a later change of
+  mode. The agent still needs `seismic-node monitoring install` before its first
+  start.
 
   ```bash
-  sudo systemctl enable seismic-custodian
-  sudo systemctl enable seismic-checkpointer        # CHECKPOINTER_ENABLED=true
-  sudo systemctl enable seismic-prometheus-agent    # after monitoring install
+  sudo systemctl enable seismic-custodian seismic-checkpointer seismic-prometheus-agent
   ```
 
-- **observer** — enabling the observer Summit unit also pulls in Reth at boot;
-  the same checkpointer caveat applies:
+- **observer** — enabling the observer Summit unit also pulls in Reth at boot:
 
   ```bash
-  sudo systemctl enable seismic-observer seismic-observer-custodian
-  sudo systemctl enable seismic-checkpointer        # CHECKPOINTER_ENABLED=true
+  sudo systemctl enable seismic-observer seismic-observer-custodian seismic-checkpointer
   ```
 
 Operators who prefer validators to come back unattended after a reboot may
@@ -957,9 +954,11 @@ sudo "$REPO/tools/generate-openresty-jwt.sh" --ttl-seconds 15552000 --subject se
 The `tls` step renders the `/prom-*` routes and, on a `custodian-only` host that
 had none before, creates the JWT secret at `OPENRESTY_JWT_SECRET_PATH`. Hand the
 printed token and `https://DOMAIN` to Seismic operations; they register the pull
-target and retire the push one. The agent's token and WAL stay on disk unused.
-With `TLS_MODE=external`, add the JWT-checked routes to your own proxy instead
-of running the `tls` step ([3.12](#312-monitoring)).
+target and retire the push one. The agent's token and WAL stay on disk unused;
+if the unit is enabled at boot it stays enabled but its `ExecCondition=` skips
+the start while `MONITORING_MODE` is not `push`. With `TLS_MODE=external`, add
+the JWT-checked routes to your own proxy instead of running the `tls` step
+([3.12](#312-monitoring)).
 
 **`pull` → `push`**
 

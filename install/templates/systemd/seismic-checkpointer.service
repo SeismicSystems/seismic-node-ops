@@ -15,6 +15,10 @@ Type=simple
 User=seismic
 Group=seismic
 EnvironmentFile=/etc/seismic/node.env
+# Only CHECKPOINTER_ENABLED=true runs the checkpointer. A failing condition
+# skips the start cleanly, so the unit may stay enabled at boot on a host
+# that later disables the checkpointer (or never installed its binary).
+ExecCondition=/bin/sh -c '[ "$1" = true ] || { echo "CHECKPOINTER_ENABLED=$1: checkpointer not started"; exit 1; }' seismic-checkpointer ${CHECKPOINTER_ENABLED}
 ExecStart=/usr/local/bin/seismic-checkpointer \
     --config ${CHECKPOINTER_CONFIG_PATH} \
     --bind-address 127.0.0.1 \

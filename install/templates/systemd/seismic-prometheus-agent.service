@@ -16,6 +16,12 @@ Type=simple
 User=seismic-prometheus
 Group=seismic-prometheus
 EnvironmentFile=/etc/seismic/node.env
+# Only MONITORING_MODE=push runs the agent; blank means the role's default
+# (validator: push, observer: off). A failing condition skips the start
+# cleanly, so the unit may stay enabled at boot after the mode is switched to
+# off or pull without resuming push collection from the retained config,
+# token and WAL.
+ExecCondition=/bin/sh -c 'case "$1" in push) exit 0 ;; "") [ "$2" = validator ] && exit 0 ;; esac; echo "MONITORING_MODE=$1 on a $2: agent not started"; exit 1' seismic-prometheus-agent ${MONITORING_MODE} ${SEISMIC_ROLE}
 ExecStart=/usr/local/lib/seismic/prometheus-agent/current/prometheus \
     --agent \
     --config.file=/etc/seismic/prometheus-agent/prometheus.yml \

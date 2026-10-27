@@ -44,7 +44,10 @@ UNIT_FEATURES = {
 }
 
 BRACED = re.compile(r"\$\{([A-Z0-9_]+)\}")
-UNBRACED = re.compile(r"(?<!\$)\$([A-Z0-9_]+)\b")
+# systemd expands $NAME only for valid variable names (no leading digit), so
+# the $1/$2 positional parameters inside an ExecCondition shell snippet pass
+# through to sh untouched.
+UNBRACED = re.compile(r"(?<!\$)\$([A-Z_][A-Z0-9_]*)\b")
 
 
 def read_unit(name: str) -> configparser.RawConfigParser:
@@ -286,6 +289,46 @@ class ExecStartExpansionTests(unittest.TestCase):
         hardening.optionxform = str  # type: ignore[assignment]
         hardening.read_string(HARDENING.read_text())
         self.assertFalse(hardening.has_option("Service", "ProcSubset"))
+
+    def test_optional_units_skip_cleanly_unless_node_env_enables_them(self):
+        """Both optional units may be enabled at boot. Their ExecCondition,
+        run here through /bin/sh with systemd's expansion applied, must pass
+        only when node.env turns the feature on, so a unit left enabled after
+        MONITORING_MODE=off/pull or CHECKPOINTER_ENABLED=false skips instead of
+        resuming with retained config, token and WAL. Exit 1 is the "skip"
+        range (1-254); 255+ would mark the unit failed."""
+        observer = {
+            **OBSERVER,
+            "CUSTODIAN_PARENT_URL": EVERYTHING["CUSTODIAN_PARENT_URL"],
+            "MONITORING_OPERATOR_REMOTE_WRITE_URL": EVERYTHING[
+                "MONITORING_OPERATOR_REMOTE_WRITE_URL"
+            ],
+        }
+        cases = [
+            ("seismic-prometheus-agent", {}, "push", True),
+            ("seismic-prometheus-agent", {}, "pull", False),
+            ("seismic-prometheus-agent", {}, "off", False),
+            ("seismic-prometheus-agent", {}, "", True),  # validator default
+            ("seismic-prometheus-agent", observer, "push", True),
+            ("seismic-prometheus-agent", observer, "off", False),
+            ("seismic-prometheus-agent", observer, "", False),  # observer default
+            ("seismic-checkpointer", {"CHECKPOINTER_ENABLED": "true"}, None, True),
+            ("seismic-checkpointer", {"CHECKPOINTER_ENABLED": "false"}, None, False),
+        ]
+        for name, extra, mode, expected in cases:
+            env = full_env(**extra)
+            if mode is not None:
+                env["MONITORING_MODE"] = mode
+            nodeenv.validate(dict(env))
+            argv = expand(read_unit(name).get("Service", "ExecCondition"), env)
+            with self.subTest(unit=name, role=env["SEISMIC_ROLE"], mode=mode, **extra):
+                self.assertEqual(argv[0], "/bin/sh")
+                result = subprocess.run(
+                    argv, capture_output=True, text=True, check=False, timeout=10
+                )
+                self.assertEqual(result.returncode, 0 if expected else 1, result)
+                if not expected:
+                    self.assertIn("not started", result.stdout)
 
     def test_observer_custodian_passes_parent_and_index(self):
         env = full_env(**{**EVERYTHING, **OBSERVER})
