@@ -27,8 +27,8 @@ LimitNOFILE=65536
 ExecStart=/usr/local/bin/seismic-reth node -vvv \
     --datadir ${RETH_DATA_DIR} \
     --p2p-secret-key ${RETH_P2P_KEY_PATH} \
-    --http --http.addr ${RETH_RPC_BIND} --http.port 8545 --http.api eth,net,web3 --http.corsdomain * \
-    --ws --ws.addr ${RETH_RPC_BIND} --ws.port 8546 --ws.api eth,net,web3 --ws.origins * \
+    --http --http.addr 127.0.0.1 --http.port 8545 --http.api eth,net,web3 --http.corsdomain * \
+    --ws --ws.addr 127.0.0.1 --ws.port 8546 --ws.api eth,net,web3 --ws.origins * \
     --port 30303 \
     --metrics 9001 \
     --ipcdisable \

@@ -235,33 +235,34 @@ class ExecStartExpansionTests(unittest.TestCase):
             "/persistence/keys/summit/bootstrappers.toml",
         )
 
-    def test_summit_metrics_stay_on_loopback_whatever_the_rpc_bind(self):
-        """The agent and the /prom-summit route scrape 127.0.0.1:9090; a
-        non-loopback SUMMIT_RPC_BIND must move the RPC only, not expose
-        unauthenticated metrics or strand the scrapers."""
-        summit_units = {
-            "validator": ("seismic-summit", "seismic-summit-checkpoint"),
-            "observer": ("seismic-observer", "seismic-observer-checkpoint"),
-        }
+    def test_rpc_and_metrics_listen_on_loopback_only(self):
+        """OpenResty is the only public surface; the checkpointer, the managed
+        proxy and the Prometheus Agent reach Reth and Summit on loopback.
+        node.env has no key that could move these listeners."""
         observer = {
             **OBSERVER,
             "CUSTODIAN_PARENT_URL": EVERYTHING["CUSTODIAN_PARENT_URL"],
         }
-        for bind in ("127.0.0.1", "0.0.0.0", "10.0.0.5"):
-            for role, units in summit_units.items():
-                env = full_env(
-                    SUMMIT_RPC_BIND=bind, **(observer if role == "observer" else {})
-                )
-                nodeenv.validate(env)
-                for name in units:
-                    with self.subTest(bind=bind, unit=name):
-                        argv = expand(exec_start(name), env)
-                        self.assertEqual(argv[argv.index("--rpc-ip") + 1], bind)
-                        self.assertEqual(argv[argv.index("--prom-ip") + 1], "127.0.0.1")
-                        self.assertEqual(
-                            argv[argv.index("--prom-port") + 1],
-                            str(nodeenv.SUMMIT_METRICS_PORT),
-                        )
+        for role, units in (
+            ("validator", ("seismic-summit", "seismic-summit-checkpoint")),
+            ("observer", ("seismic-observer", "seismic-observer-checkpoint")),
+        ):
+            env = full_env(**(observer if role == "observer" else {}))
+            nodeenv.validate(env)
+            for name in units:
+                with self.subTest(role=role, unit=name):
+                    argv = expand(exec_start(name), env)
+                    self.assertEqual(argv[argv.index("--rpc-ip") + 1], "127.0.0.1")
+                    self.assertEqual(argv[argv.index("--prom-ip") + 1], "127.0.0.1")
+                    self.assertEqual(
+                        argv[argv.index("--prom-port") + 1],
+                        str(nodeenv.SUMMIT_METRICS_PORT),
+                    )
+        argv = expand(exec_start("seismic-reth"), full_env())
+        self.assertEqual(argv[argv.index("--http.addr") + 1], "127.0.0.1")
+        self.assertEqual(argv[argv.index("--ws.addr") + 1], "127.0.0.1")
+        self.assertEqual(argv[argv.index("--metrics") + 1], "9001")
+        self.assertNotIn("RPC_BIND", "".join(nodeenv.SCHEMA))
 
     def test_no_empty_words_remain_after_expansion(self):
         for role, units in (

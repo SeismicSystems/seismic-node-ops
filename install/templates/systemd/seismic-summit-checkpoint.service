@@ -27,8 +27,8 @@ RuntimeDirectory=seismic
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 LimitNOFILE=65536
-# Metrics stay on loopback whatever SUMMIT_RPC_BIND is: the Prometheus Agent
-# and the /prom-summit route scrape 127.0.0.1:9090, and nothing else should.
+# RPC and metrics listen on loopback only: OpenResty is the public surface,
+# the checkpointer and the Prometheus Agent (127.0.0.1:9090) are local.
 ExecStart=/usr/local/libexec/seismic/summit-checkpoint-runner \
     --config /etc/seismic/checkpoint-start.toml \
     --lock-file ${SUMMIT_DATA_DIR}/.summit-process.lock \
@@ -38,7 +38,7 @@ ExecStart=/usr/local/libexec/seismic/summit-checkpoint-runner \
     --key-store-path ${SUMMIT_KEYS_DIR} \
     --store-path ${SUMMIT_DATA_DIR} \
     --engine-ipc-path ${RETH_ENGINE_IPC} \
-    --rpc-ip ${SUMMIT_RPC_BIND} --rpc-port 3030 --admin-rpc-port 3031 \
+    --rpc-ip 127.0.0.1 --rpc-port 3030 --admin-rpc-port 3031 \
     --prom-ip 127.0.0.1 --prom-port 9090 \
     --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
     $SUMMIT_BOOTSTRAPPERS_ARG

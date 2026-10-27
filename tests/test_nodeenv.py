@@ -425,7 +425,6 @@ class SchemaTests(unittest.TestCase):
             "CHECKPOINTER_ENABLED": "yes",
             "RETH_DATA_DIR": "relative/path",
             "SUMMIT_DATA_DIR": "/persistence/../summit",
-            "RETH_RPC_BIND": "localhost",
             "TLS_MODE": "nginx",
             "GENESIS_PATH": "",
         }

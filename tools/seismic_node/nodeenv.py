@@ -286,12 +286,6 @@ def _enum(choices: tuple[str, ...]) -> Validator:
     return validate
 
 
-def _bind_address(value: str, key: str) -> str:
-    if not re.fullmatch(r"[0-9]{1,3}(\.[0-9]{1,3}){3}", value):
-        raise NodeEnvError(f"node.env {key} must be an IPv4 address")
-    return value
-
-
 def _socket_address(value: str, key: str) -> str:
     """An IP literal with a port, as Rust's ``SocketAddr`` parses it: Summit
     does ``flags.ip.parse::<SocketAddr>().expect(..)`` and panics on a
@@ -425,8 +419,6 @@ SCHEMA: dict[str, Field] = {
     "GENESIS_PATH": Field(_path),
     "RETH_BOOTNODE": Field(_optional_url),
     "RETH_BOOTNODES_ARG": Field(_optional_string),
-    "RETH_RPC_BIND": Field(_bind_address),
-    "SUMMIT_RPC_BIND": Field(_bind_address),
     "RETH_ENGINE_IPC": Field(_path),
     "OBSERVER_PARENT_NODE_PUBLIC_KEY": Field(_public_key, observer),
     "OBSERVER_INDEX": Field(_int(0, 2**31 - 1), observer),

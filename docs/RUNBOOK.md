@@ -595,7 +595,10 @@ _Installer step: `tls`._
 
   Reth, Summit, checkpointer, and metrics listeners stay bound to loopback in
   every mode; OpenResty is the only public surface, and `seismic-deposit-rpc`
-  (`3031`) is never proxied. Proxy requirements for the Custodian route are in
+  (`3031`) is never proxied. `node.env` has no key that moves these listeners:
+  the checkpointer and the managed proxy reach them on loopback, so a terminator
+  on another host needs a tunnel (SSH, WireGuard) to this one rather than a
+  wider bind. Proxy requirements for the Custodian route are in
   [`install/CUSTODIAN_TLS.md`](../install/CUSTODIAN_TLS.md).
 
 Validators must expose Custodian; give Seismic operations the resulting
