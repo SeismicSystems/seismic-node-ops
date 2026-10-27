@@ -557,8 +557,18 @@ sudo systemctl daemon-reload
 sudo systemd-analyze verify /etc/systemd/system/seismic-*.service
 ```
 
+`verify` prints one notice at this point, which is expected:
+
+```text
+seismic-prometheus-agent.service: Command /usr/local/lib/seismic/prometheus-agent/current/prometheus is not executable: No such file or directory
+```
+
+The agent binary is installed by `seismic-node monitoring install` in step 3.12;
+until then the unit loads but has nothing to run, and `ConditionPathExists=`
+keeps it from starting. Any other output from `verify` is a real problem.
+
 Installing all ten units on every host is intentional: the units that do not
-apply to this role or to disabled features are inert — nothing starts them, and
+apply to this role or to disabled features are inert. Nothing starts them, and
 `seismic-node` only touches the ones `node.env` enables.
 
 ### 3.11 HTTPS endpoint
