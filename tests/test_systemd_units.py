@@ -251,6 +251,29 @@ class ExecStartExpansionTests(unittest.TestCase):
             "/persistence/keys/summit/bootstrappers.toml",
         )
 
+    def test_reth_disables_file_logging_but_keeps_stdout_for_journald(self):
+        # Reth v0.1.0 enables rotating file logs by default. Under the service
+        # sandbox an inaccessible default log path can panic before the Engine
+        # API socket is created, taking Summit down as well. Use stdout/journald
+        # for both roles without provisioning app-managed log files.
+        unit = read_unit("seismic-reth")
+        self.assertEqual(
+            unit.get("Service", "StandardOutput", fallback="journal"), "journal"
+        )
+        self.assertIn(
+            unit.get("Service", "StandardError", fallback="inherit"),
+            {"inherit", "journal"},
+        )
+        for role, overrides in (("validator", {}), ("observer", OBSERVER)):
+            env = full_env(**{**EVERYTHING, **overrides})
+            nodeenv.validate(env)
+            argv = expand(exec_start("seismic-reth"), env)
+            with self.subTest(role=role):
+                self.assertEqual(argv.count("--log.file.max-files"), 1)
+                self.assertEqual(argv[argv.index("--log.file.max-files") + 1], "0")
+                for quiet in ("-q", "--quiet", "--silent"):
+                    self.assertNotIn(quiet, argv)
+
     def test_rpc_and_metrics_listen_on_loopback_only(self):
         """OpenResty is the only public surface; the checkpointer, the managed
         proxy and the Prometheus Agent reach Reth and Summit on loopback.
