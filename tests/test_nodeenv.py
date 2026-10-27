@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -430,6 +431,53 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(
             env.path("RETH_MDBX_COPY_PREBUILT_PATH"), Path("/opt/mdbx_copy")
         )
+
+    def test_example_lists_the_options_of_every_closed_choice_key(self):
+        """Every key whose validator accepts a closed set of values has a
+        `# a | b | c` line in the comment block directly above it in
+        node.env.example, naming exactly the accepted values (MONITORING_MODE
+        may add `empty` for the role default)."""
+        text = EXAMPLE.read_text().splitlines()
+        closed = {
+            key: field.validate.choices
+            for key, field in nodeenv.SCHEMA.items()
+            if hasattr(field.validate, "choices")
+        }
+        self.assertEqual(
+            set(closed),
+            {
+                "SEISMIC_ROLE",
+                "SUMMIT_INSTALL_METHOD",
+                "RETH_INSTALL_METHOD",
+                "CUSTODIAN_INSTALL_METHOD",
+                "CHECKPOINTER_ENABLED",
+                "CHECKPOINTER_INSTALL_METHOD",
+                "TLS_MODE",
+                "MONITORING_MODE",
+            },
+        )
+        for key, choices in closed.items():
+            with self.subTest(key=key):
+                index = next(
+                    i for i, line in enumerate(text) if line.startswith(f"{key}=")
+                )
+                block = []
+                while index > 0 and text[index - 1].startswith("#"):
+                    index -= 1
+                    block.insert(0, text[index])
+                listed = None
+                for line in block:
+                    match = re.fullmatch(
+                        r"# ([a-z-]+(?: \| [a-z-]+)+)(?:\s+\(.*)?", line
+                    )
+                    if match:
+                        listed = {part.strip() for part in match.group(1).split("|")}
+                        break
+                self.assertIsNotNone(
+                    listed, f"{key}: no `# a | b` options line above it"
+                )
+                extra = {"empty"} if key == "MONITORING_MODE" else set()
+                self.assertEqual(listed - extra, set(choices))
 
     def test_type_errors(self):
         cases = {
