@@ -484,7 +484,7 @@ sudo chmod 0600 /persistence/keys/reth/p2p-key
 
 ```bash
 sudo -u seismic /usr/local/bin/summit keys generate --key-store-path /persistence/keys/summit -y
-sudo chmod 0600 /persistence/keys/summit/*.pem
+sudo chmod 0600 /persistence/keys/summit/node_key.pem /persistence/keys/summit/consensus_key.pem
 ```
 
 **observer** — an observer uses the **parent validator's** `node_key.pem`
