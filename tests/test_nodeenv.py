@@ -247,6 +247,18 @@ class SchemaTests(unittest.TestCase):
             )
         )
         self.assertEqual(external.monitoring_mode, "pull")
+        # The operator's proxy must enforce the same JWT check as the managed
+        # /prom-* routes, so pull behind it still needs the secret.
+        self.assertTrue(external.applies("OPENRESTY_JWT_SECRET_PATH"))
+        self.assertFalse(
+            nodeenv.validate(
+                example_values(
+                    MONITORING_MODE="push",
+                    TLS_MODE="external",
+                    CUSTODIAN_PUBLIC_URL="https://node.example.com/custodian",
+                )
+            ).applies("OPENRESTY_JWT_SECRET_PATH")
+        )
         # Publishing metrics does not require publishing the node's RPC.
         custodian_only = nodeenv.validate(
             example_values(

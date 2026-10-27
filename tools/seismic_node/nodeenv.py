@@ -381,6 +381,14 @@ def tls_external(raw: dict[str, str]) -> bool:
     return raw.get("TLS_MODE") == "external"
 
 
+def jwt_secret_needed(raw: dict[str, str]) -> bool:
+    """Managed OpenResty always has a JWT secret; the operator's own proxy
+    needs one too when it has to protect the /prom-* routes (pull mode)."""
+    return tls_managed(raw) or (
+        tls_external(raw) and raw.get("MONITORING_MODE") == "pull"
+    )
+
+
 def monitoring(mode: str) -> Condition:
     return lambda raw: raw.get("MONITORING_MODE") == mode
 
@@ -451,7 +459,7 @@ SCHEMA: dict[str, Field] = {
     "CUSTODIAN_PUBLIC_URL": Field(_https_url, both(tls_external)),
     "RATE_LIMIT_RPS": Field(_int(1, 1_000_000), tls_managed),
     "RATE_LIMIT_BURST": Field(_int(1, 1_000_000), tls_managed),
-    "OPENRESTY_JWT_SECRET_PATH": Field(_path, tls_managed),
+    "OPENRESTY_JWT_SECRET_PATH": Field(_path, jwt_secret_needed),
     # Monitoring
     "MONITORING_MODE": Field(_enum(MONITORING_MODES)),
     "MONITORING_NODE_NAME": Field(_string, monitoring("push")),

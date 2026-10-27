@@ -325,18 +325,42 @@ deploy_openresty_configuration
 
     def test_unmanaged_modes_touch_nothing(self):
         for mode in ("disabled", "external"):
-            with self.subTest(mode=mode):
-                result = shell(
-                    """
+            for monitoring in ("off", "push"):
+                with self.subTest(mode=mode, monitoring=monitoring):
+                    result = shell(
+                        """
 TLS_MODE=$1
-for cmd in apt-get install systemctl openresty install_openresty deploy_openresty_configuration; do
+MONITORING_MODE=$2
+for cmd in apt-get install systemctl openresty install_openresty deploy_openresty_configuration setup_openresty_jwt_secret persist_openresty_jwt_secret_path; do
     eval "$cmd() { die 'forbidden operation in $1'; }"
 done
 step_tls
 """,
-                    mode,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
+                        mode,
+                        monitoring,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_external_pull_creates_the_jwt_secret_for_the_operators_proxy(self):
+        """Pull mode behind the operator's own proxy still needs the secret
+        generate-openresty-jwt.sh signs with; nothing else is installed."""
+        result = shell(
+            """
+TLS_MODE=external
+MONITORING_MODE=pull
+OPENRESTY_JWT_SECRET_PATH=/fixture/secret
+for cmd in apt-get install systemctl openresty install_openresty deploy_openresty_configuration; do
+    eval "$cmd() { die 'forbidden operation in external'; }"
+done
+setup_openresty_jwt_secret() { printf 'JWT_SETUP\\n'; }
+persist_openresty_jwt_secret_path() { printf 'JWT_PERSIST\\n'; }
+step_tls
+"""
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("JWT_SETUP\nJWT_PERSIST\n", result.stdout)
+        self.assertIn("/fixture/secret", result.stdout + result.stderr)
+        self.assertIn("generate-openresty-jwt.sh", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

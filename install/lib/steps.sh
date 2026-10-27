@@ -647,6 +647,13 @@ step_tls() {
             ;;
         external)
             success "TLS_MODE=external; Custodian is served by the operator's terminator at $CUSTODIAN_PUBLIC_URL (see install/CUSTODIAN_TLS.md)."
+            if [[ "${MONITORING_MODE:-off}" == pull ]]; then
+                # The operator's proxy must enforce the same JWT check as the
+                # managed /prom-* routes; give it the secret the token tool signs with.
+                setup_openresty_jwt_secret
+                persist_openresty_jwt_secret_path
+                warn "MONITORING_MODE=pull: protect the /prom-* routes on your proxy with the JWT secret at $OPENRESTY_JWT_SECRET_PATH (runbook 3.12), then mint Seismic's token with tools/generate-openresty-jwt.sh."
+            fi
             return
             ;;
         custodian-only) OPENRESTY_MODE=custodian ;;

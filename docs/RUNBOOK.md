@@ -646,8 +646,10 @@ role's default, `push` for validators and `off` for observers:
   and rejecting any request whose `Authorization: Bearer <token>` is not a JWT
   signed with the secret at `OPENRESTY_JWT_SECRET_PATH` (the check
   `install/templates/openresty/lua/jwt_auth.lua` implements; strip the header
-  before proxying). Mint a token with `tools/generate-openresty-jwt.sh` and hand
-  it to Seismic operations together with the public base URL. Never publish the
+  before proxying). The `tls` step creates that secret in `external` mode too
+  when `MONITORING_MODE=pull` (root:nogroup, 0640); copy it to wherever your
+  proxy runs. Mint a token with `tools/generate-openresty-jwt.sh` and hand it to
+  Seismic operations together with the public base URL. Never publish the
   metrics ports without that check.
 - `off` (observer default) — nothing leaves the node. For a validator only by
   agreement with Seismic operations, who otherwise alert on the missing
