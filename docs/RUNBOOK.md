@@ -738,7 +738,9 @@ checksum-pinned Prometheus release, renders
 list above, derived from `node.env`), and copies the token. It starts nothing.
 `check` confirms that what is installed matches the current `node.env`; it is
 the same check `validator start` runs before starting the agent, and it clears
-the `systemd-analyze verify` notice from step 3.10.
+the `systemd-analyze verify` notice from step 3.10. The same installation as
+shell commands, for auditing or for hosts without the CLI, is in
+[`MONITORING.md`](MONITORING.md); `check` applies to it equally.
 
 The agent scrapes every endpoint in `targets.json` and itself (`9091`) every 15
 seconds, labelling each series with `node=<MONITORING_NODE_NAME>`,

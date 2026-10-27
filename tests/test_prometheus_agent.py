@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -820,3 +821,91 @@ class LifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManualProcedureTests(unittest.TestCase):
+    """docs/MONITORING.md is the CLI's install() as shell commands; its pins
+    and its rendering must match the code, or `monitoring check` fails for
+    anyone who follows it."""
+
+    DOC = ROOT / "docs/MONITORING.md"
+
+    @staticmethod
+    def blocks(heading: str) -> str:
+        """Every ```bash block under a `## N.` heading, concatenated."""
+        text = ManualProcedureTests.DOC.read_text()
+        section = text.split(f"\n## {heading}", 1)[1].split("\n## ", 1)[0]
+        import re
+
+        return "\n".join(re.findall(r"```bash\n(.*?)```", section, re.DOTALL))
+
+    def test_pinned_release_and_checksums_match_the_code(self):
+        text = self.DOC.read_text()
+        self.assertIn(f"VERSION={agent.VERSION}\n", text)
+        for arch, digest in agent.CHECKSUMS.items():
+            with self.subTest(arch=arch):
+                self.assertIn(f"{arch}) SHA256={digest} ;;", text)
+        self.assertEqual(len(agent.CHECKSUMS), text.count(") SHA256="))
+
+    def test_manual_rendering_equals_the_cli_rendering(self):
+        cases = {
+            "validator": {},
+            "validator+checkpointer": {"CHECKPOINTER_ENABLED": "true"},
+            "validator+operator": {
+                "MONITORING_OPERATOR_REMOTE_WRITE_URL": "https://prom.op.example/api/v1/write"
+            },
+            "observer": {
+                "SEISMIC_ROLE": "observer",
+                "OBSERVER_PARENT_NODE_PUBLIC_KEY": "ab" * 32,
+                "OBSERVER_INDEX": "3",
+                "OBSERVER_PUBLIC_ADDRESS": "203.0.113.10:18551",
+                "OBSERVER_P2P_PORT": "18551",
+                "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
+                "TLS_MODE": "disabled",
+                "MONITORING_OPERATOR_REMOTE_WRITE_URL": "https://prom.op.example/api/v1/write",
+            },
+        }
+        script = (
+            self.blocks("5. Scrape targets")
+            + "\n"
+            + self.blocks("6. Agent configuration")
+        )
+        for name, overrides in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                configured = env(**overrides)
+                values = agent.settings(configured)
+                expected_targets = agent.render_targets(configured)
+                expected_config = agent.render(values, operator_token=False)
+                fake_releases = Path(tmp) / "releases"
+                (fake_releases / "current").mkdir(parents=True)
+                promtool = fake_releases / "current/promtool"
+                promtool.write_text("#!/bin/sh\nexit 0\n")
+                promtool.chmod(0o755)
+                exports = "\n".join(
+                    f"export {key}={value!r}"
+                    for key, value in configured.raw.items()
+                    if key.startswith(
+                        ("MONITORING_", "CUSTODIAN_", "CHECKPOINTER_", "SEISMIC_")
+                    )
+                )
+                result = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        f"set -euo pipefail\n{exports}\n"
+                        f"export REPO={str(ROOT)!r} AGENT_HOME=/etc/seismic/prometheus-agent "
+                        f"RELEASES={str(fake_releases)!r}\n"
+                        + script.replace("/tmp/", tmp + "/"),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(
+                    (Path(tmp) / "targets.json").read_text(), expected_targets
+                )
+                self.assertEqual(
+                    (Path(tmp) / "prometheus.yml").read_text(), expected_config
+                )
