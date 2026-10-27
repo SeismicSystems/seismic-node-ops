@@ -791,9 +791,60 @@ the second destination and its token are removed.
 
 ### 3.13 Pre-start verification
 
+Validate the installed configuration and check that the unit files are
+installed:
+
 ```bash
 (cd "$REPO/tools" && sudo python3 -m seismic_node.nodeenv --check)
-sudo systemctl list-units --all 'seismic-*'          # all inactive
+sudo systemctl list-unit-files 'seismic-*'
+```
+
+Expected unit-file output on a fresh Ubuntu installation:
+
+```text
+UNIT FILE                           STATE    PRESET
+seismic-checkpointer.service        disabled enabled
+seismic-custodian.service           disabled enabled
+seismic-deposit-rpc.service         static   -
+seismic-observer-checkpoint.service disabled enabled
+seismic-observer-custodian.service  disabled enabled
+seismic-observer.service            disabled enabled
+seismic-prometheus-agent.service    disabled enabled
+seismic-reth.service                disabled enabled
+seismic-summit-checkpoint.service   disabled enabled
+seismic-summit.service              disabled enabled
+
+10 unit files listed.
+```
+
+`disabled` is expected: the installer does not enable services at boot.
+`seismic-deposit-rpc` is a static helper started explicitly by the CLI. `PRESET`
+describes the host's default policy, not the current enablement state; its
+values may differ between hosts. All role and optional-service units are
+installed, even when they are not selected in `node.env`. Do not start or enable
+all ten units together.
+
+`systemctl list-units --all 'seismic-*'` lists only units currently loaded into
+systemd, not all installed files. It can report **0 loaded units** before any
+have been started or queried; that alone is not an installation failure. To
+check an individual unit's state without starting it:
+
+```bash
+sudo systemctl show seismic-reth.service -p LoadState -p ActiveState
+```
+
+Before first startup, expect:
+
+```text
+LoadState=loaded
+ActiveState=inactive
+```
+
+`LoadState=not-found` or an empty `list-unit-files` result means the expected
+unit files are missing; check the `units` step in section 3.10 before starting.
+Continue with the remaining file and binary checks:
+
+```bash
 sudo ls -l /persistence/keys/reth/p2p-key /persistence/keys/summit/   # seismic:seismic, 0600
 /usr/local/bin/seismic-reth --version
 /usr/local/bin/summit --version
