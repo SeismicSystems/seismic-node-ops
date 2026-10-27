@@ -507,6 +507,22 @@ binary paths are fixed in the template):
 | `${CHECKPOINTS_DIR}`         | `$CHECKPOINTS_DIR`                         |
 | `${CHECKPOINTER_STATE_FILE}` | `$CHECKPOINTS_DIR/checkpointer-state.cbor` |
 
+`envsubst` (from `gettext-base`, section 3.1) with exactly those three names, so
+nothing else in the template is touched:
+
+```bash
+set -a; source <(sudo cat /etc/seismic/node.env); set +a   # the file is root-only (0640)
+[[ -n "$RETH_DATA_DIR" && -n "$CHECKPOINTS_DIR" ]] || echo "node.env not loaded; stop here"
+RETH_DB_PATH="$RETH_DATA_DIR/db" CHECKPOINTER_STATE_FILE="$CHECKPOINTS_DIR/checkpointer-state.cbor" \
+  envsubst '${RETH_DB_PATH} ${CHECKPOINTS_DIR} ${CHECKPOINTER_STATE_FILE}' \
+  < "$REPO/install/templates/config/seismic-checkpointer.toml" \
+  | sudo install -o root -g root -m 0644 /dev/stdin /etc/seismic/seismic-checkpointer.toml
+grep -c '\${' /etc/seismic/seismic-checkpointer.toml   # must print 0
+```
+
+(`source` is acceptable here because `node.env` has already passed `--check`,
+which rejects anything a shell would interpret differently from systemd.)
+
 ### 3.9 Custodian root key
 
 _No installer step; the Custodian creates the key itself._
