@@ -14,7 +14,6 @@ LUA_RESTY_AUTO_SSL_VERSION="0.13.1-1"
 DEFAULT_OPENRESTY_JWT_SECRET_PATH="/etc/seismic/openresty-jwt-secret"
 OPENRESTY_JWT_SECRET_PATH_FILE="/etc/seismic/openresty-jwt-secret.path"
 OPENRESTY_JWT_SECRET_PATH="$DEFAULT_OPENRESTY_JWT_SECRET_PATH"
-PERSISTED_OPENRESTY_JWT_SECRET_PATH=""
 
 install_pinned_openresty_lua_library() {
     local description=$1
@@ -114,7 +113,7 @@ install_openresty() {
     fi
     success "lua-resty-auto-ssl $LUA_RESTY_AUTO_SSL_VERSION installed"
 
-    if [[ "$OPENRESTY_MODE" == full ]]; then
+    if openresty_needs_jwt; then
         install_pinned_openresty_lua_library \
             "lua-resty-hmac" \
             "$LUA_RESTY_HMAC_REPO" \
@@ -144,47 +143,6 @@ install_openresty() {
     install -d -o nobody -g nogroup -m 700 /etc/resty-auto-ssl
     install -d -o root -g root -m 755 /usr/local/openresty/nginx/lua
     success "OpenResty dependencies are ready; configuration has not been deployed or started."
-}
-
-load_persisted_openresty_jwt_secret_path() {
-    local owner_uid
-    local mode
-    local mode_value
-    local lines=()
-    local selected
-    local normalized
-
-    PERSISTED_OPENRESTY_JWT_SECRET_PATH=""
-    if [[ ! -e "$OPENRESTY_JWT_SECRET_PATH_FILE" && ! -L "$OPENRESTY_JWT_SECRET_PATH_FILE" ]]; then
-        return 1
-    fi
-
-    [[ ! -L "$OPENRESTY_JWT_SECRET_PATH_FILE" ]] \
-        || die "OpenResty JWT secret path metadata must not be a symbolic link: $OPENRESTY_JWT_SECRET_PATH_FILE"
-    [[ -f "$OPENRESTY_JWT_SECRET_PATH_FILE" ]] \
-        || die "OpenResty JWT secret path metadata is not a regular file: $OPENRESTY_JWT_SECRET_PATH_FILE"
-    owner_uid=$(stat -c %u -- "$OPENRESTY_JWT_SECRET_PATH_FILE") \
-        || die "Could not inspect OpenResty JWT secret path metadata ownership."
-    [[ "$owner_uid" == "0" ]] \
-        || die "OpenResty JWT secret path metadata must be root-owned."
-    mode=$(stat -c %a -- "$OPENRESTY_JWT_SECRET_PATH_FILE") \
-        || die "Could not inspect OpenResty JWT secret path metadata permissions."
-    mode_value=$((8#$mode))
-    ((!(mode_value & 0022))) \
-        || die "OpenResty JWT secret path metadata must not be group- or world-writable."
-
-    mapfile -t lines <"$OPENRESTY_JWT_SECRET_PATH_FILE"
-    ((${#lines[@]} == 1)) \
-        || die "OpenResty JWT secret path metadata must contain exactly one line."
-    selected=${lines[0]}
-    [[ "$selected" == /* && "$selected" != "/" ]] \
-        || die "OpenResty JWT secret path metadata does not contain a valid absolute path."
-    normalized=$(realpath -m -- "$selected")
-    [[ "$normalized" == "$selected" ]] \
-        || die "OpenResty JWT secret path metadata is not normalized: $selected"
-
-    PERSISTED_OPENRESTY_JWT_SECRET_PATH=$selected
-    return 0
 }
 
 persist_openresty_jwt_secret_path() {
@@ -341,13 +299,55 @@ setup_openresty_jwt_secret() {
     success "OpenResty JWT secret stored securely; its value was not logged."
 }
 
+# JWT-protected routes exist in full mode (node routes) and in pull monitoring
+# mode (/prom-* routes, in either managed mode). Both need the JWT secret, the
+# Lua handlers, and the shared rate-limit store.
+openresty_needs_jwt() {
+    [[ "$OPENRESTY_MODE" == full || "${MONITORING_MODE:-off}" == pull ]]
+}
+
+# The node's metrics endpoints as /prom-<service> routes: the same table
+# `seismic-node monitoring install` writes to targets.json for push mode.
+# Summit's and Reth's ports are fixed by their unit files; the Custodian's
+# council listener serves /metrics on CUSTODIAN_COUNCIL_PORT; the
+# checkpointer only exists when enabled. Empty outside pull mode.
+render_metrics_locations() {
+    [[ "${MONITORING_MODE:-off}" == pull ]] || return 0
+    local template snippet service upstream entry
+    template=$(<"$TEMPLATES_DIR/openresty/metrics-location.conf")
+    local -a services=(
+        "summit=9090/"
+        "reth=9001/"
+        "custodian=${CUSTODIAN_COUNCIL_PORT}/metrics"
+    )
+    [[ "${CHECKPOINTER_ENABLED:-false}" != true ]] || services+=("checkpointer=42069/metrics")
+    for entry in "${services[@]}"; do
+        service=${entry%%=*}
+        upstream=${entry#*=}
+        snippet=${template//METRICS_SERVICE_PLACEHOLDER/$service}
+        snippet=${snippet//METRICS_UPSTREAM_PLACEHOLDER/$upstream}
+        printf '%s\n' "$snippet"
+    done
+}
+
+# Only pull mode publishes metrics. The checkpointer route proxies its whole
+# RPC port, which also serves /metrics; in every other mode return 404 for
+# that one path ahead of the route.
+render_checkpointer_metrics_guard() {
+    [[ "${MONITORING_MODE:-off}" == pull ]] && return 0
+    printf '%s' 'location = /checkpointer/metrics { access_log off; return 404; }'
+}
+
 validate_openresty_templates() {
     local template_root="$TEMPLATES_DIR/openresty"
     local required=("$template_root/nginx.conf" "$template_root/logrotate-openresty")
     local path
 
     if [[ "$OPENRESTY_MODE" == full ]]; then
-        required+=("$template_root/node-locations.conf" "$template_root/lua/jwt_auth.lua" "$template_root/lua/rate_limit.lua")
+        required+=("$template_root/node-locations.conf")
+    fi
+    if openresty_needs_jwt; then
+        required+=("$template_root/metrics-location.conf" "$template_root/lua/jwt_auth.lua" "$template_root/lua/rate_limit.lua")
     fi
     if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
         required+=("$template_root/custodian-http.conf" "$template_root/custodian-location.conf" "$template_root/lua/custodian.lua")
@@ -400,12 +400,20 @@ render_openresty_configuration() {
     case "$OPENRESTY_MODE" in
         full)
             node_locations=$(<"$template_root/node-locations.conf")
+            node_locations=${node_locations//METRICS_LOCATIONS_PLACEHOLDER/$(render_metrics_locations)}
+            node_locations=${node_locations//CHECKPOINTER_METRICS_GUARD_PLACEHOLDER/$(render_checkpointer_metrics_guard)}
             node_policy='lua_shared_dict limit_req_store 100m;'
             http_fallback='return 301 https://$host$request_uri;'
             ;;
         custodian)
             [[ "$EXPOSE_CUSTODIAN" == true ]] || return 1
-            node_locations='location / { return 404; }'
+            # Only /custodian, plus the /prom-* routes in pull mode: publishing
+            # metrics does not require publishing the node's RPC.
+            node_locations=$(render_metrics_locations)
+            node_locations+=$'\n''location / { return 404; }'
+            if openresty_needs_jwt; then
+                node_policy='lua_shared_dict limit_req_store 100m;'
+            fi
             ;;
         *) return 1 ;;
     esac
@@ -436,7 +444,7 @@ render_openresty_lua() {
     if [[ "$EXPOSE_CUSTODIAN" == true ]]; then
         cp -- "$template_root/custodian.lua" "$staging/custodian.lua" || return 1
     fi
-    if [[ "$OPENRESTY_MODE" == full ]]; then
+    if openresty_needs_jwt; then
         sed -e "s|RATE_LIMIT_RPS_PLACEHOLDER|$RATE_LIMIT_RPS|g" \
             -e "s|RATE_LIMIT_BURST_PLACEHOLDER|$RATE_LIMIT_BURST|g" \
             "$template_root/rate_limit.lua" >"$staging/rate_limit.lua" || return 1
@@ -471,7 +479,7 @@ deploy_openresty_configuration() {
         rm -rf -- "$staging"
         die "Rendered OpenResty configuration still contains placeholders; see $LOG_FILE"
     fi
-    if [[ "$OPENRESTY_MODE" == full ]]; then
+    if openresty_needs_jwt; then
         setup_openresty_jwt_secret
     fi
 
@@ -492,7 +500,7 @@ deploy_openresty_configuration() {
     if ! openresty -t >>"$LOG_FILE" 2>&1; then
         die "Installed OpenResty configuration validation failed; see $LOG_FILE"
     fi
-    if [[ "$OPENRESTY_MODE" == full ]]; then
+    if openresty_needs_jwt; then
         persist_openresty_jwt_secret_path
     fi
     success "OpenResty configuration deployed for https://$DOMAIN ($OPENRESTY_MODE)."

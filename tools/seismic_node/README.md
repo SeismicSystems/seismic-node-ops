@@ -8,19 +8,27 @@ tools/seismic-node.py
 
 Operators should invoke the executable rather than running these modules
 directly. The package separates network acquisition, checkpoint transactions,
-validator policy, observer policy, and Supervisor control so each safety
-boundary can be reviewed and tested independently.
+validator policy, observer policy, and systemd control so each safety boundary
+can be reviewed and tested independently.
+
+Every command reads `/etc/seismic/node.env` (override with `--node-env`) for the
+node's role, paths, and enabled features; see
+`install/templates/node.env.example`.
 
 ## Module map
 
-| Module          | Responsibility                                                                                                                                                                                                     |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `checkpoint.py` | Validates inventories, manifests, archives, and weak-subjectivity files; installs and rolls back matching Reth/Summit state; validates installed checkpoint inputs; deletes explicitly confirmed rollback backups. |
-| `download.py`   | Selects a completed checkpoint epoch, polls remote manifests, downloads verified archives, and resolves local, URL, or Summit-RPC weak-subjectivity anchors.                                                       |
-| `rpc.py`        | Provides strict standard-library HTTP and JSON-RPC helpers with URL, redirect, response-size, token-file, archive-size, and SHA-256 checks.                                                                        |
-| `supervisor.py` | Starts selected Supervisor programs in dependency order and reverses only the start requests made by the current command after a partial failure.                                                                  |
-| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before normal or checkpoint startup, and coordinates lifecycle-free validator restarts and shutdown.                            |
-| `observer.py`   | Selects normal or checkpoint observer startup and coordinates observer shutdown without applying validator lifecycle rules.                                                                                        |
+| Module          | Responsibility                                                                                                                                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `errors.py`     | Defines `NodeError`, the base class for every operator-facing failure.                                                                                                                                          |
+| `fsutil.py`     | Validates paths and file ownership, and reads TOML/JSON files with `O_NOFOLLOW` and exact-schema checks; shared by every module.                                                                                |
+| `nodeenv.py`    | Parses `/etc/seismic/node.env` with systemd `EnvironmentFile=` semantics and validates it against the node configuration schema.                                                                                |
+| `checkpoint.py` | Validates node.env, manifests, archives, and weak-subjectivity files; installs and rolls back matching Reth/Summit state; validates installed checkpoint inputs; deletes explicitly confirmed rollback backups. |
+| `download.py`   | Selects a completed checkpoint epoch, polls remote manifests, downloads verified archives, and resolves local, URL, or Summit-RPC weak-subjectivity anchors.                                                    |
+| `rpc.py`        | Provides strict standard-library HTTP and JSON-RPC helpers with URL, redirect, response-size, token-file, archive-size, and SHA-256 checks.                                                                     |
+| `systemd.py`    | Starts selected systemd units in dependency order and reverses only the start requests made by the current command after a partial failure.                                                                     |
+| `agent.py`      | Installs the pinned Prometheus release and renders `prometheus.yml` from the `MONITORING_*` keys in `node.env`; never starts a service.                                                                         |
+| `validator.py`  | Generates the exact deposit-signature response, applies validator lifecycle policy before normal or checkpoint startup, and coordinates lifecycle-free validator restarts and shutdown.                         |
+| `observer.py`   | Selects normal or checkpoint observer startup and coordinates observer shutdown without applying validator lifecycle rules.                                                                                     |
 
 `__init__.py` only identifies the internal package. It intentionally performs no
 startup work or global configuration.
@@ -28,24 +36,37 @@ startup work or global configuration.
 ## Optional monitoring
 
 `monitoring.py` manages the independent Prometheus Agent configured by the
-[installers](../../install/PROMETHEUS_AGENT.md). A shared best-effort helper
-runs only after successful validator/observer startup; onboarding authorization,
-identity checks, checkpoint validation, and node-start rollback are unchanged.
-Old inventories without `[monitoring]` remain supported. Invalid agent metadata
-or agent startup failure warns without rolling back successful node startup.
+runbook (section 3.12). A shared best-effort helper runs only after successful
+validator/observer startup; onboarding authorization, identity checks,
+checkpoint validation, and node-start rollback are unchanged. Invalid agent
+metadata or agent startup failure warns without rolling back successful node
+startup.
 
 Node stop and rollback never stop the agent. Explicit commands:
 
 ```bash
-sudo ./tools/seismic-node.py monitoring start --role validator
-sudo ./tools/seismic-node.py monitoring status --role validator
-sudo ./tools/seismic-node.py monitoring stop --role validator
+sudo ./tools/seismic-node.py monitoring install --token-source /root/monitoring-token
+sudo ./tools/seismic-node.py monitoring check
+sudo ./tools/seismic-node.py monitoring start
+sudo ./tools/seismic-node.py monitoring status
+sudo ./tools/seismic-node.py monitoring stop
 ```
 
-Use `--role observer` or `--inventory /absolute/path.toml` as appropriate.
-Explicit monitoring start updates only the agent Supervisor group, not node
-groups. Status and stop do not reload Supervisor. Monitoring commands read the
-protected inventory without requiring usable node databases or keys.
+The agent is used in `MONITORING_MODE=push`, the validator default. A validator
+pushes to Seismic (`--token-source` required) and optionally to the operator's
+own Prometheus; an observer pushes to the operator's Prometheus only, with no
+`--token-source`. `install` downloads the checksum-pinned Prometheus release,
+renders `/etc/seismic/prometheus-agent/prometheus.yml` and `targets.json` from
+the `MONITORING_*` and service keys in `node.env`, and copies the token from a
+root-only (0600) handoff file; it never starts the service. With
+`MONITORING_OPERATOR_REMOTE_WRITE_URL` set in `node.env` the rendered
+configuration carries a second remote-write destination, the operator's own
+Prometheus; `--operator-token-source` supplies its bearer token when needed, and
+a reinstall without the flag removes it again. `check` verifies the installed
+artifacts still match `node.env`. Monitoring commands read `node.env` without
+requiring usable node databases or keys. To stop using the agent, set
+`MONITORING_MODE` to `pull` or `off` and run `monitoring stop`; credentials and
+the WAL are preserved.
 
 ## Workflow boundaries
 
@@ -80,12 +101,12 @@ keeping dynamic discovery from changing the epoch authorized by automation.
 `checkpoint.install_checkpoint()` performs the destructive part only after all
 inputs have been acquired:
 
-1. Validate the role-specific installation inventory and persistent identity.
+1. Validate `node.env` for the role and the persistent identity.
 2. Validate the manifest, archive layout, embedded metadata, finalized-header
    continuity, and weak-subjectivity age.
 3. Require Reth, Summit, checkpoint, staging, and rollback paths to share a
    filesystem.
-4. Require all relevant Supervisor programs to be stopped.
+4. Require all relevant systemd units to be stopped.
 5. Acquire the same non-blocking lock used by normal and checkpoint Summit
    programs, then check service state again.
 6. Create a root-only rollback directory and an `installing` receipt.
@@ -103,14 +124,14 @@ backup move was recorded.
 `checkpoint rollback` and `checkpoint delete-backup` accept an explicit
 `--backup` directory. When the option is omitted in interactive use, both
 commands list the backups found under the default rollback roots (derived from
-the installed inventories) newest first, with each receipt's role, epoch, and
-state, and ask for a selection by number; nothing is ever selected
-automatically, and non-interactive use requires `--backup`.
+`node.env`) newest first, with each receipt's role, epoch, and state, and ask
+for a selection by number; nothing is ever selected automatically, and
+non-interactive use requires `--backup`.
 
 ### Validator onboarding
 
 The validator flow reads `summit_keys_dir` from the validated installation
-inventory, then invokes `/usr/local/bin/summit keys show --key-store-path DIR`
+`node.env`, then invokes `/usr/local/bin/summit keys show --key-store-path DIR`
 to derive the installed node public key. Only that public key is sent to
 `getValidatorAccount`; private keys remain local and no deposit RPC is started.
 The command is read-only, has a bounded runtime, and its raw output is never
@@ -121,8 +142,8 @@ public key.
 validated and its node public key must match the installed identity before any
 lifecycle polling or checkpoint installation. The installed identity is derived
 again before startup and must still match the public key whose lifecycle was
-checked. `--inventory` overrides the default
-`/etc/seismic/validator-installation.toml` without requiring a signature file.
+checked. `--node-env` overrides the default `/etc/seismic/node.env` without
+requiring a signature file.
 
 - `Joining` starts normally.
 - `Active` starts with a late-onboarding warning.
@@ -146,46 +167,47 @@ sudo ./tools/seismic-node.py validator onboard \
   --pre-joining-policy wait
 ```
 
-Both modes validate the installation inventory and apply the same lifecycle
-policy. The lifecycle state is checked before preparation and again immediately
-before startup. A confirmed early-start decision is carried across the second
-check so an interactive operator is not prompted twice. One wait deadline spans
-both checks; `--validator-wait-timeout 0` (the default) waits indefinitely.
-Normal startup does not guarantee synchronization from empty state.
+Both modes validate `node.env` and apply the same lifecycle policy. The
+lifecycle state is checked before preparation and again immediately before
+startup. A confirmed early-start decision is carried across the second check so
+an interactive operator is not prompted twice. One wait deadline spans both
+checks; `--validator-wait-timeout 0` (the default) waits indefinitely. Normal
+startup does not guarantee synchronization from empty state.
 `validator start --mode normal` remains the lifecycle-free startup command.
 
-### Supervisor startup
+### Service startup
 
 Observer startup, validator startup (`validator start` and authorized
 `validator onboard` startup), and deposit-signature generation first run
-`systemctl enable --now supervisor`, followed by `supervisorctl reread` and
-`supervisorctl update`. Startup then calls `supervisor.start_node()`, which
-starts dependencies in this order:
+`systemctl daemon-reload` so freshly installed units are known. Startup then
+calls `systemd.start_node()`, which starts units in this order:
 
-1. `custodian`, when configured.
-2. `reth`.
-3. The selected normal or checkpoint Summit program.
-4. `checkpointer`, when configured.
+1. `seismic-custodian` (`seismic-observer-custodian` for observers), when
+   installed.
+2. `seismic-reth`.
+3. The selected normal or checkpoint Summit unit.
+4. `seismic-checkpointer`, when installed.
 
-The conflicting Summit program and `summit-deposit-rpc` must be stopped. Once
-Supervisor accepts a start request, that program is recorded immediately. If a
-later program fails or times out, recorded programs are stopped in reverse
-order. Programs that were already running before the command are not stopped.
+The conflicting Summit unit and `seismic-deposit-rpc` must be stopped. A start
+request is recorded before `systemctl start` is issued. If a later unit fails,
+recorded units that are still running are stopped in reverse order. Units that
+were already running before the command are not stopped. `systemctl start`
+blocks until the unit is active or has failed, so no polling is needed.
 
-### Supervisor shutdown
+### Service shutdown
 
-`observer stop` and `validator stop` validate their role-specific installation
-inventories and call `supervisor.stop_node()` to stop programs in reverse
-dependency order:
+`observer stop` and `validator stop` validate `node.env` and the installed
+identity, then call `systemd.stop_node()` to stop units in reverse dependency
+order:
 
-1. `checkpointer`, when configured.
-2. The role's deposit-signature, normal, and checkpoint Summit programs.
-3. `reth`.
-4. `custodian`, when configured.
+1. `seismic-checkpointer`, when installed.
+2. The role's deposit-signature, normal, and checkpoint Summit units.
+3. `seismic-reth`.
+4. The role's Custodian unit, when installed.
 
-Missing and already-stopped programs are skipped. A stop failure aborts before
-lower-level dependencies are stopped. Supervisor itself and OpenResty remain
-running.
+Missing and already-stopped units are skipped. A stop failure aborts before
+lower-level dependencies are stopped. An administrative stop inhibits
+`Restart=`, so a stopped unit stays stopped. OpenResty remains running.
 
 ## Security invariants
 
@@ -217,15 +239,17 @@ Keep these properties when changing the package:
 
 ## Error handling
 
-Package modules raise one of these operator-facing exceptions:
+Package modules raise `errors.NodeError` or one of its subclasses:
 
-- `checkpoint.CheckpointError`
-- `rpc.NetworkError`
-- `supervisor.SupervisorError`
+- `nodeenv.NodeEnvError` for an unreadable or invalid `node.env`
+- `rpc.NetworkError` (and `HttpStatusError`, `JsonRpcError`) for HTTP and
+  JSON-RPC failures
+- `systemd.ServiceError` for service-manager failures
+- `agent.AgentError` for Prometheus Agent installation failures
 
-`tools/seismic-node.py` catches them, prints a concise error, and exits with
-status 1. Unexpected programming errors are not hidden behind a generic catch.
-Keyboard interruption exits with status 130.
+`tools/seismic-node.py` catches `NodeError`, prints a concise error, and exits
+with status 1. Unexpected programming errors are not hidden behind a generic
+catch. Keyboard interruption exits with status 130.
 
 ## Tests and checks
 
@@ -253,5 +277,5 @@ python3.12 -m unittest discover -s tests -p 'test_*.py' -v
 
 Tests cover remote acquisition, same-origin trust warnings and authorization,
 archive validation, weak-subjectivity age, validator lifecycle decisions, exact
-deposit-signature requests, Supervisor startup cleanup, interrupted rollback
+deposit-signature requests, service startup cleanup, interrupted rollback
 behavior, and checkpoint-runner locking.

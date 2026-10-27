@@ -21,12 +21,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from .errors import NodeError
+
 MAX_JSON_BYTES = 1024 * 1024
 MAX_ANCHOR_BYTES = 16 * 1024
 PROGRESS_REFRESH_SECONDS = 0.5
 
 
-class NetworkError(Exception):
+class NetworkError(NodeError):
     """A download or JSON-RPC request failed validation."""
 
 

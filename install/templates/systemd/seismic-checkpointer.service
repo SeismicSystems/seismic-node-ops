@@ -1,0 +1,32 @@
+# seismic-checkpointer: periodic Reth snapshots and Summit verification bundles.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# Reads /etc/seismic/seismic-checkpointer.toml (rendered from node.env) and
+# serves snapshots on loopback port 42069; OpenResty may expose /checkpointer.
+
+[Unit]
+Description=Seismic checkpointer
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target seismic-reth.service seismic-summit.service seismic-observer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+# Only CHECKPOINTER_ENABLED=true runs the checkpointer. A failing condition
+# skips the start cleanly, so the unit may stay enabled at boot on a host
+# that later disables the checkpointer (or never installed its binary).
+ExecCondition=/bin/sh -c '[ "$1" = true ] || { echo "CHECKPOINTER_ENABLED=$1: checkpointer not started"; exit 1; }' seismic-checkpointer ${CHECKPOINTER_ENABLED}
+ExecStart=/usr/local/bin/seismic-checkpointer \
+    --config ${CHECKPOINTER_CONFIG_PATH} \
+    --bind-address 127.0.0.1 \
+    --port 42069
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=60s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

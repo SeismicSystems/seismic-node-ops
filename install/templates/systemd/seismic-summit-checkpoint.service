@@ -1,0 +1,51 @@
+# Seismic Summit consensus client, validator role, startup from a checkpoint.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# Starts only after `seismic-node checkpoint install` has written
+# /etc/seismic/checkpoint-start.toml. The runner validates the checkpoint and
+# weak-subjectivity anchor named there, takes the Summit process lock, and
+# exec's Summit with --checkpoint-path and --weak-subjectivity-path appended.
+# Restart=on-failure is safe for the reason given in seismic-summit.service;
+# the runner re-validates the checkpoint inputs on every start.
+
+[Unit]
+Description=Seismic Summit consensus client (validator, checkpoint start)
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target seismic-reth.service
+Wants=network-online.target
+# Requires= so that an automatic restart of this unit starts Reth first.
+Requires=seismic-reth.service
+Conflicts=seismic-summit.service seismic-deposit-rpc.service
+ConditionPathExists=/etc/seismic/checkpoint-start.toml
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+RuntimeDirectory=seismic
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+LimitNOFILE=65536
+# RPC and metrics listen on loopback only: OpenResty is the public surface,
+# the checkpointer and the Prometheus Agent (127.0.0.1:9090) are local.
+ExecStart=/usr/local/libexec/seismic/summit-checkpoint-runner \
+    --config /etc/seismic/checkpoint-start.toml \
+    --lock-file ${SUMMIT_DATA_DIR}/.summit-process.lock \
+    -- \
+    /usr/local/bin/summit run \
+    --genesis-path ${GENESIS_PATH} \
+    --key-store-path ${SUMMIT_KEYS_DIR} \
+    --store-path ${SUMMIT_DATA_DIR} \
+    --engine-ipc-path ${RETH_ENGINE_IPC} \
+    --rpc-ip 127.0.0.1 --rpc-port 3030 --admin-rpc-port 3031 \
+    --prom-ip 127.0.0.1 --prom-port 9090 \
+    --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
+    $SUMMIT_BOOTSTRAPPERS_ARG
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=120s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import checkpoint, rpc
+from .errors import NodeError
 
 
 @dataclass(frozen=True)
@@ -38,9 +39,7 @@ def snapshot_urls(base_url: str, epoch: int) -> tuple[str, str]:
     """Build the checkpoint-app manifest and archive endpoints for an epoch."""
     parsed = rpc.validate_url(base_url, "Snapshot API URL")
     if parsed.query:
-        raise checkpoint.CheckpointError(
-            "Snapshot API URL must not contain a query string"
-        )
+        raise NodeError("Snapshot API URL must not contain a query string")
     base = base_url.rstrip("/")
     return (
         f"{base}/checkpoints/{epoch}/manifest",
@@ -51,9 +50,7 @@ def snapshot_urls(base_url: str, epoch: int) -> tuple[str, str]:
 def require_nonnegative_integer(value: Any, description: str) -> int:
     """Validate integer epoch values returned by JSON-RPC."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise checkpoint.CheckpointError(
-            f"{description} must be a non-negative integer"
-        )
+        raise NodeError(f"{description} must be a non-negative integer")
     return value
 
 
@@ -124,9 +121,9 @@ def try_fetch_manifest(
     except rpc.HttpStatusError as error:
         if error.status == 404:
             return None
-        raise checkpoint.CheckpointError(str(error)) from error
+        raise NodeError(str(error)) from error
     except rpc.NetworkError as error:
-        raise checkpoint.CheckpointError(str(error)) from error
+        raise NodeError(str(error)) from error
     destination.write_bytes(data)
     os.chmod(destination, 0o600)
     return checkpoint.load_manifest(destination)
@@ -135,7 +132,7 @@ def try_fetch_manifest(
 def sleep_until_retry(interval: float, deadline: float | None, activity: str) -> None:
     """Sleep for a polling interval without crossing a configured deadline."""
     if deadline is not None and time.monotonic() + interval > deadline:
-        raise checkpoint.CheckpointError(f"Timed out while {activity}")
+        raise NodeError(f"Timed out while {activity}")
     time.sleep(interval)
 
 
@@ -156,7 +153,7 @@ def select_epoch(
     if requested is None:
         network_epoch = current_epoch(network_rpc_url, network_token, args.http_timeout)
         if network_epoch == 0:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 "The network is still in epoch 0; no completed checkpoint is available"
             )
         selected = network_epoch - 1
@@ -184,7 +181,7 @@ def select_epoch(
         )
         if newer_manifest is not None:
             if newer_manifest["epoch"] != newest_completed:
-                raise checkpoint.CheckpointError(
+                raise NodeError(
                     "Newer snapshot manifest does not match its requested epoch"
                 )
             selected = choose_newer_checkpoint(
@@ -218,7 +215,7 @@ def select_epoch(
             unavailable_hint=unavailable_hint,
         )
         if manifest["epoch"] != selected:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 f"Snapshot manifest epoch mismatch: requested {selected}, "
                 f"received {manifest['epoch']}"
             )
@@ -235,7 +232,7 @@ def prompt_operator(message: str) -> str:
     try:
         return input(message)
     except EOFError as error:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Interactive input is unavailable; provide an explicit policy"
         ) from error
 
@@ -252,11 +249,11 @@ def choose_newer_checkpoint(requested: int, newer: int, policy: str) -> int:
         print(f"Using newer available checkpoint {newer} instead of {requested}.")
         return newer
     if policy == "fail-if-newer":
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             f"Checkpoint {newer} is available, but checkpoint {requested} was requested"
         )
     if not sys.stdin.isatty():
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "A newer checkpoint is available; non-interactive use requires an explicit "
             "--checkpoint-policy"
         )
@@ -276,7 +273,7 @@ def choose_newer_checkpoint(requested: int, newer: int, policy: str) -> int:
         if response in {str(requested), "requested", "r"}:
             return requested
         if response in {"a", "abort"}:
-            raise checkpoint.CheckpointError("Checkpoint selection was aborted")
+            raise NodeError("Checkpoint selection was aborted")
         print("Enter the newer epoch, requested epoch, or 'abort'.")
 
 
@@ -297,13 +294,11 @@ def weak_subjectivity_from_rpc(
             timeout=timeout,
         )
     except rpc.NetworkError as error:
-        raise checkpoint.CheckpointError(str(error)) from error
+        raise NodeError(str(error)) from error
     if not isinstance(result, dict) or set(result) != {"epoch", "digest"}:
-        raise checkpoint.CheckpointError(
-            "getFinalizedHeaderDigest returned an invalid result schema"
-        )
+        raise NodeError("getFinalizedHeaderDigest returned an invalid result schema")
     if result["epoch"] != epoch:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             f"Weak-subjectivity RPC returned epoch {result['epoch']!r}, expected {epoch}"
         )
     digest = result["digest"]
@@ -317,9 +312,7 @@ def weak_subjectivity_from_rpc(
             for value in digest
         )
     ):
-        raise checkpoint.CheckpointError(
-            "Weak-subjectivity RPC returned an invalid 32-byte digest"
-        )
+        raise NodeError("Weak-subjectivity RPC returned an invalid 32-byte digest")
     digest_hex = "0x" + bytes(digest).hex()
     destination.write_text(
         f"epoch = {epoch}\nheader_digest = {json.dumps(digest_hex)}\n",
@@ -358,7 +351,7 @@ def confirm_same_origin_weak_subjectivity(
         )
         return
     if not sys.stdin.isatty():
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Same-origin weak subjectivity requires "
             "--allow-same-origin-weak-subjectivity in non-interactive use"
         )
@@ -368,9 +361,7 @@ def confirm_same_origin_weak_subjectivity(
         .lower()
     )
     if response not in {"y", "yes"}:
-        raise checkpoint.CheckpointError(
-            "Same-origin weak-subjectivity use was not confirmed"
-        )
+        raise NodeError("Same-origin weak-subjectivity use was not confirmed")
 
 
 def resolve_weak_subjectivity(
@@ -389,7 +380,7 @@ def resolve_weak_subjectivity(
         )
     )
     if sources != 1:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Specify exactly one weak-subjectivity source: --weak-subjectivity-path, "
             "--weak-subjectivity-url, or --weak-subjectivity-rpc-url"
         )
@@ -416,7 +407,7 @@ def resolve_weak_subjectivity(
                 description="Weak-subjectivity URL",
             )
         except rpc.NetworkError as error:
-            raise checkpoint.CheckpointError(str(error)) from error
+            raise NodeError(str(error)) from error
         destination.write_bytes(data)
         os.chmod(destination, 0o600)
     else:
@@ -433,8 +424,7 @@ def resolve_weak_subjectivity(
 
 def create_download_work_dir(args: Any, role: str) -> Path:
     """Create a root-only temporary directory on the node-state filesystem."""
-    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS[role]
-    inventory = checkpoint.load_inventory(role, inventory_path)
+    inventory = checkpoint.load_node(role, checkpoint.node_env_path(args))
     download_root = inventory["reth_data_dir"].parent / ".seismic-node-downloads"
     checkpoint.ensure_root_parent(download_root / "placeholder", mode=0o700)
     download_root.mkdir(mode=0o700, exist_ok=True)
@@ -462,23 +452,23 @@ def resolve_checkpoint_inputs(
         )
     )
     if weak_sources != 1:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Specify exactly one weak-subjectivity source: --weak-subjectivity-path, "
             "--weak-subjectivity-url, or --weak-subjectivity-rpc-url"
         )
     if local_source == remote_source:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Specify either local --archive and --manifest files or --snapshot-api-url"
         )
     if local_source:
         if args.archive is None or args.manifest is None:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 "Local checkpoint input requires both --archive and --manifest"
             )
         manifest = checkpoint.load_manifest(args.manifest)
         epoch = manifest["epoch"]
         if args.checkpoint_epoch is not None and args.checkpoint_epoch != epoch:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 f"--checkpoint-epoch {args.checkpoint_epoch} does not match manifest epoch {epoch}"
             )
         if args.weak_subjectivity_path is not None:
@@ -506,9 +496,7 @@ def resolve_checkpoint_inputs(
         snapshot_token = rpc.read_bearer_token(args.snapshot_bearer_token_file)
         effective_network_rpc = network_rpc_url or args.weak_subjectivity_rpc_url
         if effective_network_rpc is None:
-            raise checkpoint.CheckpointError(
-                "Remote checkpoint selection requires a Summit RPC URL"
-            )
+            raise NodeError("Remote checkpoint selection requires a Summit RPC URL")
         effective_network_token_file = (
             network_bearer_token_file
             if network_rpc_url is not None
@@ -552,7 +540,7 @@ def resolve_checkpoint_inputs(
                 expected_sha256=manifest["archive"]["sha256"],
             )
         except rpc.NetworkError as error:
-            raise checkpoint.CheckpointError(str(error)) from error
+            raise NodeError(str(error)) from error
         yield ResolvedCheckpointInputs(
             archive_path,
             manifest_path,

@@ -3,27 +3,25 @@
 Operational tooling and configuration for installing and running Seismic
 validator and observer nodes.
 
-## Validator installation
+## Runbook
 
-The interactive validator installer is located at:
+**[docs/RUNBOOK.md](docs/RUNBOOK.md)** is the reference for what a Seismic node
+host looks like and how to install, start, operate, and change one: the fixed
+layout, the single operator-authored configuration file `/etc/seismic/node.env`,
+the static systemd units in `install/templates/systemd/`, and the `seismic-node`
+CLI. Operators who manage hosts with configuration management should start
+there; the installer below is one implementation of the same steps.
 
-```text
-install/install-validator.sh
+## Installation
+
+```bash
+cp install/templates/node.env.example node.env   # edit; see the runbook, section 3.6
+sudo install/install.sh --config node.env
 ```
 
-For requirements, installation steps, persistent storage, MDBX notes, validator
-registration, service startup, OpenResty, and troubleshooting, see the
-**[Validator Installer and First-Start Guide](install/README.md)**.
-
-## Observer installation
-
-The observer installer is located at:
-
-```text
-install/install-observer.sh
-```
-
-See the **[Observer Installer and First-Start Guide](install/OBSERVER.md)**.
+`install/install.sh` installs a validator or observer from a prepared `node.env`
+with no prompts; see **[install/README.md](install/README.md)** for its options
+and steps, and the runbook for what each step produces.
 
 ## Node onboarding and operations
 
@@ -69,8 +67,7 @@ go run mvdan.cc/sh/v3/cmd/shfmt@v3.12.0 -d install tools
 (
   cd install
   shellcheck -x \
-    install-validator.sh \
-    install-observer.sh \
+    install.sh \
     ../tools/generate-openresty-jwt.sh
 )
 

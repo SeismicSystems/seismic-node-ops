@@ -1,0 +1,322 @@
+# Reference Envoy configuration for TLS_MODE=external: the Custodian council
+# route on an operator-managed Envoy (static bootstrap, no control plane).
+# Implements every rule in install/CUSTODIAN_TLS.md; the limits match the
+# managed OpenResty templates where Envoy can express them. Verified against
+# Envoy 1.40; use 1.40 or later, or a point release at or above 1.39.3,
+# 1.38.6, 1.37.8 or 1.36.12 (CVE-2026-111497, Brotli decompressor).
+#
+# Run with `envoy -c envoy.yaml`. Envoy has no ACME client: point the
+# tls_certificates entry at a certificate chain and key you manage, for
+# example with certbot (`certbot certonly --standalone -d DOMAIN`, with the
+# port-80 listener below stopped during issuance) or acme.sh, and restart or
+# hot-restart Envoy after renewal. Replace DOMAIN and, if changed in node.env,
+# the port in CUSTODIAN_COUNCIL_PORT. Then set
+# CUSTODIAN_PUBLIC_URL=https://DOMAIN/custodian.
+#
+# Differences from managed OpenResty, stated so nobody assumes parity:
+#   - Per-IP limits (5 req/s and 4 active requests per source address) need
+#     Envoy's external rate limit service; the built-in local rate limiter
+#     keys on static descriptors only. The global rate (20/s, burst 20) is
+#     enforced below; the global concurrency cap (16) is enforced as the
+#     cluster's connection limit, which counts connections still being
+#     opened, so it bites slightly early, and overflow answers 503, not 429.
+#   - A chunked upload is answered 411, not 400: Envoy's codec de-chunks the
+#     body and removes Transfer-Encoding, so the request reaches the routes
+#     without a Content-Length. The transfer-encoding route below stays for
+#     any path through which the header could survive.
+#   - An Upgrade request is answered 403 by Envoy itself (no upgrades are
+#     configured), and a stray Upgrade header without Connection: upgrade is
+#     dropped by the codec, before the routes see it. The upgrade route below
+#     is belt and braces.
+#   - Everything else matches, including one 5-second deadline for the whole
+#     upload (request_timeout), which nginx and Caddy cannot express.
+#
+# This listener carries no compressor or decompressor filter, and must not:
+# the council route accepts fixed-length application/cbor bodies only, and
+# Envoy's decompressors are where its remotely reachable memory-safety bugs
+# have been (CVE-2022-29225, CVE-2024-32976, CVE-2026-48044, CVE-2026-111497).
+#
+# Metrics: this file deliberately proxies nothing else. With the default
+# MONITORING_MODE=push the node's Prometheus endpoints must stay unreachable
+# from outside. Only with MONITORING_MODE=pull add the /prom-* routes, and
+# only behind the JWT check described in docs/RUNBOOK.md 3.12 (Envoy's
+# envoy.filters.http.jwt_authn with a local_jwks holding the HS256 secret).
+#
+# No access log is configured, so nothing about council requests is written
+# anywhere. If you add one, exclude the council route.
+
+static_resources:
+  listeners:
+    - name: https
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 443 }
+      # The TLS handshake must complete promptly; the council CLI sends small
+      # requests.
+      listener_filters_timeout: 5s
+      listener_filters:
+        - name: envoy.filters.listener.tls_inspector
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.listener.tls_inspector.v3.TlsInspector
+      filter_chains:
+        - transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              common_tls_context:
+                tls_params:
+                  tls_minimum_protocol_version: TLSv1_2
+                # HTTP/1.1 only, like the managed proxy: fixed-length bodies
+                # with Content-Length, no HTTP/2 framing to reason about.
+                alpn_protocols: ["http/1.1"]
+                tls_certificates:
+                  - certificate_chain: { filename: /etc/letsencrypt/live/DOMAIN/fullchain.pem }
+                    private_key: { filename: /etc/letsencrypt/live/DOMAIN/privkey.pem }
+          filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: custodian_https
+                codec_type: HTTP1
+                # Absolute deadline for the whole request, headers and body:
+                # the same 5-second budget the managed Lua handler enforces.
+                request_headers_timeout: 5s
+                request_timeout: 5s
+                stream_idle_timeout: 5s
+                drain_timeout: 5s
+                # Tight header limits: the council CLI sends small requests.
+                max_request_headers_kb: 8
+                common_http_protocol_options:
+                  idle_timeout: 5s
+                  max_headers_count: 100
+                http_protocol_options:
+                  accept_http_10: false
+                # Nothing about the client is forwarded: no XFF, no request
+                # id, no x-envoy-* from the router.
+                use_remote_address: true
+                skip_xff_append: true
+                generate_request_id: false
+                normalize_path: true
+                merge_slashes: true
+                path_with_escaped_slashes_action: REJECT_REQUEST
+                http_filters:
+                  # Forward only what the backend needs; drop every client
+                  # header. Envoy has no "remove all" directive, so this one
+                  # Lua function does it. It keeps the headers the routes
+                  # below match on, so the outcome does not depend on
+                  # whether the route is matched before or after it runs:
+                  # the council route then overwrites content-type and
+                  # removes x-forwarded-proto, and a request carrying
+                  # transfer-encoding or upgrade never reaches the backend.
+                  - name: envoy.filters.http.lua
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                      default_source_code:
+                        inline_string: |
+                          local keep = {
+                            [":method"] = true, [":path"] = true, [":scheme"] = true,
+                            [":authority"] = true, ["content-length"] = true,
+                            ["content-type"] = true, ["transfer-encoding"] = true,
+                            ["upgrade"] = true, ["x-forwarded-proto"] = true,
+                          }
+                          function envoy_on_request(handle)
+                            local headers = handle:headers()
+                            local drop = {}
+                            for name, _ in pairs(headers) do
+                              if not keep[name] then drop[#drop + 1] = name end
+                            end
+                            for _, name in ipairs(drop) do headers:remove(name) end
+                          end
+                  # Global rate: 20 requests per second, burst 20. Disabled
+                  # here (no token bucket), enabled on the council route only.
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: custodian_rate
+                  # 64 KiB cap (inclusive), held in memory, nothing spilled to
+                  # disk; the backend only ever sees a complete body. Disabled
+                  # here, enabled on the council route only.
+                  - name: envoy.filters.http.buffer
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.Buffer
+                      max_request_bytes: 65536
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                      suppress_envoy_headers: true
+                route_config:
+                  name: custodian
+                  # Secret bodies: never cached. Applies to direct responses
+                  # too, and replaces whatever the backend sent.
+                  response_headers_to_add:
+                    - header: { key: Cache-Control, value: no-store }
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                  virtual_hosts:
+                    - name: custodian
+                      domains: ["*"]
+                      typed_per_filter_config:
+                        envoy.filters.http.buffer:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.BufferPerRoute
+                          disabled: true
+                      routes:
+                        # Rejections first, in the managed proxy's order.
+                        # Routes match top to bottom; the council route itself
+                        # is the last match on its path. Exact path matches
+                        # ignore the query string, so the query is rejected
+                        # through the raw :path header.
+                        - match:
+                            path: /custodian/v1/council
+                            headers:
+                              - name: ":method"
+                                string_match: { exact: POST }
+                                invert_match: true
+                          direct_response: { status: 405 }
+                        - match:
+                            path: /custodian/v1/council
+                            headers:
+                              - name: ":path"
+                                string_match: { contains: "?" }
+                          direct_response: { status: 400 }
+                        - match:
+                            path: /custodian/v1/council
+                            headers:
+                              - name: transfer-encoding
+                                present_match: true
+                          direct_response: { status: 400 }
+                        - match:
+                            path: /custodian/v1/council
+                            headers:
+                              - name: content-type
+                                string_match: { exact: application/cbor }
+                                invert_match: true
+                          direct_response: { status: 415 }
+                        - match:
+                            path: /custodian/v1/council
+                            headers:
+                              - name: upgrade
+                                present_match: true
+                          direct_response: { status: 400 }
+                        - match:
+                            path: /custodian/v1/council
+                            headers:
+                              - name: content-length
+                                present_match: true
+                                invert_match: true
+                          direct_response: { status: 411 }
+                        - match:
+                            path: /custodian/v1/council
+                            headers:
+                              - name: content-length
+                                string_match: { exact: "0" }
+                          direct_response: { status: 400 }
+                        - match:
+                            path: /custodian/v1/council
+                          route:
+                            cluster: custodian
+                            # Strip the public prefix: the backend serves
+                            # /v1/council. The query was rejected above.
+                            prefix_rewrite: /v1/council
+                            host_rewrite_literal: 127.0.0.1
+                            # 5-second send/read inactivity; no retries,
+                            # observer challenges are process-local.
+                            timeout: 5s
+                            idle_timeout: 5s
+                            retry_policy: { num_retries: 0 }
+                          typed_per_filter_config:
+                            envoy.filters.http.buffer:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.buffer.v3.BufferPerRoute
+                              buffer:
+                                max_request_bytes: 65536
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: custodian_rate
+                              token_bucket:
+                                max_tokens: 20
+                                tokens_per_fill: 20
+                                fill_interval: 1s
+                              filter_enabled:
+                                default_value: { numerator: 100 }
+                              filter_enforced:
+                                default_value: { numerator: 100 }
+                              status: { code: TooManyRequests }
+                          request_headers_to_remove: [x-forwarded-proto]
+                          request_headers_to_add:
+                            - header: { key: Content-Type, value: application/cbor }
+                              append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                            - header: { key: Accept, value: application/cbor }
+                              append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                            - header: { key: Cache-Control, value: no-store }
+                              append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                        # Nothing else under /custodian exists; do not let it
+                        # fall through.
+                        - match: { path: /custodian }
+                          direct_response: { status: 404 }
+                        - match: { prefix: /custodian/ }
+                          direct_response: { status: 404 }
+                        # Anything outside /custodian is yours; by default,
+                        # nothing.
+                        - match: { prefix: / }
+                          direct_response: { status: 404 }
+
+    # Never serve or redirect the council route over plaintext HTTP.
+    - name: http
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 80 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: custodian_http
+                codec_type: HTTP1
+                request_headers_timeout: 5s
+                request_timeout: 5s
+                generate_request_id: false
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: plaintext
+                  virtual_hosts:
+                    - name: plaintext
+                      domains: ["*"]
+                      routes:
+                        - match: { path: /custodian }
+                          direct_response: { status: 404 }
+                        - match: { prefix: /custodian/ }
+                          direct_response: { status: 404 }
+                        # Your ACME HTTP-01 route, if any, goes here.
+                        - match: { prefix: / }
+                          direct_response: { status: 404 }
+
+  clusters:
+    - name: custodian
+      type: STATIC
+      # 1-second connect; one request per backend connection, like
+      # `Connection: close` on the managed proxy.
+      connect_timeout: 1s
+      # Global concurrency cap: 16 active requests, each on its own
+      # connection (a request waits as "pending" only while its connection
+      # is being opened). Overflow answers 503 (Envoy's circuit-breaker
+      # response), not 429.
+      circuit_breakers:
+        thresholds:
+          - priority: DEFAULT
+            max_connections: 16
+            max_pending_requests: 16
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          common_http_protocol_options:
+            # One request per backend connection, like `Connection: close`
+            # on the managed proxy.
+            max_requests_per_connection: 1
+          explicit_http_config:
+            http_protocol_options: {}
+      load_assignment:
+        cluster_name: custodian
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: 127.0.0.1, port_value: CUSTODIAN_COUNCIL_PORT }

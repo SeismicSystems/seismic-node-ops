@@ -1,768 +1,104 @@
-# Seismic Validator Installer and First-Start Guide
+# Installer
 
-This directory contains the interactive installer for a Seismic validator node:
-
-```text
-install/install-validator.sh
-```
-
-The installer prepares the validator software, persistent directories, keys,
-Supervisor programs, and optional OpenResty endpoint. It deliberately does not
-start the validator services. Follow the first-start procedure in this document
-after installation.
-
-For an observer node, use `install/install-observer.sh` and follow the separate
-**[Observer Installer and First-Start Guide](OBSERVER.md)**.
-
-Optional authenticated push monitoring is shared with the observer installer:
-see [Prometheus Agent](PROMETHEUS_AGENT.md). When configured, `seismic-node`
-starts the agent after successful node startup and leaves it running on node
-stop. To add or update only monitoring on an existing validator without
-reinstalling or stopping node services:
+`install.sh` installs a Seismic validator or observer from a prepared
+`node.env`. It has no interactive mode: every decision is a key in the config
+file, which it validates before touching the host and installs unchanged as
+`/etc/seismic/node.env`.
 
 ```bash
-sudo ./install/install-validator.sh --monitoring-only
+cp install/templates/node.env.example node.env   # edit: see docs/RUNBOOK.md 3.6
+sudo install/install.sh --config node.env --dry-run
+sudo install/install.sh --config node.env
 ```
 
-The existing installation inventory is required; use
-`--inventory /absolute/path.toml` for a non-default one. The mode prompts only
-for agent settings and updates only its resources and the inventory's
-`[monitoring]` table.
+| Option            | Effect                                                                  |
+| ----------------- | ----------------------------------------------------------------------- |
+| `--config PATH`   | Required. The `node.env` to install.                                    |
+| `--dry-run`       | Validate the config and print the plan; change nothing. No root needed. |
+| `--only STEP,...` | Run only these steps, always in canonical order.                        |
 
-## Safety model
+The steps, each implementing one section of the runbook:
 
-The installer is designed to avoid replacing persistent validator state:
+| Step           | Runbook | Does                                                                     |
+| -------------- | ------- | ------------------------------------------------------------------------ |
+| `packages`     | 3.1     | apt packages; GitHub's `gh` repository for `download` installs           |
+| `account`      | 3.2     | the `seismic` system account                                             |
+| `directories`  | 3.3     | config, data, key, Custodian, and checkpoint directories                 |
+| `binaries`     | 3.4     | per component: `download` (attested release), `source`, or `prebuilt`    |
+| `runner`       | 3.5     | the checkpoint-start runner                                              |
+| `config`       | 3.6     | `/etc/seismic/node.env` and the genesis file                             |
+| `keys`         | 3.7     | Reth and Summit keys; existing keys are preserved, never regenerated     |
+| `checkpointer` | 3.8     | `seismic-checkpointer.toml`, when enabled                                |
+| `units`        | 3.10    | the systemd units and hardening drop-in; nothing enabled                 |
+| `tls`          | 3.11    | managed OpenResty for `TLS_MODE=custodian-only` or `full`; not activated |
 
-- Validator services run as an existing non-root service user.
-- Persistent directories must be absolute, non-root, and non-overlapping.
-- Existing Reth P2P and Summit validator keys are preserved.
-- An incomplete Summit key pair causes the installer to stop rather than
-  regenerate either key.
-- Service binaries are installed as root-owned, non-writable executables.
-- Node Supervisor programs use `autostart=false` and `autorestart=false`. The
-  optional independent Prometheus Agent uses `autorestart=true` once started.
-- The installer does not start, enable, reread, update, reload, or restart
-  validator services.
+Every step is idempotent and says what it changed. Nothing is ever started:
+first start is `seismic-node … start` (runbook section 4), and the Prometheus
+Agent is `seismic-node monitoring install` (3.12), because both need inputs that
+do not belong in `node.env`.
 
-Review the complete interactive configuration summary before accepting it.
+What a finished host looks like, how to start it, and how to operate it is
+**[docs/RUNBOOK.md](../docs/RUNBOOK.md)**. Proxy requirements for operators
+running their own TLS terminator are in [CUSTODIAN_TLS.md](CUSTODIAN_TLS.md).
 
-## Requirements
+## Layout
 
-- Ubuntu 24.04 LTS (Noble) with `apt-get`.
-- Root access through `sudo`.
-- An existing non-root Linux user that will run the validator services.
-- The Summit internal-testnet genesis TOML supplied in this repository at
-  `internal_testnet_genesis.toml`; it must remain readable by the service user.
-- Sufficient persistent storage for Reth, Summit, validator keys, and any
-  enabled optional components.
-- Network access to package and source repositories when installing packages or
-  building from source.
-- If configuring OpenResty, DNS for the selected domain must point to the node.
+| Path                         | Contents                                                    |
+| ---------------------------- | ----------------------------------------------------------- |
+| `install.sh`                 | the driver: argument parsing, validation, plan, step order  |
+| `lib/steps.sh`               | one function per step                                       |
+| `lib/binaries.sh`            | source checkout, Rust toolchain, and binary-install helpers |
+| `lib/openresty.sh`           | OpenResty package, Lua libraries, rendering, JWT secret     |
+| `lib/common.sh`              | output helpers                                              |
+| `templates/node.env.example` | the config schema, with every key documented                |
+| `templates/systemd/`         | the units, installed verbatim                               |
+| `templates/config/`          | `${VAR}` templates rendered from `node.env`                 |
+| `templates/openresty/`       | nginx and Lua templates                                     |
 
-### Network and firewall requirements
+## Testing
 
-The installer does not configure cloud firewall, security-group, or host
-firewall rules. Configure the required inbound access before starting the
-validator.
-
-| Port                           | Protocol    | Purpose                          | Required exposure                    |
-| ------------------------------ | ----------- | -------------------------------- | ------------------------------------ |
-| `30303`                        | TCP and UDP | seismic-reth P2P and discovery   | Public                               |
-| `18551`                        | TCP and UDP | Summit consensus P2P             | Public                               |
-| `80`                           | TCP         | HTTP redirect and ACME challenge | Public when OpenResty is enabled     |
-| `443`                          | TCP         | OpenResty HTTPS endpoint         | Public when OpenResty is enabled     |
-| `7876` (default; configurable) | TCP         | Custodian HTTP backend           | Loopback-only; never expose directly |
-
-When summit-checkpointer is enabled, its RPC and snapshot server binds only to
-`127.0.0.1:42069`. Do not expose TCP port `42069` directly through a firewall.
-In full OpenResty mode, the rate-limited and JWT-protected `/checkpointer` HTTPS
-route provides remote access instead. Custodian-only mode omits it.
-
-The installation log is written to:
-
-```text
-/var/log/seismic-validator-install.log
-```
-
-### Supplied internal-testnet genesis
-
-The repository includes the Summit genesis file for the internal testnet:
-
-```text
-internal_testnet_genesis.toml
-```
-
-When the installer asks for the Summit genesis TOML path, enter its absolute
-path. From the repository root, obtain it with:
+`tests/test_installer.py` exercises `--dry-run` and
+`tests/test_custodian_tls.py` the OpenResty rendering, both unprivileged.
+`tests/vm/run.sh` runs the real installer on a disposable VM over SSH:
 
 ```bash
-realpath internal_testnet_genesis.toml
+VM_HOST=user@host VM_SSH_KEY=~/.ssh/key tests/vm/run.sh [--config FILE] [-- INSTALLER_ARGS]
 ```
 
-Keep this file in place after installation. The generated Supervisor programs
-reference the selected path directly, and the configured service user must be
-able to read it.
-
-The installer requires Ubuntu's system Python at `/usr/bin/python3`, version
-3.12 or newer, with the standard-library `tomllib` module. It validates this
-before collecting configuration and includes `python3` in the package plan.
-
-## Run the installer
-
-Run the installer from the repository root:
-
-```bash
-sudo ./install/install-validator.sh
-```
-
-The installer asks you to configure:
-
-- The non-root service user.
-- Persistent Reth, Summit, and validator-key directories.
-- HTTPS termination: own same-host terminator, Custodian-only OpenResty, or
-  OpenResty for Custodian plus existing endpoints. Without Custodian, managed
-  OpenResty remains optional.
-- The Summit genesis file and an optional bootnode RPC.
-- Summit and seismic-reth binary installation methods.
-- summit-checkpointer.
-- Centralized Custodian.
-
-When Centralized Custodian is enabled, the installer always uses its publicly
-known shared default root key and does not prompt for a custom key. This makes
-epoch-0 purpose keys public.
-
-The installer prompts for the Custodian HTTP backend port (default `7876`) and
-keeps its bind address fixed to `127.0.0.1`. Never expose the selected port
-externally. Remote clients use an Internet-reachable HTTPS endpoint through a
-same-host TLS terminator, normally `https://DOMAIN/custodian`. The generated
-Custodian program receives the Summit key directory to authenticate observers.
-Root keys and epoch-key material require encrypted transport and special proxy
-protections. See [Custodian HTTPS deployment](CUSTODIAN_TLS.md) for all three
-installer modes, operator-owned proxy requirements, and setup instructions.
-
-For Summit, seismic-reth, summit-checkpointer, and Centralized Custodian,
-supported installation modes are:
-
-1. Install a supplied prebuilt executable.
-2. Build from source during installation.
-3. Defer installation and provide the executable later.
-
-The current source-build defaults are:
-
-```text
-Summit:       internal-testnet-v1 (tag)
-seismic-reth: internal-testnet-v1 (tag)
-Checkpointer: main (branch)
-Custodian:    centralized-custodian (temporary branch, enclave repository)
-```
-
-Deferred binaries must be installed at the configured target paths before the
-corresponding services are started. A prebuilt or already-present deferred
-summit-checkpointer must support `--bind-address`; the generated Supervisor
-program uses it to keep the checkpointer RPC on loopback.
-
-### Optional Summit bootstrappers file
-
-Summit derives its initial consensus peers from the genesis file's validator
-addresses. When those addresses are outdated, provide a bootstrappers file with
-one or more known Summit peers:
-
-```toml
-[[bootstrappers]]
-node_public_key = "32-byte Summit node public key"
-address = "203.0.113.10:18551"
-
-[[bootstrappers]]
-node_public_key = "another 32-byte Summit node public key"
-address = "198.51.100.20:18551"
-```
-
-The selected source path must be absolute and point to a non-empty,
-non-symbolic-link file readable by the service user. The installer copies it to
-the configured Summit key directory as `bootstrappers.toml`; Supervisor
-references that stable copy in the normal and checkpoint Summit programs. When
-provided, it replaces the genesis-derived peer list.
-
-This file configures Summit consensus peers. It is separate from the optional
-Reth bootnode RPC used to discover an execution-layer enode.
-
-### Persistent layout
-
-The default persistent paths are:
-
-| State                             | Default path               |
-| --------------------------------- | -------------------------- |
-| Reth data                         | `/persistence/reth`        |
-| Summit data                       | `/persistence/summit`      |
-| Validator keys                    | `/persistence/keys`        |
-| Checkpointer output, when enabled | `/persistence/checkpoints` |
-| Custodian data, when enabled      | `/persistence/custodian`   |
-
-Important files derived from those paths include:
-
-```text
-<persistence keys>/reth/p2p-key
-<persistence keys>/summit/node_key.pem
-<persistence keys>/summit/consensus_key.pem
-```
-
-Back up the validator keys securely. Do not copy them into tickets, chat
-messages, source control, or the deposit-signature file described below.
-
-#### Reth MDBX database
-
-seismic-reth stores its MDBX execution database under:
-
-```text
-<RETH_DATA_DIR>/db
-```
-
-Treat this as persistent execution-layer state. Do not delete it during an
-installer rerun, and do not manually copy or modify the live database while Reth
-is running.
-
-When summit-checkpointer is enabled, it uses `mdbx_copy` to produce a consistent
-Reth database copy. `mdbx_copy` must be built from the same vendored libmdbx
-revision as the seismic-reth binary. If Reth is built from source, the installer
-builds `mdbx_copy` from that checkout. For a prebuilt or deferred Reth binary,
-provide the matching seismic-reth source checkout when prompted. Do not start
-the checkpointer until a compatible executable is installed at:
-
-```text
-/usr/local/bin/mdbx_copy
-```
-
-### Generated services and configuration
-
-The installer writes the Supervisor configuration to:
-
-```text
-/etc/supervisor/conf.d/seismic-validator.conf
-```
-
-It always defines:
-
-- `summit-deposit-rpc`
-- `reth`
-- `summit`
-- `summit-checkpoint`
-
-It also defines `checkpointer` and `custodian` when those components are
-enabled. `summit-checkpoint` is manual-only and reads its checkpoint and
-weak-subjectivity paths from:
-
-```text
-/etc/seismic/validator-checkpoint-start.toml
-```
-
-The installer does not create this runtime file or download a checkpoint. It
-installs the checkpoint runner at:
-
-```text
-/usr/local/libexec/seismic/summit-checkpoint-runner
-```
-
-The checkpoint program fails if the file or required artifacts are missing. The
-normal and checkpoint Summit programs use the same process lock and cannot run
-simultaneously. Supervisor logs are written under:
-
-```text
-/var/log/seismic-validator/
-```
-
-After a successful installation, the installer atomically writes the runtime
-paths needed by post-install checkpoint tools to:
-
-```text
-/etc/seismic/validator-installation.toml
-```
-
-The root-owned file contains only the configured Reth and Summit data and key
-paths; it contains no key material or other secrets. If it already exists when
-the installer starts, the installer asks for permission to overwrite it after a
-successful installation. It does not read or reuse the existing contents.
-Declining the overwrite cancels the installation before configuration begins.
-
-When summit-checkpointer is enabled, the installer prompts for an absolute
-configuration-file path and defaults to:
-
-```text
-/etc/seismic/summit-checkpointer.toml
-```
-
-The generated Supervisor command uses the selected path. Its parent directory
-hierarchy must be root-owned and must not be group- or world-writable.
-
-In full OpenResty mode, the installer prompts for an absolute JWT-secret file
-path and defaults to:
-
-```text
-/etc/seismic/openresty-jwt-secret
-```
-
-Both managed modes write `nginx.conf` and log rotation configuration. When
-Custodian is enabled they also install `lua/custodian.lua`. Only full mode
-installs the rate-limit and JWT Lua files below; Custodian-only mode skips JWT
-secret setup entirely.
-
-```text
-/usr/local/openresty/nginx/conf/nginx.conf
-/usr/local/openresty/nginx/lua/rate_limit.lua
-/usr/local/openresty/nginx/lua/jwt_auth.lua
-/etc/logrotate.d/openresty
-```
-
-The generated JWT middleware reads the selected secret path. The secret is
-installed as `root:nogroup` with mode `0640` and is not printed by the
-installer. Its parent hierarchy must be root-owned, non-writable by group or
-others, and traversable by the OpenResty worker user. Reruns reuse a secret
-already at the selected path. When changing from the default to a custom path
-that does not yet exist, the installer copies the existing default secret
-without removing the old file; remove it only after validating the new OpenResty
-configuration.
-
-The installer records the selected path in:
-
-```text
-/etc/seismic/openresty-jwt-secret.path
-```
-
-This root-owned metadata file contains only the path, not the secret. Installer
-reruns use it as the JWT-secret prompt default. Generate a one-hour bearer token
-from the repository root with:
-
-```bash
-TOKEN=$(sudo ./tools/generate-openresty-jwt.sh)
-```
-
-The script reads the metadata file, falls back to the standard secret path for
-older installations, and prints only the token. Use `--secret-path` to override
-the lookup or `--ttl-seconds` to select a lifetime up to 15552000 seconds (180
-days). Setting `--ttl-seconds -1` omits the expiration claim; that token remains
-valid until the shared JWT secret is rotated, so store and use it as a permanent
-credential.
-
-## First validator startup
-
-How the validator starts for the first time depends on whether its keys are
-already listed in the genesis file.
-
-### Option A: genesis validator
-
-When this node's public keys appear in a `[[validators]]` entry of the
-configured genesis file, no deposit is required. Start directly from genesis:
-
-```bash
-sudo ./tools/seismic-node.py validator start --mode normal
-```
-
-The command loads the Supervisor program definitions and starts Custodian when
-configured, Reth, `summit`, and summit-checkpointer when configured. Every host
-in the network must use an identical genesis file because the config digest
-gates P2P authentication. Verify with:
-
-```bash
-sudo supervisorctl status
-sudo tail -f /var/log/seismic-validator/summit.err
-```
-
-### Option B: join a running network by deposit
-
-Use the node tool to generate the fixed deposit-signature request. It loads the
-installed Supervisor program definitions itself, so no manual `supervisorctl`
-steps are required first:
-
-```bash
-sudo ./tools/seismic-node.py validator deposit-signature \
-  --output /root/deposit-signature.json
-```
-
-Send that file to Seismic operations through a secure channel. After operations
-submits the deposit, the following command can download and install a
-checkpoint, obtain weak subjectivity from an independent Summit RPC, and
-coordinate startup:
-
-```bash
-sudo ./tools/seismic-node.py validator onboard \
-  --summit-rpc-url https://trusted-validator.example/summit \
-  --snapshot-api-url https://snapshot.example/checkpointer \
-  --snapshot-bearer-token-file /root/snapshot-token \
-  --weak-subjectivity-rpc-url https://independent-validator.example/summit
-```
-
-Onboarding reads `summit_keys_dir` from the installation inventory and uses
-`/usr/local/bin/summit keys show` to derive the installed node public key
-locally. The default inventory is `/etc/seismic/validator-installation.toml`;
-select a custom file with `--inventory /absolute/path/to/installation.toml`.
-Only the public key is sent to the trusted Summit RPC. No signing endpoint is
-started.
-
-The deposit-signature file is not required for onboarding. Existing commands may
-still pass `--deposit-signature /root/deposit-signature.json` as an optional
-identity cross-check; a mismatch with the installed node key is rejected before
-polling or checkpoint installation. The installed public key is checked again
-before startup so a key change during the wait cannot start a different
-identity. Generating and submitting the deposit remains a separate prerequisite.
-
-#### Onboard without a checkpoint
-
-To wait for `Joining` and then start from local state without installing or
-requiring a checkpoint:
-
-```bash
-sudo ./tools/seismic-node.py validator onboard \
-  --mode normal \
-  --summit-rpc-url https://trusted-validator.example/summit \
-  --pre-joining-policy wait
-```
-
-This can be run after submitting the deposit transaction. It waits while the
-account is `NotFound` or `Inactive`, starts when it reaches `Joining`, and also
-allows `Active` with a warning. By default it waits indefinitely; use
-`--validator-wait-timeout SECONDS` to bound the wait. Status is checked again
-immediately before startup, using the same wait deadline.
-
-Normal mode starts `summit` instead of `summit-checkpoint` and does not read
-checkpoint-start configuration or replace local state. It rejects checkpoint
-source and installation options, including `--yes`. It does not guarantee that a
-freshly reset node can synchronize with the running network from genesis. Unlike
-`validator start --mode normal`, it applies the onboarding lifecycle checks.
-
-Checkpoint mode remains the default (`--mode checkpoint`). In that mode,
-omitting source options uses an already-installed checkpoint; it does not switch
-to normal startup.
-
-#### Startup behavior
-
-When startup is authorized, `validator onboard` automatically runs:
-
-```bash
-sudo systemctl enable --now supervisor
-sudo supervisorctl reread
-sudo supervisorctl update
-```
-
-It then starts Custodian when configured, Reth, the selected Summit program
-(`summit` in normal mode or `summit-checkpoint` in checkpoint mode), and
-summit-checkpointer when configured. It does not start or reload OpenResty.
-
-For unattended installation, pass `--yes` to skip the interactive confirmation,
-and pin `--checkpoint-epoch` with `--checkpoint-policy exact` so a dynamically
-selected epoch cannot differ from the one authorized by automation.
-
-Checkpoint installation may complete before the validator becomes `Joining`.
-When the account is not yet `Joining`, interactive mode asks whether to wait,
-start with a warning, or leave the verified checkpoint installed with every
-service stopped. Non-interactive use requires `--pre-joining-policy`.
-
-The detailed manual sequence below remains useful for troubleshooting the
-deposit workflow.
-
-### 1. Load the Supervisor configuration
-
-```bash
-sudo systemctl enable --now supervisor
-sudo supervisorctl reread
-sudo supervisorctl update
-sudo supervisorctl status
-```
-
-All validator programs should still be stopped because they use:
-
-```ini
-autostart=false
-autorestart=false
-```
-
-### 2. Start only the deposit-signature RPC
-
-```bash
-sudo supervisorctl start summit-deposit-rpc
-sudo supervisorctl status summit-deposit-rpc
-```
-
-This temporary process uses the configured Summit genesis file and validator
-keys. It listens only on:
-
-```text
-http://127.0.0.1:3031
-```
-
-It does not start Reth, Summit consensus, P2P, storage, or synchronization, and
-it is not exposed through OpenResty.
-
-If it does not start, inspect:
-
-```bash
-sudo tail -n 100 /var/log/seismic-validator/summit-deposit-rpc.err
-sudo tail -n 100 /var/log/seismic-validator/summit-deposit-rpc.log
-```
-
-### 3. Confirm the required withdrawal address
-
-The deposit-signature request below is hardcoded to use:
-
-```text
-0xd412c5ecd343e264381ff15afc0ad78a67b79f35
-```
-
-Do not replace this value with another address. Verify it carefully before
-requesting the signature because the deposit binds validator withdrawals and
-exits to the encoded address.
-
-### 4. Save the signed deposit response as JSON
-
-Run the following on the validator server while `summit-deposit-rpc` is running:
-
-```bash
-curl --fail-with-body --silent --show-error \
-  http://127.0.0.1:3031 \
-  -H 'Content-Type: application/json' \
-  --data '{
-    "jsonrpc": "2.0",
-    "method": "getDepositSignature",
-    "params": [
-      32000000000,
-      "0xd412c5ecd343e264381ff15afc0ad78a67b79f35"
-    ],
-    "id": 1
-  }' \
-  --output deposit-signature.json
-
-chmod 0600 deposit-signature.json
-jq . deposit-signature.json
-```
-
-The amount `32000000000` is denominated in gwei and represents a 32 ETH
-validator stake.
-
-The response contains the public keys, withdrawal credentials, signatures, and
-deposit root needed to stake. It must not contain the node private key,
-consensus private key, Reth P2P key, OpenResty JWT secret, or any
-funding-account private key.
-
-### 5. Stop the temporary RPC
-
-```bash
-sudo supervisorctl stop summit-deposit-rpc
-sudo supervisorctl status summit-deposit-rpc
-```
-
-Do not leave the signing endpoint running after obtaining the file.
-
-### 6. Send the signature file to Seismic operations
-
-Send the `deposit-signature.json` to Seismic operations through a secure
-transfer channel.
-
-Do **not** send validator private-key files, a wallet private key, seed phrases,
-or JWT secrets. Do not publish the signature file in a public issue or source
-repository.
-
-Seismic operations will submit the staking transaction on your behalf. Record
-the transaction hash and confirmation. Starting before the account becomes
-`Joining` is possible but may not allow Summit to connect or synchronize yet.
-
-### 7. Restart a validator
-
-Restart a genesis or onboarded validator from its existing state with:
-
-```bash
-sudo ./tools/seismic-node.py validator start --mode normal
-```
-
-Use `--mode checkpoint` to restart from the installed checkpoint inputs instead.
-The normal and checkpoint Summit programs cannot run at the same time. The
-manual normal-mode equivalent starts only the components enabled during
-installation, in this order:
-
-```bash
-sudo systemctl enable --now supervisor
-sudo supervisorctl reread
-sudo supervisorctl update
-
-# Run this only when Custodian was configured.
-sudo supervisorctl start custodian
-
-sudo supervisorctl start reth
-sudo supervisorctl start summit
-
-# Run this only when summit-checkpointer was enabled.
-sudo supervisorctl start checkpointer
-
-sudo supervisorctl status
-```
-
-Because `autostart=false` and `autorestart=false`, these programs must be
-started manually again after a server or Supervisor restart.
-
-## Install a validator checkpoint manually
-
-`validator onboard` downloads and installs a checkpoint automatically. Use this
-standalone command when the snapshot archive, its matching `manifest.json`, and
-an independently obtained weak-subjectivity TOML were staged locally under
-root-owned, non-writable paths — for example on hosts without direct access to
-the snapshot provider. Complete the deposit-signature handoff first so the
-validator can be started once its account reaches `Joining`.
-
-```bash
-sudo ./tools/seismic-node.py checkpoint install \
-  --role validator \
-  --archive /root/seismic-checkpoint/epoch_12.tar.gz \
-  --manifest /root/seismic-checkpoint/manifest.json \
-  --weak-subjectivity-path /root/seismic-trust/weak_subjectivity.toml
-```
-
-The tool verifies the manifest and archive, checks that related Supervisor
-programs are stopped, preserves node keys, backs up and replaces the matching
-Reth state, and backs up and empties the Summit mutable store. Reth, Summit, the
-checkpoint destination, and the rollback directory must share a filesystem so
-state moves remain atomic. The default checkpoint and rollback locations are
-derived from the configured data paths. It writes
-`/etc/seismic/validator-checkpoint-start.toml` and leaves every service stopped.
-
-The tool prints the root-only rollback directory as soon as it is created and
-again in its final summary, together with the exact rollback command. Running
-`sudo ./tools/seismic-node.py checkpoint rollback` without `--backup` lists the
-available backups interactively for selection by number. It can also download a
-snapshot and obtain weak subjectivity from an independent Summit RPC; run
-`sudo ./tools/seismic-node.py checkpoint install --help` for those options.
-Independent providers are recommended. If both remote sources share a normalized
-URL origin, the tool prints a strong warning and requires interactive
-confirmation or `--allow-same-origin-weak-subjectivity` for non-interactive use.
-This URL-origin comparison cannot prove that different DNS names have
-independent operators. Do not remove the rollback directory until checkpoint
-startup and the transition back to normal Summit startup have both been
-verified. When rollback is no longer needed, remove it explicitly with:
-
-```bash
-sudo ./tools/seismic-node.py checkpoint delete-backup --backup <backup-path>
-```
-
-Like `checkpoint rollback`, omitting `--backup` in interactive use lists the
-available backups for selection by number.
-
-## Stop the validator
-
-Stop deposit-signature, normal, or checkpoint validator programs and their
-dependencies in reverse order with:
-
-```bash
-sudo ./tools/seismic-node.py validator stop
-sudo supervisorctl status
-```
-
-The command validates the validator installation inventory before stopping
-services. Supervisor and OpenResty remain running.
-
-The complete manual equivalent is:
-
-```bash
-sudo supervisorctl stop checkpointer       # when configured
-sudo supervisorctl stop summit-deposit-rpc
-sudo supervisorctl stop summit
-sudo supervisorctl stop summit-checkpoint
-sudo supervisorctl stop reth
-sudo supervisorctl stop custodian          # when configured
-sudo supervisorctl status
-```
-
-## OpenResty public endpoint
-
-Both managed modes terminate HTTPS and obtain certificates through
-`lua-resty-auto-ssl`. **Custodian-only** exposes only
-`POST /custodian/v1/council`, forwarding to `/v1/council` on the selected
-loopback Custodian port without proxy JWT authentication. **Full mode**
-additionally proxies the existing node routes below. See
-[Custodian HTTPS deployment](CUSTODIAN_TLS.md) for dedicated limits, TLS
-requirements, and deployment verification.
-
-Reth HTTP and WebSocket RPC, Summit RPC, their metrics listeners, and the
-summit-checkpointer RPC remain bound to loopback whether or not OpenResty is
-enabled. When OpenResty is disabled, these endpoints are available only from the
-node itself or through an operator-managed tunnel; they are not exposed directly
-on public interfaces.
-
-The additional routes configured in **full mode** are:
-
-| Public path     | Local upstream          | Notes                                            |
-| --------------- | ----------------------- | ------------------------------------------------ |
-| `/`             | `127.0.0.1:3000`        | Grafana                                          |
-| `/staking`      | `/var/www/html/staking` | Static staking UI                                |
-| `/rpc`          | `127.0.0.1:8545`        | Reth HTTP JSON-RPC                               |
-| `/ws`           | `127.0.0.1:8546`        | Reth WebSocket JSON-RPC                          |
-| `/summit`       | `127.0.0.1:3030`        | Summit RPC                                       |
-| `/ops`          | `127.0.0.1:8552`        | Signature-authenticated privileged Reth RPC      |
-| `/checkpointer` | `127.0.0.1:42069`       | Rate-limited and JWT-protected RPC and snapshots |
-| `/prom-summit`  | `127.0.0.1:9090`        | Rate-limited and JWT-protected                   |
-| `/prom-reth`    | `127.0.0.1:9001`        | Rate-limited and JWT-protected                   |
-
-The `/checkpointer` route uses the same secret at the selected JWT-secret path
-as the protected metrics routes. The default path is
-`/etc/seismic/openresty-jwt-secret`. Clients must send
-`Authorization: Bearer <token>`. The localhost-only `summit-deposit-rpc` service
-on port `3031` remains deliberately unproxied.
-
-### Start or reload OpenResty
-
-```bash
-sudo openresty -t
-sudo systemctl enable openresty
-
-if sudo systemctl is-active --quiet openresty; then
-  sudo systemctl reload openresty
-else
-  sudo systemctl start openresty
-fi
-
-sudo systemctl status openresty --no-pager
-```
-
-## Safe installer reruns
-
-The installer can be rerun to update binaries or rendered configuration, but it
-does not persist previous answers. Re-enter the same service user, persistent
-directories, genesis path, and optional component settings unless you are
-intentionally changing them.
-
-On a normal rerun, the installer preserves existing validator keys and state,
-then replaces its generated Supervisor configuration and, in managed modes,
-OpenResty configuration. It does not start or reload those services. Previously
-active listeners and routes remain until explicit activation. Choosing your own
-terminator leaves existing OpenResty untouched; arrange an explicit handover.
-See the [deployment checklist](CUSTODIAN_TLS.md#deployment-checklist).
-
-For source installations, refs are configured in `install/lib/configuration.sh`.
-Use `refs/tags/<tag>` for a release tag; unqualified names (or
-`refs/heads/<branch>`) select branches. Summit and seismic-reth default to
-`refs/tags/internal-testnet-v1`; Custodian temporarily uses
-`refs/heads/centralized-custodian` for its HTTP transport migration, pending a
-new release tag. Summit and Reth tags must be published in their respective
-repositories before installation. Checkpointer remains on the `main` branch.
-
-New checkouts fetch all remote branches. Every tag installation fetches the
-exact tag without forcing or pruning tags, resolves it to a commit, and checks
-it out with detached HEAD. Both lightweight and annotated tags are supported.
-Reruns stay on that release even when branches advance. A missing/deleted tag or
-a remote tag that differs from the existing local tag is rejected, rather than
-silently switching releases. Publish a new tag for a new release; do not move an
-existing release tag. This is not signature verification or an independent
-commit-SHA pin.
-
-On a rerun, the installer validates the origin and clean working tree before
-switching refs. Existing branch checkouts can migrate to a tag without deleting
-their local branches. Branch-mode updates expand legacy single-branch fetch
-configuration, fetch/prune remote branches, and merge `origin/<branch>` with
-`--ff-only`. Dirty working trees and non-fast-forward branch updates are
-rejected rather than reset. The installer does not update its own
-`seismic-node-ops` checkout.
-
-Before applying a later `supervisorctl update`, inspect running services:
-
-```bash
-sudo supervisorctl status
-```
-
-Supervisor may restart a running program whose definition changed when the
-updated configuration is applied. Plan that operation separately for a live
-validator.
+Without `--config`, the harness generates a test-only validator configuration:
+chain ID `5124`, reserved domain `seismic-vm.invalid`, and
+`MONITORING_MODE=off`. No monitoring name, remote-write URL, or token is needed.
+This exercises installation, not public certificate issuance or telemetry;
+services are not started. Use `--config FILE` with real settings for those
+checks. Supplied files are uploaded unchanged.
+
+The harness needs Python 3 locally and validates the config before any sync,
+upload, or SSH command. `tests/test_vm_harness.py` exercises this flow with
+stubbed transports, without contacting a VM.
+
+### Deployment validation (disposable Ubuntu 24.04 VM)
+
+The offline tests and install-only harness do **not** validate actual systemd
+sandboxing or application readiness. Before deployment, use an explicitly agreed
+disposable Ubuntu 24.04 target, never a production node or the developer host,
+and verify:
+
+- Fresh validator and observer installations; each role's start, stop, restart,
+  and installer rerun. Observer startup needs a test parent and provisioned
+  parent node key (runbook 3.7); the generated harness config covers neither.
+- Source-built Reth with `CHECKPOINTER_ENABLED=true`: `mdbx_copy` is installed
+  and source checkout/build reruns preserve genuine local edits.
+- The journal has no sandbox-related failures: interface discovery with
+  `AF_NETLINK`, the syscall filter with jemalloc, and writes to configured data,
+  key, socket, and checkpoint paths all work.
+- Runtime paths chosen by the operator are accessible with `ProtectHome=yes`; do
+  not put binaries, configuration, or state under `/home` without checking them.
+  A source-build Rust toolchain is an installer input, not a runtime path.
+- Summit exports working disk metrics (including its `/proc/mounts` access);
+  scrape Summit at `http://127.0.0.1:9090/` and Reth at
+  `http://127.0.0.1:9001/metrics` as in runbook section 4.
+- `Type=simple` start success is not treated as readiness: inspect journals and
+  application health after startup, not just the immediate unit state.
+
+Record the VM image, config, tested revisions, commands, and results. These
+checks remain deployment prerequisites until they have actually run.

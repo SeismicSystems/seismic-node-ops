@@ -21,10 +21,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ShellCheck
+      - name: Install ShellCheck and template-rendering dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          sudo apt-get install --yes shellcheck gettext-base
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -38,31 +38,25 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run shfmt
-        run: shfmt -d install tools
+        run: shfmt -d install tools tests/vm
 
       - name: Run ShellCheck
         working-directory: install
         run: |
           shellcheck -x \
-            install-validator.sh \
-            install-observer.sh \
-            ../tools/generate-openresty-jwt.sh
+            install.sh \
+            ../tools/generate-openresty-jwt.sh \
+            ../tests/vm/run.sh
 
       - name: Check Python formatting and lint
         run: |
           python3 -m pip install ruff==0.16.5
           ruff check --target-version py312 \
-            install/lib/custodian_url.py \
-            install/lib/prometheus_agent.py \
-            install/lib/monitoring_only.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
             tests
           ruff format --check --target-version py312 \
-            install/lib/custodian_url.py \
-            install/lib/prometheus_agent.py \
-            install/lib/monitoring_only.py \
             tools/seismic-node.py \
             tools/seismic_node \
             tools/checkpoint-start/summit-checkpoint-runner.py \
@@ -70,21 +64,25 @@ jobs:
 
       - name: Fetch checksum-pinned Prometheus for isolated agent tests
         run: |
-          read -r version checksum < <(python3 -c 'import runpy; m = runpy.run_path("install/lib/prometheus_agent.py"); print(m["VERSION"], m["CHECKSUMS"]["amd64"])')
+          read -r version checksum < <(PYTHONPATH=tools python3 -c 'from seismic_node import agent; print(agent.VERSION, agent.CHECKSUMS["amd64"])')
           archive="$RUNNER_TEMP/prometheus.tar.gz"
           curl -fsSL --max-time 120 "https://github.com/prometheus/prometheus/releases/download/v$version/prometheus-$version.linux-amd64.tar.gz" -o "$archive"
           printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
           tar -xzf "$archive" -C "$RUNNER_TEMP" "prometheus-$version.linux-amd64/prometheus" "prometheus-$version.linux-amd64/promtool"
           echo "PROMETHEUS_AGENT_BIN=$RUNNER_TEMP/prometheus-$version.linux-amd64/prometheus" >> "$GITHUB_ENV"
           echo "PROMETHEUS_AGENT_PROMTOOL=$RUNNER_TEMP/prometheus-$version.linux-amd64/promtool" >> "$GITHUB_ENV"
-          python3 -m pip install supervisor==4.2.5 setuptools==80.9.0
+
+      - name: Fetch checksum-pinned Caddy for isolated proxy tests
+        run: |
+          archive="$RUNNER_TEMP/caddy.tar.gz"
+          curl -fsSL --max-time 120 https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_linux_amd64.tar.gz -o "$archive"
+          printf 'a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7  %s\n' "$archive" | sha512sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" caddy
+          echo "CUSTODIAN_CADDY_BIN=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
 
       - name: Check Python compilation and tests
         run: |
           python3 -m py_compile \
-            install/lib/custodian_url.py \
-            install/lib/prometheus_agent.py \
-            install/lib/monitoring_only.py \
             tools/seismic-node.py \
             tools/seismic_node/*.py \
             tools/checkpoint-start/summit-checkpoint-runner.py

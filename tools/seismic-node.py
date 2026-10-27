@@ -20,16 +20,20 @@ from typing import NoReturn
 from seismic_node import (
     checkpoint,
     download,
+    fsutil,
     monitoring,
     observer,
-    rpc,
-    supervisor,
     validator,
 )
+from seismic_node.errors import NodeError
 
 
-def add_inventory_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--inventory", type=Path)
+def add_node_env_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--node-env",
+        type=Path,
+        help="node configuration to read (default: /etc/seismic/node.env)",
+    )
 
 
 def add_checkpoint_source_arguments(parser: argparse.ArgumentParser) -> None:
@@ -114,7 +118,7 @@ def parse_args() -> argparse.Namespace:
     checkpoint_install.add_argument(
         "--role", choices=("validator", "observer"), required=True
     )
-    add_inventory_argument(checkpoint_install)
+    add_node_env_argument(checkpoint_install)
     add_checkpoint_source_arguments(checkpoint_install)
     add_checkpoint_destination_arguments(checkpoint_install)
 
@@ -149,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     validator_deposit = validator_commands.add_parser(
         "deposit-signature", allow_abbrev=False
     )
-    add_inventory_argument(validator_deposit)
+    add_node_env_argument(validator_deposit)
     validator_deposit.add_argument("--output", type=Path, required=True)
     validator_deposit.add_argument("--overwrite", action="store_true")
     validator_deposit.add_argument("--http-timeout", type=float, default=10.0)
@@ -162,13 +166,11 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Manual checkpoint-start equivalent after lifecycle authorization:\n"
-            "  sudo systemctl enable --now supervisor\n"
-            "  sudo supervisorctl reread\n"
-            "  sudo supervisorctl update\n"
-            "  sudo supervisorctl start custodian          # when configured\n"
-            "  sudo supervisorctl start reth\n"
-            "  sudo supervisorctl start summit-checkpoint\n"
-            "  sudo supervisorctl start checkpointer       # when configured\n"
+            "  sudo systemctl daemon-reload\n"
+            "  sudo systemctl start seismic-custodian          # when configured\n"
+            "  sudo systemctl start seismic-reth\n"
+            "  sudo systemctl start seismic-summit-checkpoint\n"
+            "  sudo systemctl start seismic-checkpointer       # when configured\n"
             "For --mode normal, start summit instead of summit-checkpoint.\n"
             "Normal mode waits for lifecycle authorization without installing "
             "or requiring a checkpoint."
@@ -180,7 +182,7 @@ def parse_args() -> argparse.Namespace:
         default="checkpoint",
         help="startup mode (default: checkpoint); normal skips checkpoint installation",
     )
-    add_inventory_argument(validator_onboard)
+    add_node_env_argument(validator_onboard)
     validator_onboard.add_argument(
         "--deposit-signature",
         type=Path,
@@ -209,20 +211,18 @@ def parse_args() -> argparse.Namespace:
         epilog=(
             "Use validator onboard for first-time, lifecycle-gated startup.\n"
             "Manual normal-mode equivalent:\n"
-            "  sudo systemctl enable --now supervisor\n"
-            "  sudo supervisorctl reread\n"
-            "  sudo supervisorctl update\n"
-            "  sudo supervisorctl start custodian       # when configured\n"
-            "  sudo supervisorctl start reth\n"
-            "  sudo supervisorctl start summit\n"
-            "  sudo supervisorctl start checkpointer    # when configured\n"
+            "  sudo systemctl daemon-reload\n"
+            "  sudo systemctl start seismic-custodian       # when configured\n"
+            "  sudo systemctl start seismic-reth\n"
+            "  sudo systemctl start seismic-summit\n"
+            "  sudo systemctl start seismic-checkpointer    # when configured\n"
             "For checkpoint mode, start summit-checkpoint instead."
         ),
     )
     validator_start.add_argument(
         "--mode", choices=("normal", "checkpoint"), required=True
     )
-    add_inventory_argument(validator_start)
+    add_node_env_argument(validator_start)
     add_startup_argument(validator_start)
 
     validator_stop = validator_commands.add_parser(
@@ -232,16 +232,16 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Manual equivalent:\n"
-            "  sudo supervisorctl stop checkpointer       # when configured\n"
-            "  sudo supervisorctl stop summit-deposit-rpc\n"
-            "  sudo supervisorctl stop summit\n"
-            "  sudo supervisorctl stop summit-checkpoint\n"
-            "  sudo supervisorctl stop reth\n"
-            "  sudo supervisorctl stop custodian          # when configured\n"
-            "Supervisor and OpenResty remain running."
+            "  sudo systemctl stop seismic-checkpointer       # when configured\n"
+            "  sudo systemctl stop seismic-deposit-rpc\n"
+            "  sudo systemctl stop seismic-summit\n"
+            "  sudo systemctl stop seismic-summit-checkpoint\n"
+            "  sudo systemctl stop seismic-reth\n"
+            "  sudo systemctl stop seismic-custodian          # when configured\n"
+            "OpenResty and the Prometheus Agent remain running."
         ),
     )
-    add_inventory_argument(validator_stop)
+    add_node_env_argument(validator_stop)
 
     observer_parser = commands.add_parser("observer", allow_abbrev=False)
     observer_commands = observer_parser.add_subparsers(
@@ -250,24 +250,22 @@ def parse_args() -> argparse.Namespace:
     observer_start = observer_commands.add_parser(
         "start",
         allow_abbrev=False,
-        help="prepare Supervisor and start observer services",
+        help="check identity and state, then start observer services",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Manual normal-mode equivalent:\n"
-            "  sudo systemctl enable --now supervisor\n"
-            "  sudo supervisorctl reread\n"
-            "  sudo supervisorctl update\n"
-            "  sudo supervisorctl start custodian       # when configured\n"
-            "  sudo supervisorctl start reth\n"
-            "  sudo supervisorctl start summit-observer\n"
-            "  sudo supervisorctl start checkpointer    # when configured\n"
+            "  sudo systemctl daemon-reload\n"
+            "  sudo systemctl start seismic-observer-custodian   # when configured\n"
+            "  sudo systemctl start seismic-reth\n"
+            "  sudo systemctl start seismic-observer\n"
+            "  sudo systemctl start seismic-checkpointer         # when configured\n"
             "For checkpoint mode, start summit-observer-checkpoint instead."
         ),
     )
     observer_start.add_argument(
         "--mode", choices=("normal", "checkpoint"), required=True
     )
-    add_inventory_argument(observer_start)
+    add_node_env_argument(observer_start)
     add_checkpoint_source_arguments(observer_start)
     add_checkpoint_destination_arguments(observer_start)
     add_startup_argument(observer_start)
@@ -279,26 +277,47 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Manual equivalent:\n"
-            "  sudo supervisorctl stop checkpointer                 # when configured\n"
-            "  sudo supervisorctl stop summit-observer\n"
-            "  sudo supervisorctl stop summit-observer-checkpoint\n"
-            "  sudo supervisorctl stop reth\n"
-            "  sudo supervisorctl stop custodian                    # when configured\n"
-            "Supervisor and OpenResty remain running."
+            "  sudo systemctl stop seismic-checkpointer           # when configured\n"
+            "  sudo systemctl stop seismic-observer\n"
+            "  sudo systemctl stop seismic-observer-checkpoint\n"
+            "  sudo systemctl stop seismic-reth\n"
+            "  sudo systemctl stop seismic-observer-custodian     # when configured\n"
+            "OpenResty and the Prometheus Agent remain running."
         ),
     )
-    add_inventory_argument(observer_stop)
+    add_node_env_argument(observer_stop)
 
     monitoring_parser = commands.add_parser("monitoring", allow_abbrev=False)
     monitoring_commands = monitoring_parser.add_subparsers(
         dest="monitoring_command", required=True
     )
-    for action in ("start", "stop", "status"):
+    for action in ("start", "stop", "status", "check"):
         command = monitoring_commands.add_parser(action, allow_abbrev=False)
-        command.add_argument("--role", choices=("validator", "observer"), required=True)
-        add_inventory_argument(command)
-        if action == "start":
-            add_startup_argument(command)
+        add_node_env_argument(command)
+    monitoring_install = monitoring_commands.add_parser(
+        "install",
+        allow_abbrev=False,
+        help="install or update the Prometheus Agent from node.env; starts nothing",
+    )
+    add_node_env_argument(monitoring_install)
+    monitoring_install.add_argument(
+        "--token-source",
+        type=Path,
+        default=None,
+        help=(
+            "root-only (0600) file holding the 64-hex token from Seismic "
+            "operations; required for validators, not used by observers"
+        ),
+    )
+    monitoring_install.add_argument(
+        "--operator-token-source",
+        type=Path,
+        default=None,
+        help=(
+            "root-only (0600) file holding the bearer token for your own "
+            "MONITORING_OPERATOR_REMOTE_WRITE_URL receiver, if it needs one"
+        ),
+    )
 
     return parser.parse_args()
 
@@ -345,7 +364,7 @@ def require_checkpoint_source_for_install_options(
 ) -> None:
     """Reject install-only options that would otherwise produce indirect errors."""
     if not source_requested and checkpoint_install_options_requested(args):
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Checkpoint installation options require --snapshot-api-url or local "
             "--archive and --manifest files"
         )
@@ -359,20 +378,16 @@ def validate_positive_options(args: argparse.Namespace) -> None:
         "validator_poll_interval",
     ):
         if hasattr(args, name) and getattr(args, name) <= 0:
-            raise checkpoint.CheckpointError(
-                f"--{name.replace('_', '-')} must be greater than zero"
-            )
+            raise NodeError(f"--{name.replace('_', '-')} must be greater than zero")
     for name in ("snapshot_wait_timeout", "validator_wait_timeout"):
         if hasattr(args, name) and getattr(args, name) < 0:
-            raise checkpoint.CheckpointError(
-                f"--{name.replace('_', '-')} must not be negative"
-            )
+            raise NodeError(f"--{name.replace('_', '-')} must not be negative")
     if (
         hasattr(args, "checkpoint_epoch")
         and args.checkpoint_epoch is not None
         and args.checkpoint_epoch < 0
     ):
-        raise checkpoint.CheckpointError("--checkpoint-epoch must not be negative")
+        raise NodeError("--checkpoint-epoch must not be negative")
 
 
 def install_from_resolved_inputs(
@@ -438,23 +453,22 @@ def handle_validator(args: argparse.Namespace) -> None:
         validator.generate_deposit_signature(args)
         return
     if args.summit_rpc_url is None:
-        raise checkpoint.CheckpointError("validator onboard requires --summit-rpc-url")
+        raise NodeError("validator onboard requires --summit-rpc-url")
     source_requested = checkpoint_source_requested(args)
     if args.mode == "normal" and (
         source_requested or checkpoint_install_options_requested(args)
     ):
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Checkpoint source and installation options cannot be used with "
             "validator onboard --mode normal"
         )
     require_checkpoint_source_for_install_options(args, source_requested)
-    inventory_path = args.inventory or checkpoint.DEFAULT_INVENTORY_PATHS["validator"]
-    inventory = checkpoint.load_inventory("validator", inventory_path)
+    inventory = checkpoint.load_node("validator", checkpoint.node_env_path(args))
     node_public_key = validator.installed_node_public_key(inventory)
     if args.deposit_signature is not None:
         _, deposit_public_key = validator.load_deposit_response(args.deposit_signature)
         if deposit_public_key != node_public_key:
-            raise checkpoint.CheckpointError(
+            raise NodeError(
                 "Deposit-signature node public key does not match the installed validator"
             )
     if args.mode == "checkpoint" and not source_requested:
@@ -517,7 +531,7 @@ def handle_observer(args: argparse.Namespace) -> None:
     source_requested = checkpoint_source_requested(args)
     require_checkpoint_source_for_install_options(args, source_requested)
     if args.mode == "normal" and source_requested:
-        raise checkpoint.CheckpointError(
+        raise NodeError(
             "Checkpoint source options cannot be used with observer --mode normal"
         )
     backup: Path | None = None
@@ -540,7 +554,7 @@ def main() -> NoReturn:
     """Validate common options, require root, and dispatch one command."""
     args = parse_args()
     validate_positive_options(args)
-    checkpoint.require_root()
+    fsutil.require_root()
     if args.command == "checkpoint":
         handle_checkpoint(args)
     elif args.command == "validator":
@@ -558,12 +572,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("seismic-node: interrupted", file=sys.stderr)
         raise SystemExit(130) from None
-    except (
-        checkpoint.CheckpointError,
-        rpc.NetworkError,
-        supervisor.SupervisorError,
-        OSError,
-        shutil.Error,
-    ) as error:
+    except (NodeError, OSError, shutil.Error) as error:
         print(f"seismic-node: {error}", file=sys.stderr)
         raise SystemExit(1) from error

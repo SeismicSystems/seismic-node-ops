@@ -1,28 +1,35 @@
 # Custodian HTTPS deployment
 
-Both node installers use the enclave `centralized-custodian` branch. Choose a
-Custodian backend port when prompted (default **7876**). The bind address stays
-**`127.0.0.1`**. Choose an unused port accessible to the service user and never
-expose it directly; the installer does not configure firewall rules.
+The Custodian backend port is `CUSTODIAN_COUNCIL_PORT` in `node.env` (default
+**7876**). The bind address stays **`127.0.0.1`**. Choose an unused port
+accessible to the service user and never expose it directly; the installer does
+not configure firewall rules.
 
-## Installer choices
+## TLS_MODE
 
-Validators require a public Custodian HTTPS endpoint. **Observers default to no
-public Custodian endpoint**: they only need outbound access to their parent.
-Observers can still publish node RPC endpoints through OpenResty independently.
+Validators require a public Custodian HTTPS endpoint. **Observers default to
+none** (`TLS_MODE=disabled`): they only need outbound access to their parent.
 
-For validators, or observers that opt in to Custodian exposure, choose:
+| `TLS_MODE`       | HTTPS routes                                                  |
+| ---------------- | ------------------------------------------------------------- |
+| `external`       | Operator-configured; the installer leaves the proxy untouched |
+| `custodian-only` | Custodian only                                                |
+| `full`           | Custodian, RPC, Summit, and the other node routes             |
 
-| Mode                                  | HTTPS routes                                                  |
-| ------------------------------------- | ------------------------------------------------------------- |
-| Own TLS terminator                    | Operator-configured; the installer leaves the proxy untouched |
-| OpenResty: Custodian only (default)   | Custodian only                                                |
-| OpenResty: Custodian + node endpoints | Custodian, RPC, Summit, and the other node routes             |
+On a validator with `MONITORING_MODE=pull` both managed modes additionally
+publish the JWT-protected `/prom-*` metrics routes (runbook 3.12). Observers
+publish none: Seismic does not scrape them.
+
+`full` exposes only the configured node routes, not a Grafana or staking web UI.
+Unmatched HTTPS paths (including `/` and `/staking`) return 404. Host any
+operator-managed UI separately; the installer does not provision one.
 
 Managed modes configure automatic certificates and write the entire OpenResty
-main configuration. Custodian-only mode skips JWT setup. Custodian uses protocol
-signatures, not proxy JWTs, to authorize operations. Its HTTPS frontend is
-Internet-reachable without a source-IP allowlist.
+main configuration. The JWT secret and handlers are set up whenever a
+JWT-protected route exists: always in `full`, and in `custodian-only` only with
+`MONITORING_MODE=pull`. Custodian uses protocol signatures, not proxy JWTs, to
+authorize operations. Its HTTPS frontend is Internet-reachable without a
+source-IP allowlist.
 
 ## Endpoint
 
@@ -33,7 +40,7 @@ https://YOUR_DOMAIN/custodian
 ```
 
 When installing an observer, enter the **parent validator's** Custodian endpoint
-when prompted—not the observer's own endpoint.
+as `CUSTODIAN_PARENT_URL`—not the observer's own endpoint.
 
 Clients append `/v1/council`; the proxy forwards `POST /custodian/v1/council` to
 `http://127.0.0.1:BACKEND_PORT/v1/council` using your selected port. Changing
@@ -75,6 +82,26 @@ See `templates/openresty/custodian-*.conf` and
 `templates/openresty/lua/custodian.lua` for the complete OpenResty-specific
 policy.
 
+### Reference configurations for `TLS_MODE=external`
+
+| File                                   | For                                                        | Certificates                      |
+| -------------------------------------- | ---------------------------------------------------------- | --------------------------------- |
+| `templates/proxy/nginx/custodian.conf` | plain nginx: a server block plus the rate/connection zones | yours (certbot, acme.sh); no ACME |
+| `templates/proxy/caddy/Caddyfile`      | Caddy 2                                                    | automatic, built in               |
+| `templates/proxy/envoy/envoy.yaml`     | Envoy 1.40+ (static bootstrap, no control plane)           | yours (certbot, acme.sh); no ACME |
+
+All three implement the rules above and are tested against a live backend:
+method, query, `Content-Type`, `Content-Length`, chunked and `Upgrade`
+rejections, the 64 KiB cap (inclusive), prefix 404s, plain-HTTP refusal,
+`Cache-Control: no-store` on responses, no access logging of the route, and no
+client header reaching the backend. Each file's header lists what it cannot
+match exactly: nginx has no single total upload deadline, Caddy has no built-in
+rate limiting or concurrency caps, and Envoy's built-in rate limiter cannot key
+on the client address, so its per-IP limits need the external rate limit
+service. None of them enables a compressor or decompressor; the route takes
+fixed-length CBOR only, and Envoy's decompressors in particular are where its
+remotely reachable memory-safety bugs have been (most recently CVE-2026-111497).
+
 ## Deployment checklist
 
 The installer prepares configuration but does **not** start services. The steps
@@ -110,7 +137,13 @@ parent's HTTPS endpoint and their local Custodian service.
 python3 -m unittest discover -s tests -p 'test_custodian*.py' -v
 ```
 
-Set `CUSTODIAN_OPENRESTY_BIN` to enable isolated TLS proxy tests. Optionally set
-`CUSTODIAN_SERVICE_BIN` and `COUNCIL_SIGNER_BIN` for a real protocol smoke test.
-Tests use temporary loopback services; public certificate issuance must be
-verified during deployment.
+Set `CUSTODIAN_OPENRESTY_BIN` to enable isolated managed-proxy TLS tests, or
+`CUSTODIAN_CADDY_BIN` for the Caddy reference (CI uses Caddy 2.11.7). The Caddy
+tests check that partial uploads wait for completion and oversized uploads never
+contact the backend. The reference needs both `request_buffers` and the explicit
+`Content-Length` size rejection: buffering alone can forward the prefix of an
+oversized upload before the size-limiting reader rejects it.
+
+Optionally set `CUSTODIAN_SERVICE_BIN` and `COUNCIL_SIGNER_BIN` for a real
+protocol smoke test. Tests use temporary loopback services; public certificate
+issuance must be verified during deployment.

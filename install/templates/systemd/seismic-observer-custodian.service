@@ -1,0 +1,39 @@
+# Seismic Centralized Custodian, observer role.
+# Static unit: every host-specific value comes from /etc/seismic/node.env.
+#
+# An observer Custodian fetches and verifies its root key through the parent
+# validator's Custodian (${CUSTODIAN_PARENT_URL}) before serving Reth.
+
+[Unit]
+Description=Seismic Centralized Custodian (observer)
+Documentation=https://github.com/SeismicSystems/seismic-node-ops
+After=network-online.target
+Wants=network-online.target
+Before=seismic-reth.service
+
+[Service]
+Type=simple
+User=seismic
+Group=seismic
+EnvironmentFile=/etc/seismic/node.env
+RuntimeDirectory=seismic
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/local/bin/seismic-centralized-custodian-service \
+    --socket ${CUSTODIAN_SOCKET} \
+    --root-key-file ${CUSTODIAN_DATA_DIR}/root.key \
+    --delivery-dir ${CUSTODIAN_DATA_DIR}/deliveries \
+    --council-listen 127.0.0.1:${CUSTODIAN_COUNCIL_PORT} \
+    --council-address ${CUSTODIAN_COUNCIL_ADDRESS} \
+    --chain-id ${CUSTODIAN_CHAIN_ID} \
+    --observer ${OBSERVER_INDEX} \
+    --parent-custodian ${CUSTODIAN_PARENT_URL} \
+    --summit-key-dir ${SUMMIT_KEYS_DIR} \
+    --allow seismic:tx-io,rng
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
