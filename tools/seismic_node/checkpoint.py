@@ -1021,7 +1021,7 @@ def install_checkpoint(args: argparse.Namespace) -> Path:
         f"--backup {shlex.quote(str(backup))}"
     )
     print(
-        "Start the role-specific services only after reviewing Supervisor configuration."
+        "Start the role-specific services only after reviewing the installed units and node.env."
     )
     return backup
 

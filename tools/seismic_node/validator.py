@@ -324,7 +324,7 @@ def choose_pre_joining_action(status: str, policy: str | None) -> str:
         )
     print(
         "Starting before Joining may not allow Summit to connect or synchronize yet. "
-        "Because autorestart=false, rerunning this command may be necessary."
+        "Summit is restarted by systemd on failure, not on a clean exit; rerunning this command may be necessary."
     )
     print("Choose how to proceed:")
     print("  [1] wait for Joining (default)")

@@ -252,7 +252,7 @@ def acquire_lock(lock_file: Path) -> int:
     # Python descriptors are non-inheritable by default. Summit must inherit
     # this descriptor so the advisory lock remains held after os.execvpe().
     # fcntl.flock uses the same Linux lock mechanism as /usr/bin/flock, which
-    # wraps the normal Summit Supervisor program.
+    # wraps Summit in the normal-mode units.
     try:
         os.set_inheritable(file_descriptor, True)
     except OSError as error:
@@ -270,7 +270,7 @@ def execute(
 ) -> NoReturn:
     """Append verified paths and replace the runner with Summit."""
 
-    # Supervisor supplies all role-specific arguments, including --observer.
+    # The checkpoint units supply all role-specific arguments, including --observer.
     # This shared runner only owns the two checkpoint-import arguments.
     final_command = [
         *command,

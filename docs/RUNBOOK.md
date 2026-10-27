@@ -95,7 +95,7 @@ This is the contract every step below establishes. All paths except those under
 | `/etc/seismic/genesis.toml`              | `0644` | Summit genesis. Identical on every host; its digest gates P2P authentication.               |
 | `/etc/seismic/seismic-checkpointer.toml` | `0644` | Rendered from `node.env` when the checkpointer is enabled.                                  |
 | `/etc/seismic/checkpoint-start.toml`     | `0644` | Written by `seismic-node checkpoint install`. Its presence allows the `*-checkpoint` units. |
-| `/etc/seismic/weak-subjectivity.toml`    | `0600` | Trust anchor named by the above; obtained from an independent source.                       |
+| `/etc/seismic/weak-subjectivity.toml`    | `0644` | Trust anchor named by the above; obtained from an independent source.                       |
 | `/etc/seismic/prometheus-agent/`         | `0750` | Agent config and token, group `seismic-prometheus`.                                         |
 | `/etc/seismic/openresty-jwt-secret`      | `0640` | `root:nogroup`; JWT secret for full mode or Custodian-only with pull monitoring.            |
 
@@ -106,7 +106,7 @@ This is the contract every step below establishes. All paths except those under
 | `seismic-reth.service`                | both      | on-failure | See [Restart policy](#restart-policy)                                           |
 | `seismic-summit.service`              | validator | on-failure | Not enabled at boot; see [Restart policy](#restart-policy)                      |
 | `seismic-summit-checkpoint.service`   | validator | on-failure | Requires `/etc/seismic/checkpoint-start.toml`                                   |
-| `seismic-deposit-rpc.service`         | validator | no         | Started briefly by `seismic-node validator deposit`                             |
+| `seismic-deposit-rpc.service`         | validator | no         | Started briefly by `seismic-node validator deposit-signature`                   |
 | `seismic-custodian.service`           | validator | on-failure | Always installed; serves purpose keys to Reth                                   |
 | `seismic-observer.service`            | observer  | on-failure |                                                                                 |
 | `seismic-observer-checkpoint.service` | observer  | on-failure | Requires `/etc/seismic/checkpoint-start.toml`                                   |
@@ -717,11 +717,14 @@ For an observer this is the agent's only destination, and step 4 runs without
 3. If your receiver requires a bearer token, put it in a root-only file and pass
    `--operator-token-source <file>` to `monitoring install`; omit the flag for a
    receiver that authenticates another way.
-4. Rerun the install and restart the agent:
+4. Stop the agent (`monitoring install` refuses to replace a running agent's
+   files), rerun the install, and start it again:
 
    ```bash
-   seismic-node monitoring install --token-source /root/monitoring-token \
+   sudo "$REPO/tools/seismic-node.py" monitoring stop
+   sudo "$REPO/tools/seismic-node.py" monitoring install --token-source /root/monitoring-token \
        [--operator-token-source /root/operator-token]
+   sudo "$REPO/tools/seismic-node.py" monitoring start
    ```
 
 The agent then forwards every sample to both destinations from separate queues:
@@ -920,12 +923,15 @@ sudo "$REPO/tools/seismic-node.py" monitoring status|start|stop|check
 ## 6. Changing the configuration
 
 1. Edit `/etc/seismic/node.env`.
-2. Validate: `python3 -m seismic_node.nodeenv --check`.
+2. Validate:
+   `(cd "$REPO/tools" && sudo python3 -m seismic_node.nodeenv --check)`.
 3. If a rendered file depends on the changed keys, re-render it:
    `seismic-checkpointer.toml` (step 3.8), OpenResty `nginx.conf` (3.11),
    `prometheus.yml` (`monitoring install`).
-4. Restart the affected units: `seismic-node validator stop && … start`, or
-   `systemctl restart seismic-prometheus-agent`.
+4. Restart the affected units:
+   `sudo "$REPO/tools/seismic-node.py" validator stop` then `… start`, or
+   `sudo "$REPO/tools/seismic-node.py" monitoring stop` then `… install` and
+   `… start` for the agent (it re-reads `node.env` only at install time).
 
 systemd reads `node.env` at each unit start, so a change takes effect on the
 next start of that unit and not before.
@@ -975,7 +981,8 @@ from your own proxy instead.
 
 The service account is fixed to `seismic` in the unit files and in the Custodian
 socket ACL. To use another account, override the three places it appears and
-re-own the state:
+re-own the state. Everything below writes to `/etc` and `/persistence`, so run
+it in a root shell (`sudo -i`):
 
 ```bash
 NEW=ops

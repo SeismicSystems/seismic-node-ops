@@ -238,7 +238,7 @@ def parse_args() -> argparse.Namespace:
             "  sudo systemctl stop seismic-summit-checkpoint\n"
             "  sudo systemctl stop seismic-reth\n"
             "  sudo systemctl stop seismic-custodian          # when configured\n"
-            "Supervisor and OpenResty remain running."
+            "OpenResty and the Prometheus Agent remain running."
         ),
     )
     add_node_env_argument(validator_stop)
@@ -250,7 +250,7 @@ def parse_args() -> argparse.Namespace:
     observer_start = observer_commands.add_parser(
         "start",
         allow_abbrev=False,
-        help="prepare Supervisor and start observer services",
+        help="check identity and state, then start observer services",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Manual normal-mode equivalent:\n"
@@ -282,7 +282,7 @@ def parse_args() -> argparse.Namespace:
             "  sudo systemctl stop seismic-observer-checkpoint\n"
             "  sudo systemctl stop seismic-reth\n"
             "  sudo systemctl stop seismic-observer-custodian     # when configured\n"
-            "Supervisor and OpenResty remain running."
+            "OpenResty and the Prometheus Agent remain running."
         ),
     )
     add_node_env_argument(observer_stop)

@@ -1,4 +1,4 @@
-"""Start or stop observer services through conservative Supervisor workflows.
+"""Start or stop the observer's systemd units in a conservative order.
 
 Observers have no validator-account lifecycle gate, but normal and checkpoint
 Summit still share mutable state and therefore remain mutually exclusive.
