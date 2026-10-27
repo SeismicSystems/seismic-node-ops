@@ -4,8 +4,8 @@
 units load it through ``EnvironmentFile=``; this module lets Python tooling
 read the same file and see exactly the values systemd sees.
 
-Parsing follows systemd's EnvironmentFile grammar, verified against systemd
-257 (``systemd-run -p EnvironmentFile=``):
+Parsing follows systemd's EnvironmentFile grammar (``src/basic/env-file.c``),
+verified against systemd 257 and 262 (``systemd-run -p EnvironmentFile=``):
 
 * Blank lines and lines whose first non-blank character is ``#`` or ``;`` are
   comments.
@@ -14,8 +14,9 @@ Parsing follows systemd's EnvironmentFile grammar, verified against systemd
 * Bare values are trimmed. A backslash escapes the next character (the
   backslash is dropped). A trailing backslash continues onto the next line
   with no separator. ``#`` inside a value is *not* a comment.
-* Double-quoted values honour ``\\"`` and ``\\\\``; every other backslash is
-  literal (``"\\n"`` stays two characters). They may span lines.
+* Double-quoted values honour ``\\"``, ``\\\\``, ``\\$`` and ``\\```` (the shell's
+  ``SHELL_NEED_ESCAPE`` set) and eat a backslash-newline entirely; every other
+  backslash is literal (``"\\n"`` stays two characters). They may span lines.
 * Single-quoted values are fully literal and may span lines.
 
 Where systemd silently tolerates a construct whose outcome is surprising,
@@ -134,6 +135,12 @@ def _parse_bare(lines: list[str], index: int, raw: str) -> tuple[str, int]:
     return "".join(out).rstrip(), index
 
 
+# systemd unescapes exactly the shell's SHELL_NEED_ESCAPE set inside double
+# quotes (env-file.c, DOUBLE_QUOTE_VALUE_ESCAPE) and keeps the backslash for
+# anything else.
+_DOUBLE_QUOTE_ESCAPES = frozenset('"\\$`')
+
+
 def _parse_quoted(
     lines: list[str], index: int, raw: str, quote: str, start_line: int
 ) -> tuple[str, int]:
@@ -142,14 +149,20 @@ def _parse_quoted(
     current = raw
     while True:
         position = 0
+        continued = False
         while position < len(current):
             char = current[position]
-            if quote == '"' and char == "\\" and position + 1 < len(current):
-                following = current[position + 1]
-                if following in ('"', "\\"):
-                    out.append(following)
-                    position += 2
-                    continue
+            if quote == '"' and char == "\\":
+                if position + 1 < len(current):
+                    following = current[position + 1]
+                    if following in _DOUBLE_QUOTE_ESCAPES:
+                        out.append(following)
+                        position += 2
+                        continue
+                elif index + 1 < len(lines):
+                    # Backslash-newline: a continuation, dropped entirely.
+                    continued = True
+                    break
             if char == quote:
                 remainder = current[position + 1 :].strip()
                 if remainder:
@@ -163,7 +176,8 @@ def _parse_quoted(
         index += 1
         if index >= len(lines):
             raise _fail(start_line, f"unterminated {quote} quote")
-        out.append("\n")
+        if not continued:
+            out.append("\n")
         current = lines[index]
 
 

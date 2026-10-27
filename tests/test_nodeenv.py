@@ -44,9 +44,34 @@ class ParseTests(unittest.TestCase):
             {"A": "first second", "B": "firstsecond", "C": "end"},
         )
 
-    def test_double_quotes_escape_only_quote_and_backslash(self):
-        text = 'K="a \\"q\\" \\\\ back \\n literal"'
-        self.assertEqual(nodeenv.parse(text), {"K": 'a "q" \\ back \\n literal'})
+    def test_double_quotes_unescape_the_shell_set_and_keep_other_backslashes(self):
+        # systemd's DOUBLE_QUOTE_VALUE_ESCAPE: \" \\ \$ \` lose the backslash,
+        # anything else keeps it. Values are what `systemd-run -p
+        # EnvironmentFile=` showed on systemd 262.
+        cases = {
+            'K="a \\"q\\" \\\\ back \\n literal"': 'a "q" \\ back \\n literal',
+            'M="a\\$b"': "a$b",
+            'N="a\\`b"': "a`b",
+            'O="\\t\\x\\ "': "\\t\\x\\ ",
+            'P="$unescaped `stays`"': "$unescaped `stays`",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(list(nodeenv.parse(text).values()), [expected])
+
+    def test_double_quotes_eat_backslash_newline(self):
+        self.assertEqual(
+            nodeenv.parse('A="foo\\\nbar"\nB="one \\\n two\\\nthree"\nC=1'),
+            {"A": "foobar", "B": "one  twothree", "C": "1"},
+        )
+        # A backslash before a literal newline is not the same as before a
+        # quote: an escaped quote at end of line does not close the value.
+        self.assertEqual(
+            nodeenv.parse('A="x\\"\ny"'),
+            {"A": 'x"\ny'},
+        )
+        with self.assertRaisesRegex(nodeenv.NodeEnvError, 'unterminated " quote'):
+            nodeenv.parse('A="foo\\')
 
     def test_double_quotes_span_lines(self):
         self.assertEqual(
