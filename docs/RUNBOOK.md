@@ -304,8 +304,8 @@ fetch() {  # fetch <repository> <tag> <binary>...
     done
     rm -f SHA256SUMS
 }
-fetch summit               v0.1.0 summit
-fetch seismic-reth         v0.1.0 seismic-reth mdbx_copy   # mdbx_copy only needed with the checkpointer
+fetch summit               v0.1.1 summit
+fetch seismic-reth         v0.1.1 seismic-reth mdbx_copy   # mdbx_copy only needed with the checkpointer
 fetch enclave              v0.1.1 seismic-centralized-custodian-service
 fetch seismic-checkpointer v0.1.1 seismic-checkpointer      # when enabled
 ```
@@ -319,11 +319,11 @@ the same tags. Building needs the packages listed under 3.1 and a Rust toolchain
 for the building user:
 
 ```bash
-git clone --branch v0.1.0 https://github.com/SeismicSystems/summit.git
+git clone --branch v0.1.1 https://github.com/SeismicSystems/summit.git
 (cd summit && cargo build --locked --release --features prom)
 sudo install -o root -g root -m 0755 summit/target/release/summit /usr/local/bin/summit
 
-git clone --branch v0.1.0 https://github.com/SeismicSystems/seismic-reth.git
+git clone --branch v0.1.1 https://github.com/SeismicSystems/seismic-reth.git
 # The release profile for Reth is maxperf (fat LTO, one codegen unit), as in
 # seismic-reth's release workflow; it builds slower and lands in target/maxperf.
 (cd seismic-reth && cargo build --locked --profile maxperf --bin seismic-reth)
