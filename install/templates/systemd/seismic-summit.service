@@ -28,6 +28,8 @@ RuntimeDirectoryPreserve=yes
 LimitNOFILE=65536
 # flock takes the same kernel lock the seismic-node CLI holds while it moves
 # consensus state, so Summit can never start mid-operation.
+# Metrics stay on loopback whatever SUMMIT_RPC_BIND is: the Prometheus Agent
+# and the /prom-summit route scrape 127.0.0.1:9090, and nothing else should.
 ExecStart=/usr/bin/flock --nonblock --no-fork ${SUMMIT_DATA_DIR}/.summit-process.lock \
     /usr/local/bin/summit run \
     --genesis-path ${GENESIS_PATH} \
@@ -35,7 +37,7 @@ ExecStart=/usr/bin/flock --nonblock --no-fork ${SUMMIT_DATA_DIR}/.summit-process
     --store-path ${SUMMIT_DATA_DIR} \
     --engine-ipc-path ${RETH_ENGINE_IPC} \
     --rpc-ip ${SUMMIT_RPC_BIND} --rpc-port 3030 --admin-rpc-port 3031 \
-    --prom-ip ${SUMMIT_RPC_BIND} --prom-port 9090 \
+    --prom-ip 127.0.0.1 --prom-port 9090 \
     --critical-log-dir ${SUMMIT_CRITICAL_LOG_DIR} \
     $SUMMIT_BOOTSTRAPPERS_ARG
 Restart=on-failure

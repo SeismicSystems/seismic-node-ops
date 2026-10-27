@@ -235,6 +235,34 @@ class ExecStartExpansionTests(unittest.TestCase):
             "/persistence/keys/summit/bootstrappers.toml",
         )
 
+    def test_summit_metrics_stay_on_loopback_whatever_the_rpc_bind(self):
+        """The agent and the /prom-summit route scrape 127.0.0.1:9090; a
+        non-loopback SUMMIT_RPC_BIND must move the RPC only, not expose
+        unauthenticated metrics or strand the scrapers."""
+        summit_units = {
+            "validator": ("seismic-summit", "seismic-summit-checkpoint"),
+            "observer": ("seismic-observer", "seismic-observer-checkpoint"),
+        }
+        observer = {
+            **OBSERVER,
+            "CUSTODIAN_PARENT_URL": EVERYTHING["CUSTODIAN_PARENT_URL"],
+        }
+        for bind in ("127.0.0.1", "0.0.0.0", "10.0.0.5"):
+            for role, units in summit_units.items():
+                env = full_env(
+                    SUMMIT_RPC_BIND=bind, **(observer if role == "observer" else {})
+                )
+                nodeenv.validate(env)
+                for name in units:
+                    with self.subTest(bind=bind, unit=name):
+                        argv = expand(exec_start(name), env)
+                        self.assertEqual(argv[argv.index("--rpc-ip") + 1], bind)
+                        self.assertEqual(argv[argv.index("--prom-ip") + 1], "127.0.0.1")
+                        self.assertEqual(
+                            argv[argv.index("--prom-port") + 1],
+                            str(nodeenv.SUMMIT_METRICS_PORT),
+                        )
+
     def test_no_empty_words_remain_after_expansion(self):
         for role, units in (
             ("validator", VALIDATOR_UNITS),
