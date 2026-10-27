@@ -430,6 +430,24 @@ uses, so what passes here is what the units will see:
 
 _Installer step: `keys`._
 
+**Existing keys** (a reinstalled host, a restore, or keys provisioned by another
+party): the commands below only generate; skip them for any file that already
+exists. What the installer's `keys` step does in that case, and the manual path
+must do too, is make the files readable by the service account, since a migrated
+key is usually still owned by whoever created it:
+
+```bash
+sudo chown -R seismic:seismic /persistence/keys
+sudo chmod 0700 /persistence/keys /persistence/keys/reth /persistence/keys/summit
+sudo chmod 0600 /persistence/keys/reth/p2p-key /persistence/keys/summit/node_key.pem /persistence/keys/summit/consensus_key.pem
+sudo -u seismic /usr/local/bin/summit keys show --key-store-path /persistence/keys/summit
+```
+
+The last command must print the node key the network expects for this host (for
+a genesis validator, one of the `node_public_key` entries in the genesis file).
+Name the files explicitly as above; a glob does not expand inside a `0700`
+directory your shell cannot read.
+
 Reth P2P identity:
 
 ```bash
