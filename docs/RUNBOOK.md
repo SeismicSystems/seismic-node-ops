@@ -729,12 +729,16 @@ anything else) and run:
 ```bash
 sudo install -o root -g root -m 0600 /path/from/ops/token /root/monitoring-token
 sudo "$REPO/tools/seismic-node.py" monitoring install --token-source /root/monitoring-token
+sudo "$REPO/tools/seismic-node.py" monitoring check
 ```
 
-This creates the `seismic-prometheus` account, downloads the checksum-pinned
-Prometheus release, renders `/etc/seismic/prometheus-agent/prometheus.yml` and
-`targets.json` (the endpoint list above, derived from `node.env`), and copies
-the token. It starts nothing.
+`install` creates the `seismic-prometheus` account, downloads the
+checksum-pinned Prometheus release, renders
+`/etc/seismic/prometheus-agent/prometheus.yml` and `targets.json` (the endpoint
+list above, derived from `node.env`), and copies the token. It starts nothing.
+`check` confirms that what is installed matches the current `node.env`; it is
+the same check `validator start` runs before starting the agent, and it clears
+the `systemd-analyze verify` notice from step 3.10.
 
 The agent scrapes every endpoint in `targets.json` and itself (`9091`) every 15
 seconds, labelling each series with `node=<MONITORING_NODE_NAME>`,
