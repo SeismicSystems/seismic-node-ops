@@ -193,8 +193,47 @@ check_genesis_matches_reth() {
     success "Genesis file matches Reth's genesis ($actual)."
 }
 
+# With RETH_BOOTNODE_RPC set, ask that Reth for its enode and write it into
+# RETH_BOOTNODE and RETH_BOOTNODES_ARG of the node.env copy at $2 (a staged
+# copy of $1). The units read the result; the RPC key stays as the record of
+# where it came from, so every run of this step refreshes it.
+resolve_reth_bootnode() {
+    local source=$1 target=$2 response enode port
+    local enode_pattern='"enode"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    cp -- "$source" "$target"
+    [[ -n "${RETH_BOOTNODE_RPC:-}" ]] || return 0
+    command -v curl >/dev/null || die "curl is required to query RETH_BOOTNODE_RPC"
+    info "Fetching the Reth enode from $RETH_BOOTNODE_RPC..."
+    response=$(curl -fsS --max-time 30 -X POST "$RETH_BOOTNODE_RPC" \
+        -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","method":"seismic_nodeInfo","params":[],"id":1}') \
+        || die "Could not query the bootnode Reth RPC at $RETH_BOOTNODE_RPC"
+    [[ "$response" =~ $enode_pattern ]] || die "RETH_BOOTNODE_RPC did not return result.enode: ${response:0:200}"
+    enode=${BASH_REMATCH[1]}
+    [[ "$enode" =~ ^enode://[0-9a-fA-F]{128}@[A-Za-z0-9.:-]+:[0-9]+$ ]] \
+        || die "RETH_BOOTNODE_RPC returned a malformed enode: $enode"
+    port=${enode##*:}
+    ((port >= 1 && port <= 65535)) || die "RETH_BOOTNODE_RPC returned an enode with an invalid port: $enode"
+    if [[ -n "${RETH_BOOTNODE:-}" && "$RETH_BOOTNODE" != "$enode" ]]; then
+        info "RETH_BOOTNODE changes from ${RETH_BOOTNODE:0:40}... to the RPC's current enode."
+    fi
+    grep -qE '^RETH_BOOTNODE=' "$target" && grep -qE '^RETH_BOOTNODES_ARG=' "$target" \
+        || die "node.env must contain RETH_BOOTNODE= and RETH_BOOTNODES_ARG= lines for the installer to fill in"
+    sed -i \
+        -e "s|^RETH_BOOTNODE=.*|RETH_BOOTNODE=$enode|" \
+        -e "s|^RETH_BOOTNODES_ARG=.*|RETH_BOOTNODES_ARG=--bootnodes $enode|" \
+        "$target"
+    RETH_BOOTNODE=$enode
+    RETH_BOOTNODES_ARG="--bootnodes $enode"
+    success "Reth bootnode resolved: ${enode:0:60}..."
+}
+
 step_config() {
-    install_file "$CONFIG" "$NODE_ENV_PATH" 0640 "node.env"
+    local staged
+    staged=$(mktemp)
+    resolve_reth_bootnode "$CONFIG" "$staged"
+    install_file "$staged" "$NODE_ENV_PATH" 0640 "node.env"
+    rm -f -- "$staged"
     # The genesis file is identical on every host; GENESIS_PATH names where
     # the units read it. At the default path the repository copy is installed
     # and kept current; an operator-supplied file lives at a different

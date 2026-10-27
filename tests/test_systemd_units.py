@@ -235,7 +235,7 @@ class ExecStartExpansionTests(unittest.TestCase):
         )
 
     def test_optional_flags_expand_to_two_words_when_set(self):
-        enode = "enode://ab@203.0.113.1:30303"
+        enode = "enode://" + "ab" * 64 + "@203.0.113.1:30303"
         env = full_env(
             RETH_BOOTNODE=enode,
             RETH_BOOTNODES_ARG=f"--bootnodes {enode}",
