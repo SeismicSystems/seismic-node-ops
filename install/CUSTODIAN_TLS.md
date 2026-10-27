@@ -27,7 +27,9 @@ operator-managed UI separately; the installer does not provision one.
 Managed modes configure automatic certificates and write the entire OpenResty
 main configuration. The JWT secret and handlers are set up whenever a
 JWT-protected route exists: always in `full`, and in `custodian-only` only with
-`MONITORING_MODE=pull`. Custodian uses protocol signatures, not proxy JWTs, to
+`MONITORING_MODE=pull`. In `external` mode with `MONITORING_MODE=pull` the
+installer still creates the secret, for the operator's own proxy to enforce on
+the `/prom-*` routes. Custodian uses protocol signatures, not proxy JWTs, to
 authorize operations. Its HTTPS frontend is Internet-reachable without a
 source-IP allowlist.
 

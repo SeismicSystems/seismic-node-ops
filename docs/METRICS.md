@@ -108,7 +108,7 @@ Any of these on your node: read `journalctl -u seismic-summit -p err` and the
 | `reth_network_connected_peers`                   | gauge | Execution-layer P2P peers                                                                                                        | ≥ 1; expect roughly the number of other nodes in the network                                                                                                                                                                                                                                                                                                     |
 | `reth_network_tracked_peers`                     | gauge | Peers known to the discovery table                                                                                               | ≥ `connected_peers`                                                                                                                                                                                                                                                                                                                                              |
 | `reth_sync_execution_gas_per_second`             | gauge | Execution throughput                                                                                                             | Load dependent; a sudden drop to 0 with blocks still committing points at execution                                                                                                                                                                                                                                                                              |
-| `reth_seismic_rotation_pending_unfetched_epochs` | gauge | Rotation epochs announced in the on-chain registry whose purpose keys Reth has requested from the Custodian and not yet received | 0. Non-zero for longer than a fetch retry means the Custodian was not delivered that epoch's root key. Reth's rotation watcher sets the gauge every second from startup, rotation or not, so the series exists (at 0) on every scraped node; absent means the scrape is failing or the node is not running v0.1.0 with `--seismic.purpose-keys-source custodian` |
+| `reth_seismic_rotation_pending_unfetched_epochs` | gauge | Rotation epochs announced in the on-chain registry whose purpose keys Reth has requested from the Custodian and not yet received | 0. Non-zero for longer than a fetch retry means the Custodian was not delivered that epoch's root key. Reth's rotation watcher sets the gauge every second from startup, rotation or not, so the series exists (at 0) on every scraped node; absent means the scrape is failing or the node is not running v0.1.1 with `--seismic.purpose-keys-source custodian` |
 
 ## Custodian
 
@@ -183,10 +183,10 @@ explains how to load them and which labels they expect.
 ## Items to confirm against a running network
 
 - `reth_seismic_rotation_pending_unfetched_epochs` has not been observed yet
-  because the internal testnet is not scraped. Reth v0.1.0 creates it at startup
+  because the internal testnet is not scraped. Reth v0.1.1 creates it at startup
   (`fetch_missing_epochs` sets the gauge on every one-second poll, with or
   without announced rotations) under the global `reth` prefix, so it should
-  appear at 0 on the first scrape of a v0.1.0 node. The behaviour (going
+  appear at 0 on the first scrape of a v0.1.1 node. The behaviour (going
   non-zero when a Custodian lacks an announced epoch's root key) is best
   confirmed by announcing a rotation on a devnet.
 - The internal testnet validators still run Custodian 0.1.0 and a checkpointer

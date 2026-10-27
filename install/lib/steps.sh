@@ -173,6 +173,26 @@ step_directories() {
 
 # --- 3.6 config ---------------------------------------------------------------
 
+# Summit sends eth_genesis_hash from the genesis TOML to Reth as its first
+# forkchoice head, so it must be the genesis block hash of the chain Reth runs:
+# the units pass no --chain, so that is seismic-reth's built-in default (dev).
+# Each release can rebuild that genesis, and an installed binary from a
+# different release than the TOML was written for would never start consensus.
+check_genesis_matches_reth() {
+    local genesis=$1 reth=/usr/local/bin/$RETH_BIN expected actual
+    expected=$(grep -oE '^eth_genesis_hash[[:space:]]*=[[:space:]]*"0x[0-9a-fA-F]{64}"' "$genesis" | grep -oE '0x[0-9a-fA-F]{64}' | head -1)
+    [[ -n "$expected" ]] || die "Genesis file has no eth_genesis_hash: $genesis"
+    if [[ ! -x "$reth" ]]; then
+        warn "$reth is not installed yet; cannot confirm that $genesis matches its genesis (rerun with the binaries step, or run: $reth genesis-hash)."
+        return 0
+    fi
+    actual=$(run_as_service_user "$reth" genesis-hash 2>>"$LOG_FILE") \
+        || die "Could not compute Reth's genesis hash with $reth genesis-hash; see $LOG_FILE"
+    [[ "${actual,,}" == "${expected,,}" ]] \
+        || die "Genesis mismatch: $genesis has eth_genesis_hash $expected but $reth runs a chain whose genesis is $actual; Summit could never start consensus against it. Use the genesis file and *_VERSION pins from the same release."
+    success "Genesis file matches Reth's genesis ($actual)."
+}
+
 step_config() {
     install_file "$CONFIG" "$NODE_ENV_PATH" 0640 "node.env"
     # The genesis file is identical on every host; GENESIS_PATH names where
@@ -186,6 +206,7 @@ step_config() {
             || die "GENESIS_PATH is not an existing regular file: $GENESIS_PATH"
         success "Genesis file supplied by operator: $GENESIS_PATH"
     fi
+    check_genesis_matches_reth "$GENESIS_PATH"
     # Re-validate the installed copy with ownership checks on, as the CLI will.
     (cd "$TOOLS_DIR" && /usr/bin/python3 -m seismic_node.nodeenv --check "$NODE_ENV_PATH" >>"$LOG_FILE" 2>&1) \
         || die "Installed $NODE_ENV_PATH failed validation; see $LOG_FILE"

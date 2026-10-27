@@ -247,6 +247,68 @@ step_packages
         )
         self.assertEqual(ops[-1], "gh attestation --help")
 
+    def test_config_step_rejects_a_genesis_file_from_another_release(self):
+        """Summit's eth_genesis_hash must be the genesis of the chain the
+        installed Reth runs by default; a TOML and a binary from different
+        releases pass every other check and then never start consensus."""
+        genesis = self.root / "genesis.toml"
+        genesis.write_text((ROOT / "internal_testnet_genesis.toml").read_text())
+        expected = re.search(
+            r'^eth_genesis_hash = "(0x[0-9a-f]{64})"', genesis.read_text(), re.MULTILINE
+        ).group(1)
+        fake = self.root / "seismic-reth"
+
+        def run(reth_hash: str | None) -> subprocess.CompletedProcess[str]:
+            if reth_hash is None:
+                fake.unlink(missing_ok=True)
+            else:
+                fake.write_text(
+                    f'#!/bin/sh\n[ "$1" = genesis-hash ] || exit 2\necho {reth_hash}\n'
+                )
+                fake.chmod(0o755)
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    """set -euo pipefail
+source "$ROOT/install/lib/common.sh"
+source "$ROOT/install/lib/binaries.sh"
+source "$ROOT/install/lib/steps.sh"
+LOG_FILE=/dev/null
+run_as_service_user() { "$@"; }
+# Point the check at the fixture binary instead of /usr/local/bin.
+eval "$(declare -f check_genesis_matches_reth | sed "s|/usr/local/bin/\\$RETH_BIN|$FAKE_RETH|")"
+check_genesis_matches_reth "$1"
+""",
+                    "fixture",
+                    str(genesis),
+                ],
+                env={**os.environ, "ROOT": str(ROOT), "FAKE_RETH": str(fake)},
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+
+        result = run(expected)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Genesis file matches Reth's genesis", result.stdout)
+        result = run(expected.upper().replace("0X", "0x"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        other = "0x" + "ab" * 32
+        result = run(other)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            f"Genesis mismatch: {genesis} has eth_genesis_hash {expected}",
+            result.stderr,
+        )
+        self.assertIn(f"genesis is {other}", result.stderr)
+        result = run(None)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(
+            "is not installed yet; cannot confirm", result.stdout + result.stderr
+        )
+
     def test_real_run_requires_root(self):
         if os.geteuid() == 0:
             self.skipTest("running as root")
