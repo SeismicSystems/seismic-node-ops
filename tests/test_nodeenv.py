@@ -523,6 +523,51 @@ class SchemaTests(unittest.TestCase):
             ):
                 nodeenv.validate(example_values(**{**OBSERVER, key: value}))
 
+    def test_observer_public_address_is_a_socket_address(self):
+        """Summit parses --ip with Rust's SocketAddr and panics on anything
+        else, so a hostname must not pass --check."""
+        for value in (
+            "203.0.113.10:18551",
+            "0.0.0.0:18551",
+            "[2001:db8::10]:18551",
+            "[::]:1",
+        ):
+            with self.subTest(value=value):
+                env = nodeenv.validate(
+                    example_values(
+                        **{
+                            **OBSERVER,
+                            "CUSTODIAN_PARENT_URL": "https://parent.example/custodian",
+                            "OBSERVER_PUBLIC_ADDRESS": value,
+                            "OBSERVER_P2P_PORT": value.rpartition(":")[2],
+                        }
+                    )
+                )
+                self.assertEqual(env.string("OBSERVER_PUBLIC_ADDRESS"), value)
+        for value in (
+            "node.example.com:18551",
+            "localhost:18551",
+            "2001:db8::10:18551",  # IPv6 needs brackets
+            "[2001:db8::10]",
+            "[203.0.113.10]:18551",
+            "[fe80::1%eth0]:18551",
+            "203.0.113.010:18551",
+            "203.0.113.10:0",
+            "203.0.113.10:65536",
+            "203.0.113.10:",
+            ":18551",
+        ):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(
+                    nodeenv.NodeEnvError,
+                    r"OBSERVER_PUBLIC_ADDRESS must be IPv4:port or \[IPv6\]:port",
+                ),
+            ):
+                nodeenv.validate(
+                    example_values(**{**OBSERVER, "OBSERVER_PUBLIC_ADDRESS": value})
+                )
+
     def test_layout_rules(self):
         cases = {
             "nested data dirs": {"SUMMIT_DATA_DIR": "/persistence/reth/summit"},

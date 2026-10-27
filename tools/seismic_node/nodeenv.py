@@ -31,6 +31,7 @@ requires them. Defaults live only in ``install/templates/node.env.example``.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from collections.abc import Callable
@@ -291,10 +292,24 @@ def _bind_address(value: str, key: str) -> str:
     return value
 
 
-def _host_port(value: str, key: str) -> str:
+def _socket_address(value: str, key: str) -> str:
+    """An IP literal with a port, as Rust's ``SocketAddr`` parses it: Summit
+    does ``flags.ip.parse::<SocketAddr>().expect(..)`` and panics on a
+    hostname, so one must not pass ``--check``."""
     host, _, port = value.rpartition(":")
+    message = f"node.env {key} must be IPv4:port or [IPv6]:port"
     if not host or not re.fullmatch(r"[0-9]+", port) or not 1 <= int(port) <= 65535:
-        raise NodeEnvError(f"node.env {key} must be host:port")
+        raise NodeEnvError(message)
+    if host.startswith("[") and host.endswith("]"):
+        host, version = host[1:-1], ipaddress.IPv6Address
+    else:
+        version = ipaddress.IPv4Address
+    try:
+        version(host)
+    except ValueError:
+        raise NodeEnvError(message) from None
+    if "%" in host:
+        raise NodeEnvError(message)
     return value
 
 
@@ -415,7 +430,7 @@ SCHEMA: dict[str, Field] = {
     "RETH_ENGINE_IPC": Field(_path),
     "OBSERVER_PARENT_NODE_PUBLIC_KEY": Field(_public_key, observer),
     "OBSERVER_INDEX": Field(_int(0, 2**31 - 1), observer),
-    "OBSERVER_PUBLIC_ADDRESS": Field(_host_port, observer),
+    "OBSERVER_PUBLIC_ADDRESS": Field(_socket_address, observer),
     "OBSERVER_P2P_PORT": Field(_int(1, 65535), observer),
     # Custodian (always present)
     "CUSTODIAN_DATA_DIR": Field(_path),
