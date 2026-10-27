@@ -430,6 +430,24 @@ uses, so what passes here is what the units will see:
 
 _Installer step: `keys`._
 
+**Existing keys** (a reinstalled host, a restore, or keys provisioned by another
+party): the commands below only generate; skip them for any file that already
+exists. What the installer's `keys` step does in that case, and the manual path
+must do too, is make the files readable by the service account, since a migrated
+key is usually still owned by whoever created it:
+
+```bash
+sudo chown -R seismic:seismic /persistence/keys
+sudo chmod 0700 /persistence/keys /persistence/keys/reth /persistence/keys/summit
+sudo chmod 0600 /persistence/keys/reth/p2p-key /persistence/keys/summit/node_key.pem /persistence/keys/summit/consensus_key.pem
+sudo -u seismic /usr/local/bin/summit keys show --key-store-path /persistence/keys/summit
+```
+
+The last command must print the node key the network expects for this host (for
+a genesis validator, one of the `node_public_key` entries in the genesis file).
+Name the files explicitly as above; a glob does not expand inside a `0700`
+directory your shell cannot read.
+
 Reth P2P identity:
 
 ```bash
@@ -489,6 +507,22 @@ binary paths are fixed in the template):
 | `${CHECKPOINTS_DIR}`         | `$CHECKPOINTS_DIR`                         |
 | `${CHECKPOINTER_STATE_FILE}` | `$CHECKPOINTS_DIR/checkpointer-state.cbor` |
 
+`envsubst` (from `gettext-base`, section 3.1) with exactly those three names, so
+nothing else in the template is touched:
+
+```bash
+set -a; source <(sudo cat /etc/seismic/node.env); set +a   # the file is root-only (0640)
+[[ -n "$RETH_DATA_DIR" && -n "$CHECKPOINTS_DIR" ]] || echo "node.env not loaded; stop here"
+RETH_DB_PATH="$RETH_DATA_DIR/db" CHECKPOINTER_STATE_FILE="$CHECKPOINTS_DIR/checkpointer-state.cbor" \
+  envsubst '${RETH_DB_PATH} ${CHECKPOINTS_DIR} ${CHECKPOINTER_STATE_FILE}' \
+  < "$REPO/install/templates/config/seismic-checkpointer.toml" \
+  | sudo install -o root -g root -m 0644 /dev/stdin /etc/seismic/seismic-checkpointer.toml
+grep -c '\${' /etc/seismic/seismic-checkpointer.toml   # must print 0
+```
+
+(`source` is acceptable here because `node.env` has already passed `--check`,
+which rejects anything a shell would interpret differently from systemd.)
+
 ### 3.9 Custodian root key
 
 _No installer step; the Custodian creates the key itself._
@@ -523,8 +557,18 @@ sudo systemctl daemon-reload
 sudo systemd-analyze verify /etc/systemd/system/seismic-*.service
 ```
 
+`verify` prints one notice at this point, which is expected:
+
+```text
+seismic-prometheus-agent.service: Command /usr/local/lib/seismic/prometheus-agent/current/prometheus is not executable: No such file or directory
+```
+
+The agent binary is installed by `seismic-node monitoring install` in step 3.12;
+until then the unit loads but has nothing to run, and `ConditionPathExists=`
+keeps it from starting. Any other output from `verify` is a real problem.
+
 Installing all ten units on every host is intentional: the units that do not
-apply to this role or to disabled features are inert — nothing starts them, and
+apply to this role or to disabled features are inert. Nothing starts them, and
 `seismic-node` only touches the ones `node.env` enables.
 
 ### 3.11 HTTPS endpoint
@@ -679,18 +723,24 @@ its settings in `node.env` are:
 **Validators.** The token is the bearer credential the agent presents on every
 remote-write request to Seismic; Seismic operations issues one per node (64 hex
 characters) and registers it against `MONITORING_NODE_NAME`. Put it in a
-root-only file outside the node's data and key directories — the CLI refuses
-anything else — and run:
+root-only file outside the node's data and key directories (the CLI refuses
+anything else) and run:
 
 ```bash
 sudo install -o root -g root -m 0600 /path/from/ops/token /root/monitoring-token
 sudo "$REPO/tools/seismic-node.py" monitoring install --token-source /root/monitoring-token
+sudo "$REPO/tools/seismic-node.py" monitoring check
 ```
 
-This creates the `seismic-prometheus` account, downloads the checksum-pinned
-Prometheus release, renders `/etc/seismic/prometheus-agent/prometheus.yml` and
-`targets.json` (the endpoint list above, derived from `node.env`), and copies
-the token. It starts nothing.
+`install` creates the `seismic-prometheus` account, downloads the
+checksum-pinned Prometheus release, renders
+`/etc/seismic/prometheus-agent/prometheus.yml` and `targets.json` (the endpoint
+list above, derived from `node.env`), and copies the token. It starts nothing.
+`check` confirms that what is installed matches the current `node.env`; it is
+the same check `validator start` runs before starting the agent, and it clears
+the `systemd-analyze verify` notice from step 3.10. The same installation as
+shell commands, for auditing or for hosts without the CLI, is in
+[`MONITORING.md`](MONITORING.md); `check` applies to it equally.
 
 The agent scrapes every endpoint in `targets.json` and itself (`9091`) every 15
 seconds, labelling each series with `node=<MONITORING_NODE_NAME>`,
@@ -741,9 +791,60 @@ the second destination and its token are removed.
 
 ### 3.13 Pre-start verification
 
+Validate the installed configuration and check that the unit files are
+installed:
+
 ```bash
 (cd "$REPO/tools" && sudo python3 -m seismic_node.nodeenv --check)
-sudo systemctl list-units --all 'seismic-*'          # all inactive
+sudo systemctl list-unit-files 'seismic-*'
+```
+
+Expected unit-file output on a fresh Ubuntu installation:
+
+```text
+UNIT FILE                           STATE    PRESET
+seismic-checkpointer.service        disabled enabled
+seismic-custodian.service           disabled enabled
+seismic-deposit-rpc.service         static   -
+seismic-observer-checkpoint.service disabled enabled
+seismic-observer-custodian.service  disabled enabled
+seismic-observer.service            disabled enabled
+seismic-prometheus-agent.service    disabled enabled
+seismic-reth.service                disabled enabled
+seismic-summit-checkpoint.service   disabled enabled
+seismic-summit.service              disabled enabled
+
+10 unit files listed.
+```
+
+`disabled` is expected: the installer does not enable services at boot.
+`seismic-deposit-rpc` is a static helper started explicitly by the CLI. `PRESET`
+describes the host's default policy, not the current enablement state; its
+values may differ between hosts. All role and optional-service units are
+installed, even when they are not selected in `node.env`. Do not start or enable
+all ten units together.
+
+`systemctl list-units --all 'seismic-*'` lists only units currently loaded into
+systemd, not all installed files. It can report **0 loaded units** before any
+have been started or queried; that alone is not an installation failure. To
+check an individual unit's state without starting it:
+
+```bash
+sudo systemctl show seismic-reth.service -p LoadState -p ActiveState
+```
+
+Before first startup, expect:
+
+```text
+LoadState=loaded
+ActiveState=inactive
+```
+
+`LoadState=not-found` or an empty `list-unit-files` result means the expected
+unit files are missing; check the `units` step in section 3.10 before starting.
+Continue with the remaining file and binary checks:
+
+```bash
 sudo ls -l /persistence/keys/reth/p2p-key /persistence/keys/summit/   # seismic:seismic, 0600
 /usr/local/bin/seismic-reth --version
 /usr/local/bin/summit --version

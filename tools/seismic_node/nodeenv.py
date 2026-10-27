@@ -277,12 +277,18 @@ def _bool(value: str, key: str) -> bool:
     raise NodeEnvError(f"node.env {key} must be exactly 'true' or 'false'")
 
 
+# Validators with a closed set of values advertise it, so node.env.example
+# can be checked to list the options next to each such key.
+_bool.choices = ("true", "false")  # type: ignore[attr-defined]
+
+
 def _enum(choices: tuple[str, ...]) -> Validator:
     def validate(value: str, key: str) -> str:
         if value not in choices:
             raise NodeEnvError(f"node.env {key} must be one of: {', '.join(choices)}")
         return value
 
+    validate.choices = choices  # type: ignore[attr-defined]
     return validate
 
 

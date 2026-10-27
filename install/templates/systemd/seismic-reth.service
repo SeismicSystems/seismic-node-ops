@@ -24,7 +24,9 @@ RuntimeDirectory=seismic
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 LimitNOFILE=65536
-ExecStart=/usr/local/bin/seismic-reth node -vvv \
+# systemd captures stdout/stderr in the journal. Disable Reth's default file
+# logger so startup does not require a writable XDG cache/log directory.
+ExecStart=/usr/local/bin/seismic-reth node -vvv --log.file.max-files 0 \
     --datadir ${RETH_DATA_DIR} \
     --p2p-secret-key ${RETH_P2P_KEY_PATH} \
     --http --http.addr 127.0.0.1 --http.port 8545 --http.api eth,net,web3 --http.corsdomain * \
