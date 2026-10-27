@@ -169,8 +169,9 @@ step_directories() {
 step_config() {
     install_file "$CONFIG" "$NODE_ENV_PATH" 0640 "node.env"
     # The genesis file is identical on every host; GENESIS_PATH names where
-    # the units read it. Install the repository copy there unless the operator
-    # already placed one.
+    # the units read it. At the default path the repository copy is installed
+    # and kept current; an operator-supplied file lives at a different
+    # GENESIS_PATH and is only checked to exist.
     if [[ "$GENESIS_PATH" == "$CONFIG_DIR/genesis.toml" ]]; then
         install_file "$REPO_ROOT/internal_testnet_genesis.toml" "$GENESIS_PATH" 0644 "genesis file"
     else

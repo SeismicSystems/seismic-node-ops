@@ -450,9 +450,9 @@ def install(
             )
         # Write the tokens the rendered config references; remove any the
         # config no longer references so no stale credential is left behind.
-        for path, data in ((TOKEN, token), (OPERATOR_TOKEN, operator_token)):
-            if data is not None:
-                atomic_write(path, data, 0o640, account.pw_gid)
+        for path, secret in ((TOKEN, token), (OPERATOR_TOKEN, operator_token)):
+            if secret is not None:
+                atomic_write(path, secret, 0o640, account.pw_gid)
             elif path.exists() or path.is_symlink():
                 fsutil.require_root_managed_file(path, "Agent token")
                 path.unlink()

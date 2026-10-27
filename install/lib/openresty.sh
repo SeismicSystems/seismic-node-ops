@@ -14,7 +14,6 @@ LUA_RESTY_AUTO_SSL_VERSION="0.13.1-1"
 DEFAULT_OPENRESTY_JWT_SECRET_PATH="/etc/seismic/openresty-jwt-secret"
 OPENRESTY_JWT_SECRET_PATH_FILE="/etc/seismic/openresty-jwt-secret.path"
 OPENRESTY_JWT_SECRET_PATH="$DEFAULT_OPENRESTY_JWT_SECRET_PATH"
-PERSISTED_OPENRESTY_JWT_SECRET_PATH=""
 
 install_pinned_openresty_lua_library() {
     local description=$1
@@ -144,47 +143,6 @@ install_openresty() {
     install -d -o nobody -g nogroup -m 700 /etc/resty-auto-ssl
     install -d -o root -g root -m 755 /usr/local/openresty/nginx/lua
     success "OpenResty dependencies are ready; configuration has not been deployed or started."
-}
-
-load_persisted_openresty_jwt_secret_path() {
-    local owner_uid
-    local mode
-    local mode_value
-    local lines=()
-    local selected
-    local normalized
-
-    PERSISTED_OPENRESTY_JWT_SECRET_PATH=""
-    if [[ ! -e "$OPENRESTY_JWT_SECRET_PATH_FILE" && ! -L "$OPENRESTY_JWT_SECRET_PATH_FILE" ]]; then
-        return 1
-    fi
-
-    [[ ! -L "$OPENRESTY_JWT_SECRET_PATH_FILE" ]] \
-        || die "OpenResty JWT secret path metadata must not be a symbolic link: $OPENRESTY_JWT_SECRET_PATH_FILE"
-    [[ -f "$OPENRESTY_JWT_SECRET_PATH_FILE" ]] \
-        || die "OpenResty JWT secret path metadata is not a regular file: $OPENRESTY_JWT_SECRET_PATH_FILE"
-    owner_uid=$(stat -c %u -- "$OPENRESTY_JWT_SECRET_PATH_FILE") \
-        || die "Could not inspect OpenResty JWT secret path metadata ownership."
-    [[ "$owner_uid" == "0" ]] \
-        || die "OpenResty JWT secret path metadata must be root-owned."
-    mode=$(stat -c %a -- "$OPENRESTY_JWT_SECRET_PATH_FILE") \
-        || die "Could not inspect OpenResty JWT secret path metadata permissions."
-    mode_value=$((8#$mode))
-    ((!(mode_value & 0022))) \
-        || die "OpenResty JWT secret path metadata must not be group- or world-writable."
-
-    mapfile -t lines <"$OPENRESTY_JWT_SECRET_PATH_FILE"
-    ((${#lines[@]} == 1)) \
-        || die "OpenResty JWT secret path metadata must contain exactly one line."
-    selected=${lines[0]}
-    [[ "$selected" == /* && "$selected" != "/" ]] \
-        || die "OpenResty JWT secret path metadata does not contain a valid absolute path."
-    normalized=$(realpath -m -- "$selected")
-    [[ "$normalized" == "$selected" ]] \
-        || die "OpenResty JWT secret path metadata is not normalized: $selected"
-
-    PERSISTED_OPENRESTY_JWT_SECRET_PATH=$selected
-    return 0
 }
 
 persist_openresty_jwt_secret_path() {
