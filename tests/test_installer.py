@@ -309,47 +309,54 @@ check_genesis_matches_reth "$1"
             "is not installed yet; cannot confirm", result.stdout + result.stderr
         )
 
-    def test_config_step_resolves_the_bootnode_enode_from_its_rpc(self):
-        """RETH_BOOTNODE_RPC is the operator-facing input; the installer asks
-        that Reth for its enode (seismic_nodeInfo) and writes it into
-        RETH_BOOTNODE and RETH_BOOTNODES_ARG of the installed node.env."""
+    def test_config_step_renders_the_peering_args(self):
+        """RETH_PEERING_ARGS is the one computed key the Reth unit expands as
+        its whole peering flag group. Trusted mode joins the peers file;
+        discovery mode carries the discv5 flags and, when RETH_BOOTNODE_RPC is
+        set, the enode the installer fetches from it (seismic_nodeInfo)."""
         enode = "enode://" + "ab" * 64 + "@203.0.113.7:30303"
+        other = "enode://" + "cd" * 64 + "@203.0.113.8:30303"
         bin_dir = self.root / "bin"
         bin_dir.mkdir()
         curl = bin_dir / "curl"
         source = self.root / "node.env"
+        peers = self.root / "trusted-peers"
+        peers.write_text(f"# set\n{enode}\n{other}\n")
 
-        def run(
-            rpc: str, response: str | None
-        ) -> tuple[subprocess.CompletedProcess[str], str]:
+        def run(response: str | None = None, **overrides: str):
             if response is None:
-                curl.write_text("#!/bin/sh\nexit 7\n")
+                curl.write_text("#!/bin/sh\necho CURL_MUST_NOT_RUN >&2; exit 7\n")
             else:
                 curl.write_text(
-                    '#!/bin/sh\nprintf "%s %s\\n" "$(basename "$0")" "$*" >> "$STUB_LOG"\n'
+                    '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n'
                     f"printf '%s' '{response}'\n"
                 )
             curl.chmod(0o755)
-            source.write_text(example(RETH_BOOTNODE_RPC=rpc))
+            source.write_text(example(**overrides))
             target = self.root / "installed.env"
             target.unlink(missing_ok=True)
             log = self.root / "ops.log"
             log.unlink(missing_ok=True)
+            exports = "\n".join(
+                f"export {key}={value!r}"
+                for key, value in nodeenv.parse(source.read_text()).items()
+                if key.startswith("RETH_")
+            )
             result = subprocess.run(
                 [
                     "bash",
                     "-c",
-                    """set -euo pipefail
-export PATH="$STUB_DIR:/usr/bin:/bin"
-source "$ROOT/install/lib/common.sh"
-source "$ROOT/install/lib/steps.sh"
-LOG_FILE=/dev/null
-export RETH_BOOTNODE_RPC="$1" RETH_BOOTNODE="" RETH_BOOTNODES_ARG=""
-resolve_reth_bootnode "$2" "$3"
-printf 'shell: %s | %s\\n' "$RETH_BOOTNODE" "$RETH_BOOTNODES_ARG"
-""",
+                    (
+                        "set -euo pipefail\n"
+                        'export PATH="$STUB_DIR:/usr/bin:/bin"\n'
+                        'source "$ROOT/install/lib/common.sh"\n'
+                        'source "$ROOT/install/lib/steps.sh"\n'
+                        'LOG_FILE=/dev/null; TOOLS_DIR="$ROOT/tools"\n'
+                        f"{exports}\n"
+                        'render_reth_peering "$1" "$2"\n'
+                        "printf 'shell: %s\\n' \"$RETH_PEERING_ARGS\"\n"
+                    ),
                     "fixture",
-                    rpc,
                     str(source),
                     str(target),
                 ],
@@ -366,57 +373,76 @@ printf 'shell: %s | %s\\n' "$RETH_BOOTNODE" "$RETH_BOOTNODES_ARG"
             )
             return result, target.read_text() if target.exists() else ""
 
-        rpc = "https://bootnode.example/rpc"
+        trusted = f"{nodeenv.TRUSTED_FLAGS} {enode},{other}"
         result, installed = run(
-            rpc, '{"jsonrpc":"2.0","id":1,"result":{"enode":"' + enode + '"}}'
+            RETH_PEERING="trusted", RETH_TRUSTED_PEERS_FILE=str(peers)
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(f"RETH_BOOTNODE={enode}\n", installed)
-        self.assertIn(f"RETH_BOOTNODES_ARG=--bootnodes {enode}\n", installed)
-        self.assertIn(f"RETH_BOOTNODE_RPC={rpc}\n", installed)  # kept as the record
-        self.assertIn(f"shell: {enode} | --bootnodes {enode}", result.stdout)
-        ops = (self.root / "ops.log").read_text()
-        self.assertIn(f"-X POST {rpc}", ops)
-        self.assertIn('"method":"seismic_nodeInfo"', ops)
-        # The result validates, and the units get a two-word --bootnodes.
-        nodeenv.validate(nodeenv.parse(installed))
-        # The rest of the file is untouched.
+        self.assertIn(f"RETH_PEERING_ARGS={trusted}\n", installed)
+        self.assertIn(f"shell: {trusted}", result.stdout)
+        self.assertFalse((self.root / "ops.log").exists())
+        env = nodeenv.validate(nodeenv.parse(installed))
+        self.assertEqual(env.string("RETH_PEERING_ARGS"), trusted)
         before = [
             l
             for l in source.read_text().splitlines()
-            if not l.startswith("RETH_BOOTNODE")
+            if not l.startswith("RETH_PEERING_ARGS")
         ]
-        after = [l for l in installed.splitlines() if not l.startswith("RETH_BOOTNODE")]
+        after = [
+            l for l in installed.splitlines() if not l.startswith("RETH_PEERING_ARGS")
+        ]
         self.assertEqual(before, after)
 
-        for name, response, message in (
-            ("no enode", '{"result":{}}', "did not return result.enode"),
+        rpc = "https://bootnode.example/rpc"
+        result, installed = run(
+            '{"jsonrpc":"2.0","id":1,"result":{"enode":"' + enode + '"}}',
+            RETH_PEERING="discovery",
+            RETH_BOOTNODE_RPC=rpc,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"RETH_BOOTNODE={enode}\n", installed)
+        self.assertIn(
+            f"RETH_PEERING_ARGS={nodeenv.DISCOVERY_FLAGS} --bootnodes {enode}\n",
+            installed,
+        )
+        self.assertIn(f"RETH_BOOTNODE_RPC={rpc}\n", installed)
+        ops = (self.root / "ops.log").read_text()
+        self.assertIn(f"-X POST {rpc}", ops)
+        self.assertIn('"method":"seismic_nodeInfo"', ops)
+        nodeenv.validate(nodeenv.parse(installed))
+
+        result, installed = run(RETH_PEERING="discovery")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"RETH_PEERING_ARGS={nodeenv.DISCOVERY_FLAGS}\n", installed)
+
+        for name, response, message, overrides in (
+            ("no enode", '{"result":{}}', "did not return result.enode", {}),
             (
                 "malformed",
                 '{"result":{"enode":"enode://ab@h:30303"}}',
                 "malformed enode",
+                {},
             ),
             (
                 "bad port",
                 '{"result":{"enode":"enode://' + "ab" * 64 + '@h:70000"}}',
                 "invalid port",
+                {},
             ),
-            ("unreachable", None, "Could not query the bootnode Reth RPC"),
+            ("unreachable", None, "Could not query the bootnode Reth RPC", {}),
         ):
             with self.subTest(case=name):
-                result, installed = run(rpc, response)
+                result, installed = run(
+                    response, RETH_PEERING="discovery", RETH_BOOTNODE_RPC=rpc
+                )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(message, result.stderr)
-
-        # Without the RPC key the file is copied as is and curl is never run.
-        curl.write_text("#!/bin/sh\necho CURL_MUST_NOT_RUN >&2; exit 9\n")
-        result, installed = run("", None)
-        curl.chmod(0o755)
-        source.write_text(example(RETH_BOOTNODE_RPC=""))
-        result, installed = run("", "unused")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(installed, source.read_text())
-        self.assertFalse((self.root / "ops.log").exists())
+        peers.write_text("enode://bad@h:1\n")
+        result, installed = run(
+            RETH_PEERING="trusted", RETH_TRUSTED_PEERS_FILE=str(peers)
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not an enode", result.stderr)
 
     def test_real_run_requires_root(self):
         if os.geteuid() == 0:

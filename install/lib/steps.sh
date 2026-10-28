@@ -193,45 +193,87 @@ check_genesis_matches_reth() {
     success "Genesis file matches Reth's genesis ($actual)."
 }
 
-# With RETH_BOOTNODE_RPC set, ask that Reth for its enode and write it into
-# RETH_BOOTNODE and RETH_BOOTNODES_ARG of the node.env copy at $2 (a staged
-# copy of $1). The units read the result; the RPC key stays as the record of
-# where it came from, so every run of this step refreshes it.
-resolve_reth_bootnode() {
-    local source=$1 target=$2 response enode port
+# Query a Reth JSON-RPC for its enode (seismic_nodeInfo); sets FETCHED_ENODE.
+fetch_enode() {
+    local rpc=$1 response enode port
     local enode_pattern='"enode"[[:space:]]*:[[:space:]]*"([^"]*)"'
-    cp -- "$source" "$target"
-    [[ -n "${RETH_BOOTNODE_RPC:-}" ]] || return 0
     command -v curl >/dev/null || die "curl is required to query RETH_BOOTNODE_RPC"
-    info "Fetching the Reth enode from $RETH_BOOTNODE_RPC..."
-    response=$(curl -fsS --max-time 30 -X POST "$RETH_BOOTNODE_RPC" \
+    info "Fetching the Reth enode from $rpc..."
+    response=$(curl -fsS --max-time 30 -X POST "$rpc" \
         -H 'Content-Type: application/json' \
         -d '{"jsonrpc":"2.0","method":"seismic_nodeInfo","params":[],"id":1}') \
-        || die "Could not query the bootnode Reth RPC at $RETH_BOOTNODE_RPC"
+        || die "Could not query the bootnode Reth RPC at $rpc"
     [[ "$response" =~ $enode_pattern ]] || die "RETH_BOOTNODE_RPC did not return result.enode: ${response:0:200}"
     enode=${BASH_REMATCH[1]}
     [[ "$enode" =~ ^enode://[0-9a-fA-F]{128}@[A-Za-z0-9.:-]+:[0-9]+$ ]] \
         || die "RETH_BOOTNODE_RPC returned a malformed enode: $enode"
     port=${enode##*:}
     ((port >= 1 && port <= 65535)) || die "RETH_BOOTNODE_RPC returned an enode with an invalid port: $enode"
-    if [[ -n "${RETH_BOOTNODE:-}" && "$RETH_BOOTNODE" != "$enode" ]]; then
-        info "RETH_BOOTNODE changes from ${RETH_BOOTNODE:0:40}... to the RPC's current enode."
-    fi
-    grep -qE '^RETH_BOOTNODE=' "$target" && grep -qE '^RETH_BOOTNODES_ARG=' "$target" \
-        || die "node.env must contain RETH_BOOTNODE= and RETH_BOOTNODES_ARG= lines for the installer to fill in"
-    sed -i \
-        -e "s|^RETH_BOOTNODE=.*|RETH_BOOTNODE=$enode|" \
-        -e "s|^RETH_BOOTNODES_ARG=.*|RETH_BOOTNODES_ARG=--bootnodes $enode|" \
-        "$target"
-    RETH_BOOTNODE=$enode
-    RETH_BOOTNODES_ARG="--bootnodes $enode"
-    success "Reth bootnode resolved: ${enode:0:60}..."
+    FETCHED_ENODE=$enode
+}
+
+# Write RETH_PEERING_ARGS (and, in discovery mode with an RPC, RETH_BOOTNODE)
+# into the node.env copy at $2, staged from $1. The unit expands that one key
+# as Reth's whole peering flag group; --check recomputes it from the same
+# inputs, so the installed file is always consistent with the mode, the peers
+# file and the bootnode. Every run of this step refreshes it.
+render_reth_peering() {
+    local source=$1 target=$2 args enode peers FETCHED_ENODE
+    cp -- "$source" "$target"
+    grep -qE '^RETH_PEERING_ARGS=' "$target" \
+        || die "node.env must contain a RETH_PEERING_ARGS= line for the installer to fill in"
+    case "$RETH_PEERING" in
+        trusted)
+            # The host's own enode is left out: Reth would dial itself forever.
+            peers=$(cd "$TOOLS_DIR" && /usr/bin/python3 -c '
+import sys
+from pathlib import Path
+from seismic_node import nodeenv
+peers = nodeenv.read_trusted_peers(Path(sys.argv[1]))
+peers = nodeenv.without_self(peers, nodeenv.own_node_id(Path(sys.argv[2])))
+if not peers:
+    sys.exit("the trusted peers file lists only this node")
+print(",".join(peers))' "$RETH_TRUSTED_PEERS_FILE" "$RETH_P2P_KEY_PATH") \
+                || die "RETH_TRUSTED_PEERS_FILE is unusable: $RETH_TRUSTED_PEERS_FILE"
+            args="--disable-discovery --trusted-only --trusted-peers $peers"
+            info "Trusted peering: $(tr ',' '\n' <<<"$peers" | wc -l) peer(s) from $RETH_TRUSTED_PEERS_FILE (own enode excluded)"
+            ;;
+        discovery)
+            enode=${RETH_BOOTNODE:-}
+            if [[ -n "${RETH_BOOTNODE_RPC:-}" ]]; then
+                fetch_enode "$RETH_BOOTNODE_RPC"
+                enode=$FETCHED_ENODE
+                grep -qE '^RETH_BOOTNODE=' "$target" \
+                    || die "node.env must contain a RETH_BOOTNODE= line for the installer to fill in"
+                sed -i -e "s|^RETH_BOOTNODE=.*|RETH_BOOTNODE=$enode|" "$target"
+                RETH_BOOTNODE=$enode
+                success "Reth bootnode resolved: ${enode:0:60}..."
+            fi
+            args="--disable-discv4-discovery --disable-dns-discovery --enable-discv5-discovery --discovery.v5.port 30303"
+            [[ -z "$enode" ]] || args+=" --bootnodes $enode"
+            ;;
+        *) die "Unknown RETH_PEERING: $RETH_PEERING" ;;
+    esac
+    sed -i -e "s|^RETH_PEERING_ARGS=.*|RETH_PEERING_ARGS=$args|" "$target"
+    RETH_PEERING_ARGS=$args
 }
 
 step_config() {
     local staged
+    # At the default path the repository's copy is installed, so every rerun
+    # picks up validators added to it since; an operator's file elsewhere is
+    # only checked to exist. It must be in place before the args are rendered.
+    if [[ "$RETH_PEERING" == trusted ]]; then
+        if [[ "$RETH_TRUSTED_PEERS_FILE" == "$CONFIG_DIR/trusted-peers" ]]; then
+            install_file "$REPO_ROOT/internal_testnet_trusted_peers" "$RETH_TRUSTED_PEERS_FILE" 0644 "trusted peers file"
+        else
+            [[ -s "$RETH_TRUSTED_PEERS_FILE" && ! -L "$RETH_TRUSTED_PEERS_FILE" ]] \
+                || die "RETH_TRUSTED_PEERS_FILE is not an existing regular file: $RETH_TRUSTED_PEERS_FILE"
+            success "Trusted peers file supplied by operator: $RETH_TRUSTED_PEERS_FILE"
+        fi
+    fi
     staged=$(mktemp)
-    resolve_reth_bootnode "$CONFIG" "$staged"
+    render_reth_peering "$CONFIG" "$staged"
     install_file "$staged" "$NODE_ENV_PATH" 0640 "node.env"
     rm -f -- "$staged"
     # The genesis file is identical on every host; GENESIS_PATH names where
@@ -647,6 +689,15 @@ step_keys() {
     # Everything under KEYS_DIR belongs to the service account.
     chown -R "$SERVICE_USER:$SERVICE_GROUP" -- "$KEYS_DIR"
     success "Keys ready. Back up $KEYS_DIR securely; it is the node's identity."
+    # The config step ran before the Reth key existed on a fresh install, so
+    # the trusted-peer list could not yet leave this node's own enode out.
+    if [[ "$RETH_PEERING" == trusted ]]; then
+        local staged
+        staged=$(mktemp)
+        render_reth_peering "$NODE_ENV_PATH" "$staged"
+        install_file "$staged" "$NODE_ENV_PATH" 0640 "node.env"
+        rm -f -- "$staged"
+    fi
 }
 
 # --- 3.8 checkpointer config -------------------------------------------------

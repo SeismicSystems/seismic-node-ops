@@ -64,16 +64,17 @@ Configure cloud and host firewalls before the first start.
 
 ### Inputs to have in hand
 
-| Input                                 | Where it comes from                                | Needed when                                                   |
-| ------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------- |
-| Genesis TOML                          | `internal_testnet_genesis.toml` in this repository | Always                                                        |
-| Bootstrappers TOML                    | Seismic operations; see [3.7 Keys](#37-keys)       | Joining a running network with stale genesis peers            |
-| Bootnode RPC URL                      | Seismic operations                                 | Optional; resolves the Reth bootnode enode                    |
-| Parent node public key + index        | The parent validator's operator                    | **observer**                                                  |
-| Parent Custodian HTTPS base URL       | The parent validator's operator                    | **observer**                                                  |
-| EVM chain ID                          | Seismic operations                                 | Always (Custodian)                                            |
-| Prometheus Agent token (64 hex chars) | Seismic operations, delivered to a root-only file  | **validator** with `MONITORING_MODE=push`, its default (3.12) |
-| Public DNS name                       | You; must resolve to this host                     | Managed OpenResty                                             |
+| Input                                 | Where it comes from                                 | Needed when                                                   |
+| ------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------- |
+| Genesis TOML                          | `internal_testnet_genesis.toml` in this repository  | Always                                                        |
+| Trusted peers file                    | `internal_testnet_trusted_peers` in this repository | Validators (`RETH_PEERING=trusted`)                           |
+| Bootstrappers TOML                    | Seismic operations; see [3.7 Keys](#37-keys)        | Joining a running network with stale genesis peers            |
+| Bootnode RPC URL                      | Seismic operations                                  | Optional; resolves the Reth bootnode enode                    |
+| Parent node public key + index        | The parent validator's operator                     | **observer**                                                  |
+| Parent Custodian HTTPS base URL       | The parent validator's operator                     | **observer**                                                  |
+| EVM chain ID                          | Seismic operations                                  | Always (Custodian)                                            |
+| Prometheus Agent token (64 hex chars) | Seismic operations, delivered to a root-only file   | **validator** with `MONITORING_MODE=push`, its default (3.12) |
+| Public DNS name                       | You; must resolve to this host                      | Managed OpenResty                                             |
 
 ## 2. Host layout
 
@@ -90,15 +91,16 @@ This is the contract every step below establishes. All paths except those under
 
 ### Configuration (`/etc/seismic`, root-owned)
 
-| Path                                     | Mode   | Purpose                                                                                     |
-| ---------------------------------------- | ------ | ------------------------------------------------------------------------------------------- |
-| `/etc/seismic/node.env`                  | `0640` | **The** node configuration. Read by systemd (`EnvironmentFile=`) and by `seismic-node`.     |
-| `/etc/seismic/genesis.toml`              | `0644` | Summit genesis. Identical on every host; its digest gates P2P authentication.               |
-| `/etc/seismic/seismic-checkpointer.toml` | `0644` | Rendered from `node.env` when the checkpointer is enabled.                                  |
-| `/etc/seismic/checkpoint-start.toml`     | `0644` | Written by `seismic-node checkpoint install`. Its presence allows the `*-checkpoint` units. |
-| `/etc/seismic/weak-subjectivity.toml`    | `0644` | Trust anchor named by the above; obtained from an independent source.                       |
-| `/etc/seismic/prometheus-agent/`         | `0750` | Agent config and token, group `seismic-prometheus`.                                         |
-| `/etc/seismic/openresty-jwt-secret`      | `0640` | `root:nogroup`; JWT secret for full mode, or any other TLS mode with pull monitoring.       |
+| Path                                     | Mode   | Purpose                                                                                           |
+| ---------------------------------------- | ------ | ------------------------------------------------------------------------------------------------- |
+| `/etc/seismic/node.env`                  | `0640` | **The** node configuration. Read by systemd (`EnvironmentFile=`) and by `seismic-node`.           |
+| `/etc/seismic/genesis.toml`              | `0644` | Summit genesis. Identical on every host; its digest gates P2P authentication.                     |
+| `/etc/seismic/trusted-peers`             | `0644` | Reth trusted peers (`RETH_PEERING=trusted`): the validator set's enodes, identical on every host. |
+| `/etc/seismic/seismic-checkpointer.toml` | `0644` | Rendered from `node.env` when the checkpointer is enabled.                                        |
+| `/etc/seismic/checkpoint-start.toml`     | `0644` | Written by `seismic-node checkpoint install`. Its presence allows the `*-checkpoint` units.       |
+| `/etc/seismic/weak-subjectivity.toml`    | `0644` | Trust anchor named by the above; obtained from an independent source.                             |
+| `/etc/seismic/prometheus-agent/`         | `0750` | Agent config and token, group `seismic-prometheus`.                                               |
+| `/etc/seismic/openresty-jwt-secret`      | `0640` | `root:nogroup`; JWT secret for full mode, or any other TLS mode with pull monitoring.             |
 
 ### Services (`/etc/systemd/system`, shipped verbatim from `install/templates/systemd/`)
 
@@ -403,41 +405,70 @@ sudo install -o root -g root -m 0640 "$REPO/install/templates/node.env.example" 
 Edit `/etc/seismic/node.env`. Its comments (from `node.env.example`) document
 every key; the ones you must decide are:
 
-| Key                                                                                                                                      | Set to                                                                                                                                       |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SEISMIC_ROLE`                                                                                                                           | `validator` or `observer`                                                                                                                    |
-| `RETH_BOOTNODE_RPC`, or `RETH_BOOTNODE` / `RETH_BOOTNODES_ARG`                                                                           | The bootnode's Reth RPC URL (the installer resolves the enode), or the enode itself (below), or all empty for the chain's built-in bootnodes |
-| `SUMMIT_BOOTSTRAPPERS_FILE` / `SUMMIT_BOOTSTRAPPERS_ARG`                                                                                 | `/persistence/keys/summit/bootstrappers.toml` and `--bootstrappers <that path>`, or both empty                                               |
-| `CUSTODIAN_COUNCIL_ADDRESS`, `CUSTODIAN_CHAIN_ID`                                                                                        | Address has a testnet default; chain ID from Seismic operations                                                                              |
-| `CHECKPOINTER_ENABLED`                                                                                                                   | Usually `false` for a plain validator                                                                                                        |
-| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See [3.11](#311-https-endpoint); validators must expose the Custodian                                                                        |
-| `MONITORING_MODE`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                                 | See [3.12](#312-monitoring); empty mode means push for validators, off for observers                                                         |
-| **observer** `OBSERVER_PARENT_NODE_PUBLIC_KEY`, `OBSERVER_INDEX`, `OBSERVER_PUBLIC_ADDRESS`, `OBSERVER_P2P_PORT`, `CUSTODIAN_PARENT_URL` | From the parent's operator                                                                                                                   |
+| Key                                                                                                                                      | Set to                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `SEISMIC_ROLE`                                                                                                                           | `validator` or `observer`                                                                                                   |
+| `RETH_PEERING` and its inputs                                                                                                            | `trusted` with the repository's peers file for a validator; `discovery` with a bootnode for observers and RPC nodes (below) |
+| `SUMMIT_BOOTSTRAPPERS_FILE` / `SUMMIT_BOOTSTRAPPERS_ARG`                                                                                 | `/persistence/keys/summit/bootstrappers.toml` and `--bootstrappers <that path>`, or both empty                              |
+| `CUSTODIAN_COUNCIL_ADDRESS`, `CUSTODIAN_CHAIN_ID`                                                                                        | Address has a testnet default; chain ID from Seismic operations                                                             |
+| `CHECKPOINTER_ENABLED`                                                                                                                   | Usually `false` for a plain validator                                                                                       |
+| `TLS_MODE`, `DOMAIN`, `CUSTODIAN_PUBLIC_URL`                                                                                             | See [3.11](#311-https-endpoint); validators must expose the Custodian                                                       |
+| `MONITORING_MODE`, `MONITORING_NODE_NAME`, `MONITORING_REMOTE_WRITE_URL`                                                                 | See [3.12](#312-monitoring); empty mode means push for validators, off for observers                                        |
+| **observer** `OBSERVER_PARENT_NODE_PUBLIC_KEY`, `OBSERVER_INDEX`, `OBSERVER_PUBLIC_ADDRESS`, `OBSERVER_P2P_PORT`, `CUSTODIAN_PARENT_URL` | From the parent's operator                                                                                                  |
 
-**Bootnode.** With the installer, set `RETH_BOOTNODE_RPC` to the bootnode's Reth
-JSON-RPC URL and leave the other two empty: the `config` step asks it for its
-enode and writes `RETH_BOOTNODE` and `RETH_BOOTNODES_ARG` into the installed
-`node.env`, on every run, so the installed file always holds the bootnode's
-current address. Installing by hand, or to pin a specific peer, do the same
-query yourself and set both keys:
+**Peering.** `RETH_PEERING` selects how Reth finds its execution-layer peers,
+and the installer's `config` step fills `RETH_PEERING_ARGS`, the one computed
+key the Reth unit expands as its whole peering flag group, from it. Installing
+by hand, fill it yourself as shown below; `--check` recomputes the expected
+value from the same inputs and refuses a `node.env` whose stored value differs.
+
+`trusted` (validators): a closed set, no discovery; Reth connects only to and
+from the enodes in `RETH_TRUSTED_PEERS_FILE`, one per line, `#` comments
+allowed. The repository's `internal_testnet_trusted_peers` lists the internal
+testnet's validators; it is identical on every host and grows as validators
+join. The installer installs the repository's copy at the default path on every
+run, so pulling the repository and rerunning the `config` step is how a node
+learns of a new validator, and leaves the node's own enode out of the rendered
+argument (Reth would otherwise keep dialing itself). By hand, after the Reth P2P
+key exists (step 3.7), the same code produces the list:
 
 ```bash
-curl -fsS --max-time 30 -X POST https://<bootnode>/rpc \
+sudo install -o root -g root -m 0644 "$REPO/internal_testnet_trusted_peers" /etc/seismic/trusted-peers
+peers=$(cd "$REPO/tools" && sudo python3 -c '
+import sys
+from pathlib import Path
+from seismic_node import nodeenv
+peers = nodeenv.read_trusted_peers(Path(sys.argv[1]))
+print(",".join(nodeenv.without_self(peers, nodeenv.own_node_id(Path(sys.argv[2])))))' \
+  /etc/seismic/trusted-peers /persistence/keys/reth/p2p-key)
+sudo sed -i "s|^RETH_PEERING_ARGS=.*|RETH_PEERING_ARGS=--disable-discovery --trusted-only --trusted-peers $peers|" /etc/seismic/node.env
+```
+
+This validates every line as an enode and omits the one whose id matches the
+key. Without the key in place it omits nothing, which `--check` tolerates; rerun
+it once the key exists.
+
+`discovery` (observers, RPC nodes): discv5, with an optional bootnode. Either
+set `RETH_BOOTNODE_RPC` and let the installer resolve it, or query the bootnode
+yourself and set `RETH_BOOTNODE`:
+
+```bash
+enode=$(curl -fsS --max-time 30 -X POST https://<bootnode>/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"seismic_nodeInfo","params":[],"id":1}' \
-  | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["enode"])'
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["enode"])')
+sudo sed -i -e "s|^RETH_BOOTNODE=.*|RETH_BOOTNODE=$enode|" \
+  -e "s|^RETH_PEERING_ARGS=.*|RETH_PEERING_ARGS=--disable-discv4-discovery --disable-dns-discovery --enable-discv5-discovery --discovery.v5.port 30303 --bootnodes $enode|" \
+  /etc/seismic/node.env
 ```
 
-```ini
-RETH_BOOTNODE=enode://<128 hex>@<host>:30303
-RETH_BOOTNODES_ARG=--bootnodes enode://<128 hex>@<host>:30303
-```
+Without a bootnode, `RETH_PEERING_ARGS` is the same line up to and including
+`30303`, and Reth uses the chain's built-in bootnodes. In both modes, run the
+validation below afterwards. Adding a validator to a trusted set: add its line
+to the peers file on every node, then `install.sh --only config` (or the `sed`
+above) and `systemctl restart seismic-reth` on each.
 
-Write the enode out in both keys; `node.env` does not expand `$RETH_BOOTNODE`.
-All three keys empty means the chain's built-in bootnodes, which is right for a
-validator listed in the genesis.
-
-Keys marked `(computed)` in `node.env.example` (`RETH_BOOTNODES_ARG`,
+Keys marked `(computed)` in `node.env.example` (`RETH_PEERING_ARGS`,
 `SUMMIT_BOOTSTRAPPERS_ARG`, `OBSERVER_P2P_PORT`) repeat another key in the form
 a unit needs, because systemd cannot compute one value from another; the
 validator checks they agree with their source. Keys marked `(default)` are
