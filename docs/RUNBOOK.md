@@ -427,14 +427,24 @@ from the enodes in `RETH_TRUSTED_PEERS_FILE`, one per line, `#` comments
 allowed. The repository's `internal_testnet_trusted_peers` lists the internal
 testnet's validators; it is identical on every host. The installer places it at
 the default path like the genesis file and leaves the node's own enode out of
-the rendered argument (Reth would otherwise dial itself); by hand, drop your own
-line from the `paste` input:
+the rendered argument (Reth would otherwise keep dialing itself). By hand, after
+the Reth P2P key exists (step 3.7), the same code produces the list:
 
 ```bash
 sudo install -o root -g root -m 0644 "$REPO/internal_testnet_trusted_peers" /etc/seismic/trusted-peers
-peers=$(grep -vE '^\s*(#|$)' /etc/seismic/trusted-peers | sed 's/\s*#.*//' | paste -sd,)
+peers=$(cd "$REPO/tools" && sudo python3 -c '
+import sys
+from pathlib import Path
+from seismic_node import nodeenv
+peers = nodeenv.read_trusted_peers(Path(sys.argv[1]))
+print(",".join(nodeenv.without_self(peers, nodeenv.own_node_id(Path(sys.argv[2])))))' \
+  /etc/seismic/trusted-peers /persistence/keys/reth/p2p-key)
 sudo sed -i "s|^RETH_PEERING_ARGS=.*|RETH_PEERING_ARGS=--disable-discovery --trusted-only --trusted-peers $peers|" /etc/seismic/node.env
 ```
+
+This validates every line as an enode and omits the one whose id matches the
+key. Without the key in place it omits nothing, which `--check` tolerates; rerun
+it once the key exists.
 
 `discovery` (observers, RPC nodes): discv5, with an optional bootnode. Either
 set `RETH_BOOTNODE_RPC` and let the installer resolve it, or query the bootnode
