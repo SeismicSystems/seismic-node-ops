@@ -15,6 +15,15 @@ Type=simple
 User=seismic
 Group=seismic
 EnvironmentFile=/etc/seismic/node.env
+# The checkpointer runs `seismic-reth stage unwind` on each copied database.
+# That Reth opens its default rotating log file under XDG_CACHE_HOME/reth,
+# which for the service account is an unwritable home, and the command is
+# fixed inside the checkpointer, so the flag that disables file logging in
+# seismic-reth.service cannot be passed. Give it a cache directory of its own
+# instead (systemd creates it, owned by the service account; Environment= is
+# literal, so the path is spelled out).
+CacheDirectory=seismic-checkpointer
+Environment=XDG_CACHE_HOME=/var/cache/seismic-checkpointer
 # Only CHECKPOINTER_ENABLED=true runs the checkpointer. A failing condition
 # skips the start cleanly, so the unit may stay enabled at boot on a host
 # that later disables the checkpointer (or never installed its binary).

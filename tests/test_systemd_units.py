@@ -156,6 +156,18 @@ class UnitSchemaTests(unittest.TestCase):
                     f"--config {nodeenv.CHECKPOINT_START_CONFIG}", exec_start(name)
                 )
 
+    def test_checkpointer_gives_its_reth_subprocess_a_writable_log_cache(self):
+        """The checkpointer runs `seismic-reth stage unwind` with a command it
+        builds itself, so seismic-reth.service's --log.file.max-files 0 does not
+        apply; that Reth must find a writable $XDG_CACHE_HOME or it panics
+        before unwinding (the same failure #18 fixed for the main unit)."""
+        unit = read_unit("seismic-checkpointer")
+        self.assertEqual(unit.get("Service", "CacheDirectory"), "seismic-checkpointer")
+        self.assertEqual(
+            unit.get("Service", "Environment"),
+            "XDG_CACHE_HOME=/var/cache/seismic-checkpointer",
+        )
+
     def test_agent_unit_gates_on_the_rendered_config(self):
         """`monitoring install` renders prometheus.yml and creates the service
         account; an enabled-but-uninstalled agent must skip before user lookup
