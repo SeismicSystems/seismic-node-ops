@@ -338,7 +338,7 @@ MDBX_COPY_BIN=mdbx_copy
 
 # Mirrors each repository's release workflow so a source build yields the
 # same binary the release ships.
-SUMMIT_BUILD='cargo build --release --locked --bin summit --features prom'
+SUMMIT_BUILD='cargo build --release --locked --bin summit --features prom,permissioned'
 RETH_BUILD='cargo build --locked --profile maxperf --bin seismic-reth --features jemalloc,asm-keccak'
 CUSTODIAN_BUILD='cargo build --release --locked -p seismic-centralized-custodian-service'
 CHECKPOINTER_BUILD='cargo build --release --locked'

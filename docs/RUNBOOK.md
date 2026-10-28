@@ -254,15 +254,15 @@ _Installer step: `binaries`._
 
 Three binaries are required on every node and two more when the checkpointer is
 enabled. The versions are the `*_VERSION` keys in `node.env`. The values in
-`node.env.example` are the set released and tested together; they move together,
-and a component from a different release is untested against the others. The
-installer checks nothing about compatibility between components: `node.env`
-records what you chose. The one exception is `mdbx_copy` (below), whose libmdbx
-must match Reth's.
+`node.env.example` are the pinned component set. Components have independent
+release versions. The installer checks nothing about compatibility between
+components: `node.env` records what you chose, and compatibility must be
+verified before deployment. The one exception is `mdbx_copy` (below), whose
+libmdbx must match Reth's.
 
 | Binary                                                 | Repository                             | Build                                                                     |
 | ------------------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------- |
-| `/usr/local/bin/summit`                                | `SeismicSystems/summit`                | `cargo build --locked --release --features prom`                          |
+| `/usr/local/bin/summit`                                | `SeismicSystems/summit`                | `cargo build --locked --release --features prom,permissioned`             |
 | `/usr/local/bin/seismic-reth`                          | `SeismicSystems/seismic-reth`          | `cargo build --locked --profile maxperf --bin seismic-reth`               |
 | `/usr/local/bin/seismic-centralized-custodian-service` | `SeismicSystems/enclave`               | `cargo build --locked --release -p seismic-centralized-custodian-service` |
 | `/usr/local/bin/seismic-checkpointer` (optional)       | `SeismicSystems/seismic-checkpointer`  | `cargo build --locked --release`                                          |
@@ -308,9 +308,9 @@ fetch() {  # fetch <repository> <tag> <binary>...
     done
     rm -f SHA256SUMS
 }
-fetch summit               v0.1.1 summit
+fetch summit               v0.1.3 summit
 fetch seismic-reth         v0.1.1 seismic-reth mdbx_copy   # mdbx_copy only needed with the checkpointer
-fetch enclave              v0.1.1 seismic-centralized-custodian-service
+fetch enclave              v0.1.2 seismic-centralized-custodian-service
 fetch seismic-checkpointer v0.1.1 seismic-checkpointer      # when enabled
 ```
 
@@ -323,8 +323,8 @@ the same tags. Building needs the packages listed under 3.1 and a Rust toolchain
 for the building user:
 
 ```bash
-git clone --branch v0.1.1 https://github.com/SeismicSystems/summit.git
-(cd summit && cargo build --locked --release --features prom)
+git clone --branch v0.1.3 https://github.com/SeismicSystems/summit.git
+(cd summit && cargo build --locked --release --features prom,permissioned)
 sudo install -o root -g root -m 0755 summit/target/release/summit /usr/local/bin/summit
 
 git clone --branch v0.1.1 https://github.com/SeismicSystems/seismic-reth.git
@@ -333,7 +333,7 @@ git clone --branch v0.1.1 https://github.com/SeismicSystems/seismic-reth.git
 (cd seismic-reth && cargo build --locked --profile maxperf --bin seismic-reth)
 sudo install -o root -g root -m 0755 seismic-reth/target/maxperf/seismic-reth /usr/local/bin/seismic-reth
 
-git clone --branch v0.1.1 https://github.com/SeismicSystems/enclave.git
+git clone --branch v0.1.2 https://github.com/SeismicSystems/enclave.git
 (cd enclave && cargo build --locked --release -p seismic-centralized-custodian-service)
 sudo install -o root -g root -m 0755 enclave/target/release/seismic-centralized-custodian-service \
         /usr/local/bin/seismic-centralized-custodian-service

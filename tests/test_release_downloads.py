@@ -193,6 +193,41 @@ step_binaries
             else [],
         )
 
+    def test_summit_source_build_matches_release_features(self):
+        environment = dict(os.environ)
+        environment.update(self.values)
+        environment["SUMMIT_INSTALL_METHOD"] = "source"
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                """set -euo pipefail
+source "$1/install/lib/steps.sh"
+build_component() { printf '%s\\n' "$@"; }
+install_component Summit SUMMIT "$SUMMIT_REPO" "$SUMMIT_BUILD" "$DEFAULT_BUILD_OUTPUT" "$SUMMIT_BIN"
+""",
+                "fixture",
+                str(ROOT),
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            [
+                "Summit",
+                "summit",
+                self.values["SUMMIT_VERSION"],
+                "cargo build --release --locked --bin summit --features prom,permissioned",
+                "target/release",
+                "summit",
+            ],
+        )
+
     def test_each_binary_requires_its_repository_release_workflow_and_tag(self):
         result, run, events = self.download()
         self.assertEqual(
