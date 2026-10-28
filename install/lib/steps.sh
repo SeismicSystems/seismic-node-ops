@@ -224,14 +224,19 @@ render_reth_peering() {
         || die "node.env must contain a RETH_PEERING_ARGS= line for the installer to fill in"
     case "$RETH_PEERING" in
         trusted)
+            # The host's own enode is left out: Reth would dial itself forever.
             peers=$(cd "$TOOLS_DIR" && /usr/bin/python3 -c '
 import sys
 from pathlib import Path
 from seismic_node import nodeenv
-print(",".join(nodeenv.read_trusted_peers(Path(sys.argv[1]))))' "$RETH_TRUSTED_PEERS_FILE") \
+peers = nodeenv.read_trusted_peers(Path(sys.argv[1]))
+peers = nodeenv.without_self(peers, nodeenv.own_node_id(Path(sys.argv[2])))
+if not peers:
+    sys.exit("the trusted peers file lists only this node")
+print(",".join(peers))' "$RETH_TRUSTED_PEERS_FILE" "$RETH_P2P_KEY_PATH") \
                 || die "RETH_TRUSTED_PEERS_FILE is unusable: $RETH_TRUSTED_PEERS_FILE"
             args="--disable-discovery --trusted-only --trusted-peers $peers"
-            info "Trusted peering: $(tr ',' '\n' <<<"$peers" | wc -l) peer(s) from $RETH_TRUSTED_PEERS_FILE"
+            info "Trusted peering: $(tr ',' '\n' <<<"$peers" | wc -l) peer(s) from $RETH_TRUSTED_PEERS_FILE (own enode excluded)"
             ;;
         discovery)
             enode=${RETH_BOOTNODE:-}
@@ -684,6 +689,15 @@ step_keys() {
     # Everything under KEYS_DIR belongs to the service account.
     chown -R "$SERVICE_USER:$SERVICE_GROUP" -- "$KEYS_DIR"
     success "Keys ready. Back up $KEYS_DIR securely; it is the node's identity."
+    # The config step ran before the Reth key existed on a fresh install, so
+    # the trusted-peer list could not yet leave this node's own enode out.
+    if [[ "$RETH_PEERING" == trusted ]]; then
+        local staged
+        staged=$(mktemp)
+        render_reth_peering "$NODE_ENV_PATH" "$staged"
+        install_file "$staged" "$NODE_ENV_PATH" 0640 "node.env"
+        rm -f -- "$staged"
+    fi
 }
 
 # --- 3.8 checkpointer config -------------------------------------------------

@@ -425,8 +425,10 @@ value from the same inputs and refuses a `node.env` whose stored value differs.
 `trusted` (validators): a closed set, no discovery; Reth connects only to and
 from the enodes in `RETH_TRUSTED_PEERS_FILE`, one per line, `#` comments
 allowed. The repository's `internal_testnet_trusted_peers` lists the internal
-testnet's validators; it is identical on every host, and a node's own entry is
-harmless. The installer places it at the default path like the genesis file:
+testnet's validators; it is identical on every host. The installer places it at
+the default path like the genesis file and leaves the node's own enode out of
+the rendered argument (Reth would otherwise dial itself); by hand, drop your own
+line from the `paste` input:
 
 ```bash
 sudo install -o root -g root -m 0644 "$REPO/internal_testnet_trusted_peers" /etc/seismic/trusted-peers

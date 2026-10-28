@@ -1,7 +1,8 @@
 # Execution-layer identities of the internal testnet validators: one enode per
-# line, identical on every host (RETH_PEERING=trusted). A node's own entry is
-# harmless; Reth skips it. Adding a validator: add its line here, then on every
-# node `install.sh --only config` and `systemctl restart seismic-reth`.
+# line, identical on every host (RETH_PEERING=trusted); the installer leaves a
+# node's own entry out when rendering. Adding a validator: add its line here,
+# then on every node `install.sh --only config` and `systemctl restart
+# seismic-reth`.
 # node-0
 enode://a1da5975e906174328a77469d4a3be949c0c8f22fa3214823974a5ffc74d785d9c6897b0e41ba73dbab5e8a6a074fd576312bb8abb6ca46f84d9999df61a0513@136.119.180.186:30303
 # node-1

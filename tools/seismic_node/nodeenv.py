@@ -362,6 +362,39 @@ def read_trusted_peers(path: Path) -> list[str]:
     return peers
 
 
+def own_node_id(p2p_key_path: Path) -> str | None:
+    """The hex node id (uncompressed secp256k1 public key, 64 bytes) for a
+    Reth P2P secret key file, or None when the key is unreadable here."""
+    try:
+        secret = bytes.fromhex(p2p_key_path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if len(secret) != 32:
+        return None
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+    except ImportError:
+        return None
+    public = ec.derive_private_key(int.from_bytes(secret, "big"), ec.SECP256K1())
+    point = public.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+    )
+    return point[1:].hex()
+
+
+def without_self(peers: list[str], node_id: str | None) -> list[str]:
+    """Reth dials every trusted entry, its own included, and the session to
+    itself fails and backs off forever; leave the host's own enode out."""
+    if node_id is None:
+        return peers
+    return [
+        p
+        for p in peers
+        if p[len("enode://") : len("enode://") + 128].lower() != node_id.lower()
+    ]
+
+
 def peering_args(mode: str, trusted_peers: list[str], bootnode: str) -> str:
     """The value RETH_PEERING_ARGS must hold for a mode and its inputs."""
     if mode == "trusted":
@@ -786,11 +819,18 @@ def _require_peering_args(env: NodeEnv) -> None:
         raise NodeEnvError(
             "node.env RETH_PEERING_ARGS lists something that is not an enode URL"
         )
-    if peers_file.is_file() and listed != read_trusted_peers(peers_file):
-        raise NodeEnvError(
-            f"node.env RETH_PEERING_ARGS does not match {peers_file}; rerun the "
-            "installer's config step"
-        )
+    if peers_file.is_file():
+        # The rendered value leaves this node's own enode out; a stored value
+        # that still carries it (rendered before the key existed, or by hand)
+        # is harmless and accepted, so the step that re-renders it can run.
+        node_id = own_node_id(env.path("RETH_P2P_KEY_PATH"))
+        if without_self(listed, node_id) != without_self(
+            read_trusted_peers(peers_file), node_id
+        ):
+            raise NodeEnvError(
+                f"node.env RETH_PEERING_ARGS does not match {peers_file}; rerun the "
+                "installer's config step"
+            )
 
 
 def _require_flag_arg(env: NodeEnv, key: str, flag_name: str, value: str) -> None:

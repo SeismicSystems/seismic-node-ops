@@ -600,6 +600,38 @@ class SchemaTests(unittest.TestCase):
             peers.write_text("enode://short@h:1\n")
             with self.assertRaisesRegex(nodeenv.NodeEnvError, "not an enode"):
                 nodeenv.read_trusted_peers(peers)
+        # The node's own enode is excluded from the expected list.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "keys/reth").mkdir(parents=True)
+            key = Path(tmp) / "keys/reth/p2p-key"
+            key.write_text("ab" * 32)
+            node_id = nodeenv.own_node_id(key)
+            self.assertIsNotNone(node_id)
+            self.assertEqual(len(node_id), 128)
+            mine = f"enode://{node_id}@203.0.113.9:30303"
+            peers = Path(tmp) / "trusted-peers"
+            peers.write_text(f"{mine}\n{enode}\n")
+            self.assertEqual(nodeenv.without_self([mine, enode], node_id), [enode])
+            self.assertEqual(nodeenv.without_self([mine, enode], None), [mine, enode])
+            good = example_values(
+                RETH_PEERING="trusted",
+                RETH_TRUSTED_PEERS_FILE=str(peers),
+                KEYS_DIR=str(Path(tmp) / "keys"),
+                RETH_P2P_KEY_PATH=str(key),
+                SUMMIT_KEYS_DIR=str(Path(tmp) / "keys/summit"),
+                RETH_PEERING_ARGS=f"{nodeenv.TRUSTED_FLAGS} {enode}",
+            )
+            nodeenv.validate(good)
+            # A stored list still carrying the node's own enode is accepted,
+            # so the config step that re-renders without it can run.
+            nodeenv.validate(
+                {**good, "RETH_PEERING_ARGS": f"{nodeenv.TRUSTED_FLAGS} {mine},{enode}"}
+            )
+            with self.assertRaisesRegex(nodeenv.NodeEnvError, "does not match"):
+                nodeenv.validate(
+                    {**good, "RETH_PEERING_ARGS": f"{nodeenv.TRUSTED_FLAGS} {mine}"}
+                )
+            self.assertIsNone(nodeenv.own_node_id(Path(tmp) / "missing"))
         # Trusted, file absent (checking a config before installation): the
         # stored value is only checked for shape.
         nodeenv.validate(
