@@ -1037,10 +1037,57 @@ equally to a boot-time start.
 
 ### Status and logs
 
+Check all node units, then view the last hour of logs from all of them:
+
 ```bash
-systemctl status 'seismic-*'
-journalctl -u seismic-summit --since -1h
-journalctl -u seismic-reth -p warning
+sudo systemctl status 'seismic-*'
+sudo journalctl -u 'seismic-*' --since -1h
+```
+
+Or select one binary or role:
+
+```bash
+# Reth (validators and observers)
+sudo journalctl -u seismic-reth --since -1h
+
+# Summit validator (normal and checkpoint startup)
+sudo journalctl -u seismic-summit -u seismic-summit-checkpoint --since -1h
+
+# Summit observer (normal and checkpoint startup)
+sudo journalctl -u seismic-observer -u seismic-observer-checkpoint --since -1h
+
+# Summit's temporary deposit-signature RPC helper
+sudo journalctl -u seismic-deposit-rpc --since -1h
+
+# Custodian validator
+sudo journalctl -u seismic-custodian --since -1h
+
+# Custodian observer
+sudo journalctl -u seismic-observer-custodian --since -1h
+
+# Checkpointer
+sudo journalctl -u seismic-checkpointer --since -1h
+
+# Prometheus Agent
+sudo journalctl -u seismic-prometheus-agent --since -1h
+```
+
+Add `-f` to any `journalctl` command to follow new entries (Ctrl-C to stop), or
+`-p warning` to show only warnings and more severe messages. The checkpoint
+runner logs under the corresponding Summit checkpoint unit; it has no separate
+service. Likewise, `mdbx_copy` is a helper invoked by the checkpointer and has
+no separate service or standalone journal.
+
+Managed OpenResty writes access and error logs to files:
+
+```bash
+sudo tail -n 100 /usr/local/openresty/nginx/logs/access.log
+sudo tail -n 100 /usr/local/openresty/nginx/logs/error.log
+```
+
+Inspect a unit's sandboxing separately:
+
+```bash
 systemd-analyze security seismic-reth.service
 ```
 
