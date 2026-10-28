@@ -454,6 +454,7 @@ class SchemaTests(unittest.TestCase):
                 "CHECKPOINTER_INSTALL_METHOD",
                 "TLS_MODE",
                 "MONITORING_MODE",
+                "RETH_PEERING",
             },
         )
         for key, choices in closed.items():
@@ -510,12 +511,37 @@ class SchemaTests(unittest.TestCase):
 
     def test_derived_keys_must_match_their_sources(self):
         enode = "enode://" + "ab" * 64 + "@203.0.113.1:30303"
+        discovery = nodeenv.DISCOVERY_FLAGS
         cases = {
-            "bootnode without arg": {"RETH_BOOTNODE": enode},
-            "arg without bootnode": {"RETH_BOOTNODES_ARG": f"--bootnodes {enode}"},
-            "arg with wrong bootnode": {
+            "discovery: bootnode without args": {
+                "RETH_PEERING": "discovery",
                 "RETH_BOOTNODE": enode,
-                "RETH_BOOTNODES_ARG": "--bootnodes enode://cd@203.0.113.2:30303",
+                "RETH_PEERING_ARGS": discovery,
+            },
+            "discovery: args with wrong bootnode": {
+                "RETH_PEERING": "discovery",
+                "RETH_BOOTNODE": enode,
+                "RETH_PEERING_ARGS": f"{discovery} --bootnodes enode://{'cd' * 64}@203.0.113.2:30303",
+            },
+            "discovery: empty args and nothing to render them from": {
+                "RETH_PEERING": "discovery",
+                "RETH_PEERING_ARGS": "",
+            },
+            "discovery: trusted flags": {
+                "RETH_PEERING": "discovery",
+                "RETH_PEERING_ARGS": f"{nodeenv.TRUSTED_FLAGS} {enode}",
+            },
+            "trusted: discovery flags": {
+                "RETH_PEERING": "trusted",
+                "RETH_PEERING_ARGS": discovery,
+            },
+            "trusted: not an enode": {
+                "RETH_PEERING": "trusted",
+                "RETH_PEERING_ARGS": f"{nodeenv.TRUSTED_FLAGS} enode://ab@h:1",
+            },
+            "double space": {
+                "RETH_PEERING": "trusted",
+                "RETH_PEERING_ARGS": f"{nodeenv.TRUSTED_FLAGS}  {enode}",
             },
             "bootstrappers without arg": {
                 "SUMMIT_BOOTSTRAPPERS_FILE": "/persistence/keys/summit/bootstrappers.toml"
@@ -526,16 +552,69 @@ class SchemaTests(unittest.TestCase):
             with self.subTest(case=name), self.assertRaises(nodeenv.NodeEnvError):
                 nodeenv.validate(example_values(**overrides))
 
+        # Discovery, rendered: the args carry exactly the bootnode.
         env = nodeenv.validate(
             example_values(
+                RETH_PEERING="discovery",
                 RETH_BOOTNODE=enode,
-                RETH_BOOTNODES_ARG=f"--bootnodes {enode}",
+                RETH_PEERING_ARGS=f"{discovery} --bootnodes {enode}",
                 SUMMIT_BOOTSTRAPPERS_FILE="/persistence/keys/summit/bootstrappers.toml",
                 SUMMIT_BOOTSTRAPPERS_ARG="--bootstrappers /persistence/keys/summit/bootstrappers.toml",
             )
         )
         self.assertEqual(
-            env.string("RETH_BOOTNODES_ARG").split(), ["--bootnodes", enode]
+            env.string("RETH_PEERING_ARGS").split()[-2:], ["--bootnodes", enode]
+        )
+        # Discovery, not rendered yet but with an RPC the installer will resolve.
+        nodeenv.validate(
+            example_values(
+                RETH_PEERING="discovery",
+                RETH_BOOTNODE_RPC="https://bootnode.example/rpc",
+                RETH_PEERING_ARGS="",
+            )
+        )
+        # Trusted: the args must list exactly the file's peers once it exists.
+        with tempfile.TemporaryDirectory() as tmp:
+            peers = Path(tmp) / "trusted-peers"
+            other = "enode://" + "cd" * 64 + "@203.0.113.2:30303"
+            peers.write_text(f"# validators\n{enode}\n\n{other}  # two\n")
+            self.assertEqual(nodeenv.read_trusted_peers(peers), [enode, other])
+            good = example_values(
+                RETH_PEERING="trusted",
+                RETH_TRUSTED_PEERS_FILE=str(peers),
+                RETH_PEERING_ARGS=f"{nodeenv.TRUSTED_FLAGS} {enode},{other}",
+            )
+            nodeenv.validate(good)
+            for name, args in (
+                ("one peer missing", f"{nodeenv.TRUSTED_FLAGS} {enode}"),
+                ("not rendered", ""),
+            ):
+                with (
+                    self.subTest(case=f"trusted: {name}"),
+                    self.assertRaises(nodeenv.NodeEnvError),
+                ):
+                    nodeenv.validate({**good, "RETH_PEERING_ARGS": args})
+            peers.write_text("# nothing\n")
+            with self.assertRaisesRegex(nodeenv.NodeEnvError, "lists no peers"):
+                nodeenv.read_trusted_peers(peers)
+            peers.write_text("enode://short@h:1\n")
+            with self.assertRaisesRegex(nodeenv.NodeEnvError, "not an enode"):
+                nodeenv.read_trusted_peers(peers)
+        # Trusted, file absent (checking a config before installation): the
+        # stored value is only checked for shape.
+        nodeenv.validate(
+            example_values(
+                RETH_PEERING="trusted",
+                RETH_TRUSTED_PEERS_FILE="/nonexistent/trusted-peers",
+                RETH_PEERING_ARGS=f"{nodeenv.TRUSTED_FLAGS} {enode}",
+            )
+        )
+        nodeenv.validate(
+            example_values(
+                RETH_PEERING="trusted",
+                RETH_TRUSTED_PEERS_FILE="/nonexistent/trusted-peers",
+                RETH_PEERING_ARGS="",
+            )
         )
 
     def test_versions_are_release_tags_or_branch_refs(self):

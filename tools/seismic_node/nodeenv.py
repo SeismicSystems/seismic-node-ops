@@ -72,6 +72,15 @@ BINARIES = {
 # Loopback metrics ports fixed by the unit files (Summit --prom-port, Reth
 # --metrics) and the checkpointer's --port. The Custodian's is
 # CUSTODIAN_COUNCIL_PORT in node.env.
+PEERING_MODES = ("trusted", "discovery")
+# The flag group RETH_PEERING_ARGS carries in each mode; the installer renders
+# it, --check recomputes it. Discovery is the historical configuration.
+DISCOVERY_FLAGS = (
+    "--disable-discv4-discovery --disable-dns-discovery "
+    "--enable-discv5-discovery --discovery.v5.port 30303"
+)
+TRUSTED_FLAGS = "--disable-discovery --trusted-only --trusted-peers"
+ENODE = re.compile(r"enode://[0-9a-fA-F]{128}@[A-Za-z0-9.:\[\]-]+:[0-9]{1,5}")
 SUMMIT_METRICS_PORT = 9090
 RETH_METRICS_PORT = 9001
 CHECKPOINTER_PORT = 42069
@@ -329,6 +338,37 @@ def _optional_url(value: str, key: str) -> str:
     return value
 
 
+def read_trusted_peers(path: Path) -> list[str]:
+    """The enodes in a trusted-peers file: one per line, blank lines and
+    ``#`` comments ignored, every entry a full enode URL."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as error:
+        raise NodeEnvError(
+            f"Cannot read RETH_TRUSTED_PEERS_FILE {path}: {error}"
+        ) from None
+    peers = []
+    for number, line in enumerate(lines, 1):
+        entry = line.split("#", 1)[0].strip()
+        if not entry:
+            continue
+        if not ENODE.fullmatch(entry):
+            raise NodeEnvError(
+                f"{path}:{number}: not an enode://<id>@<host>:<port> URL"
+            )
+        peers.append(entry)
+    if not peers:
+        raise NodeEnvError(f"RETH_TRUSTED_PEERS_FILE {path} lists no peers")
+    return peers
+
+
+def peering_args(mode: str, trusted_peers: list[str], bootnode: str) -> str:
+    """The value RETH_PEERING_ARGS must hold for a mode and its inputs."""
+    if mode == "trusted":
+        return f"{TRUSTED_FLAGS} {','.join(trusted_peers)}"
+    return f"{DISCOVERY_FLAGS} --bootnodes {bootnode}" if bootnode else DISCOVERY_FLAGS
+
+
 def _optional_enode(value: str, key: str) -> str:
     """An enode:// URL as Reth prints it: 64-byte node id, host, port."""
     if value and not re.fullmatch(
@@ -416,6 +456,10 @@ def monitoring(mode: str) -> Condition:
     return lambda raw: raw.get("MONITORING_MODE") == mode
 
 
+def peering(mode: str) -> Condition:
+    return lambda raw: raw.get("RETH_PEERING") == mode
+
+
 @dataclass(frozen=True)
 class Field:
     validate: Validator
@@ -448,9 +492,11 @@ SCHEMA: dict[str, Field] = {
     ),
     # Network
     "GENESIS_PATH": Field(_path),
-    "RETH_BOOTNODE_RPC": Field(_optional_http_url),
-    "RETH_BOOTNODE": Field(_optional_enode),
-    "RETH_BOOTNODES_ARG": Field(_optional_string),
+    "RETH_PEERING": Field(_enum(PEERING_MODES)),
+    "RETH_TRUSTED_PEERS_FILE": Field(_path, peering("trusted")),
+    "RETH_BOOTNODE_RPC": Field(_optional_http_url, peering("discovery")),
+    "RETH_BOOTNODE": Field(_optional_enode, peering("discovery")),
+    "RETH_PEERING_ARGS": Field(_optional_string),
     "RETH_ENGINE_IPC": Field(_path),
     "OBSERVER_PARENT_NODE_PUBLIC_KEY": Field(_public_key, observer),
     "OBSERVER_INDEX": Field(_int(0, 2**31 - 1), observer),
@@ -503,6 +549,7 @@ _CONDITION_INPUTS = (
     "SEISMIC_ROLE",
     "CHECKPOINTER_ENABLED",
     "MONITORING_MODE",
+    "RETH_PEERING",
     "TLS_MODE",
     "SUMMIT_INSTALL_METHOD",
     "RETH_INSTALL_METHOD",
@@ -647,9 +694,7 @@ def _validate_derived(env: NodeEnv) -> None:
             "node.env RETH_MDBX_COPY_PREBUILT_PATH must name mdbx_copy, not the "
             "Reth binary in RETH_PREBUILT_PATH"
         )
-    _require_flag_arg(
-        env, "RETH_BOOTNODES_ARG", "--bootnodes", env.string("RETH_BOOTNODE")
-    )
+    _require_peering_args(env)
     bootstrappers = env.optional_path("SUMMIT_BOOTSTRAPPERS_FILE")
     _require_flag_arg(
         env,
@@ -699,6 +744,52 @@ def _validate_derived(env: NodeEnv) -> None:
             "node.env MONITORING_MODE=pull needs an HTTPS proxy to publish the "
             "/prom-* routes: set TLS_MODE to custodian-only or full (managed "
             "OpenResty) or external (your proxy must enforce the JWT check)"
+        )
+
+
+def _require_peering_args(env: NodeEnv) -> None:
+    """RETH_PEERING_ARGS is the whole peering flag group the unit expands; it
+    must be exactly what RETH_PEERING and its inputs produce. In trusted mode
+    the peers file is read when it exists (on the node); a file that is not
+    there yet (checking a config before installation) leaves the stored value
+    unverified but still well-formed."""
+    mode = env.string("RETH_PEERING")
+    stored = env.string("RETH_PEERING_ARGS")
+    if re.search(r"[^\x21-\x7e ]", stored) or "  " in stored:
+        raise NodeEnvError("node.env RETH_PEERING_ARGS contains unexpected whitespace")
+    if mode == "discovery":
+        expected = peering_args(mode, [], env.string("RETH_BOOTNODE"))
+        if stored and stored != expected:
+            raise NodeEnvError(
+                f"node.env RETH_PEERING_ARGS must be exactly {expected!r}"
+            )
+        if not stored and not env.string("RETH_BOOTNODE_RPC"):
+            raise NodeEnvError(
+                f"node.env RETH_PEERING_ARGS must be exactly {expected!r} "
+                "(the installer's config step fills it in)"
+            )
+        return
+    peers_file = env.path("RETH_TRUSTED_PEERS_FILE")
+    if not stored:
+        if peers_file.is_file():
+            raise NodeEnvError(
+                "node.env RETH_PEERING_ARGS is empty; the installer's config step "
+                f"fills it from {peers_file}"
+            )
+        return
+    if not stored.startswith(TRUSTED_FLAGS + " "):
+        raise NodeEnvError(
+            f"node.env RETH_PEERING_ARGS must start with {TRUSTED_FLAGS!r} in trusted mode"
+        )
+    listed = stored[len(TRUSTED_FLAGS) + 1 :].split(",")
+    if not all(ENODE.fullmatch(peer) for peer in listed):
+        raise NodeEnvError(
+            "node.env RETH_PEERING_ARGS lists something that is not an enode URL"
+        )
+    if peers_file.is_file() and listed != read_trusted_peers(peers_file):
+        raise NodeEnvError(
+            f"node.env RETH_PEERING_ARGS does not match {peers_file}; rerun the "
+            "installer's config step"
         )
 
 

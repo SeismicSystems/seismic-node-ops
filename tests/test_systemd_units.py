@@ -237,14 +237,36 @@ class ExecStartExpansionTests(unittest.TestCase):
     def test_optional_flags_expand_to_two_words_when_set(self):
         enode = "enode://" + "ab" * 64 + "@203.0.113.1:30303"
         env = full_env(
+            RETH_PEERING="discovery",
             RETH_BOOTNODE=enode,
-            RETH_BOOTNODES_ARG=f"--bootnodes {enode}",
+            RETH_PEERING_ARGS=f"{nodeenv.DISCOVERY_FLAGS} --bootnodes {enode}",
             SUMMIT_BOOTSTRAPPERS_FILE="/persistence/keys/summit/bootstrappers.toml",
             SUMMIT_BOOTSTRAPPERS_ARG="--bootstrappers /persistence/keys/summit/bootstrappers.toml",
         )
         nodeenv.validate(env)
         argv = expand(exec_start("seismic-reth"), env)
         self.assertEqual(argv[argv.index("--bootnodes") + 1], enode)
+        self.assertIn("--enable-discv5-discovery", argv)
+        self.assertNotIn("--trusted-only", argv)
+        # Trusted mode: the same unit, a different flag group, one CSV word.
+        other = "enode://" + "cd" * 64 + "@203.0.113.2:30303"
+        env = full_env(
+            RETH_PEERING="trusted",
+            RETH_TRUSTED_PEERS_FILE="/nonexistent/trusted-peers",
+            RETH_PEERING_ARGS=f"{nodeenv.TRUSTED_FLAGS} {enode},{other}",
+        )
+        nodeenv.validate(env)
+        argv = expand(exec_start("seismic-reth"), env)
+        self.assertEqual(argv[argv.index("--trusted-peers") + 1], f"{enode},{other}")
+        self.assertIn("--disable-discovery", argv)
+        self.assertIn("--trusted-only", argv)
+        self.assertNotIn("--bootnodes", argv)
+        self.assertNotIn("--enable-discv5-discovery", argv)
+        env = full_env(
+            SUMMIT_BOOTSTRAPPERS_FILE="/persistence/keys/summit/bootstrappers.toml",
+            SUMMIT_BOOTSTRAPPERS_ARG="--bootstrappers /persistence/keys/summit/bootstrappers.toml",
+        )
+        nodeenv.validate(env)
         argv = expand(exec_start("seismic-summit"), env)
         self.assertEqual(
             argv[argv.index("--bootstrappers") + 1],

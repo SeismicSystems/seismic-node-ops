@@ -37,9 +37,7 @@ ExecStart=/usr/local/bin/seismic-reth node -vvv --log.file.max-files 0 \
     --auth-ipc --auth-ipc.path ${RETH_ENGINE_IPC} \
     --seismic.purpose-keys-source custodian \
     --seismic.custodian.socket ${CUSTODIAN_SOCKET} \
-    --disable-discv4-discovery --disable-dns-discovery \
-    --enable-discv5-discovery --discovery.v5.port 30303 \
-    $RETH_BOOTNODES_ARG \
+    $RETH_PEERING_ARGS \
     --ops.enable --ops.addr 127.0.0.1 --ops.port 8552
 Restart=on-failure
 RestartSec=5s
