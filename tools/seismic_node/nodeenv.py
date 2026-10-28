@@ -362,9 +362,55 @@ def read_trusted_peers(path: Path) -> list[str]:
     return peers
 
 
+# secp256k1, enough to turn a Reth P2P secret key into its node id (the
+# uncompressed public key). Pure Python: it runs once per install, and the
+# installer must not depend on a crypto package being present.
+_P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_G = (
+    0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+    0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8,
+)
+
+
+def _ec_add(
+    a: tuple[int, int] | None, b: tuple[int, int] | None
+) -> tuple[int, int] | None:
+    if a is None:
+        return b
+    if b is None:
+        return a
+    (x1, y1), (x2, y2) = a, b
+    if x1 == x2 and (y1 + y2) % _P == 0:
+        return None
+    if a == b:
+        slope = 3 * x1 * x1 * pow(2 * y1, -1, _P) % _P
+    else:
+        slope = (y2 - y1) * pow(x2 - x1, -1, _P) % _P
+    x3 = (slope * slope - x1 - x2) % _P
+    return x3, (slope * (x1 - x3) - y1) % _P
+
+
+def node_id_from_secret(secret: bytes) -> str:
+    """Hex node id for a 32-byte secp256k1 secret: X || Y of its public key."""
+    scalar = int.from_bytes(secret, "big")
+    if not 1 <= scalar < _N:
+        raise ValueError("secret is not a valid secp256k1 scalar")
+    result: tuple[int, int] | None = None
+    addend: tuple[int, int] | None = _G
+    while scalar:
+        if scalar & 1:
+            result = _ec_add(result, addend)
+        addend = _ec_add(addend, addend)
+        scalar >>= 1
+    assert result is not None
+    return f"{result[0]:064x}{result[1]:064x}"
+
+
 def own_node_id(p2p_key_path: Path) -> str | None:
-    """The hex node id (uncompressed secp256k1 public key, 64 bytes) for a
-    Reth P2P secret key file, or None when the key is unreadable here."""
+    """The node id for a Reth P2P secret key file, or None when the file is
+    not readable here (checking a config on another machine, or before the
+    key exists)."""
     try:
         secret = bytes.fromhex(p2p_key_path.read_text().strip())
     except (OSError, ValueError):
@@ -372,15 +418,9 @@ def own_node_id(p2p_key_path: Path) -> str | None:
     if len(secret) != 32:
         return None
     try:
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import ec
-    except ImportError:
+        return node_id_from_secret(secret)
+    except ValueError:
         return None
-    public = ec.derive_private_key(int.from_bytes(secret, "big"), ec.SECP256K1())
-    point = public.public_key().public_bytes(
-        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
-    )
-    return point[1:].hex()
 
 
 def without_self(peers: list[str], node_id: str | None) -> list[str]:

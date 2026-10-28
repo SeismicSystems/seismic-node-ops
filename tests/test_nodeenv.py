@@ -608,6 +608,21 @@ class SchemaTests(unittest.TestCase):
             node_id = nodeenv.own_node_id(key)
             self.assertIsNotNone(node_id)
             self.assertEqual(len(node_id), 128)
+            # Known answer: the scalar 1 is the generator point.
+            self.assertEqual(
+                nodeenv.node_id_from_secret((1).to_bytes(32, "big")),
+                "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+                "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
+            )
+            # Scalar 2 is G doubled; checks the doubling branch independently.
+            self.assertEqual(
+                nodeenv.node_id_from_secret((2).to_bytes(32, "big")),
+                "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+                "1ae168fea63dc339a3c58419466ceaeef7f632653266d0e1236431a950cfe52a",
+            )
+            key.write_text("ff" * 32)  # >= the curve order: not a valid scalar
+            self.assertIsNone(nodeenv.own_node_id(key))
+            key.write_text("ab" * 32)
             mine = f"enode://{node_id}@203.0.113.9:30303"
             peers = Path(tmp) / "trusted-peers"
             peers.write_text(f"{mine}\n{enode}\n")
