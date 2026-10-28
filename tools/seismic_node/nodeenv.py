@@ -831,15 +831,13 @@ def _require_peering_args(env: NodeEnv) -> None:
     if re.search(r"[^\x21-\x7e ]", stored) or "  " in stored:
         raise NodeEnvError("node.env RETH_PEERING_ARGS contains unexpected whitespace")
     if mode == "discovery":
+        # Empty means not rendered yet; the installer's config step fills it
+        # in from RETH_BOOTNODE_RPC or RETH_BOOTNODE. Once set it must be
+        # exactly what those inputs give.
         expected = peering_args(mode, [], env.string("RETH_BOOTNODE"))
         if stored and stored != expected:
             raise NodeEnvError(
                 f"node.env RETH_PEERING_ARGS must be exactly {expected!r}"
-            )
-        if not stored and not env.string("RETH_BOOTNODE_RPC"):
-            raise NodeEnvError(
-                f"node.env RETH_PEERING_ARGS must be exactly {expected!r} "
-                "(the installer's config step fills it in)"
             )
         return
     peers_file = env.path("RETH_TRUSTED_PEERS_FILE")
