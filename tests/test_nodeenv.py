@@ -523,10 +523,6 @@ class SchemaTests(unittest.TestCase):
                 "RETH_BOOTNODE": enode,
                 "RETH_PEERING_ARGS": f"{discovery} --bootnodes enode://{'cd' * 64}@203.0.113.2:30303",
             },
-            "discovery: empty args and nothing to render them from": {
-                "RETH_PEERING": "discovery",
-                "RETH_PEERING_ARGS": "",
-            },
             "discovery: trusted flags": {
                 "RETH_PEERING": "discovery",
                 "RETH_PEERING_ARGS": f"{nodeenv.TRUSTED_FLAGS} {enode}",
@@ -565,14 +561,12 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(
             env.string("RETH_PEERING_ARGS").split()[-2:], ["--bootnodes", enode]
         )
-        # Discovery, not rendered yet but with an RPC the installer will resolve.
-        nodeenv.validate(
-            example_values(
-                RETH_PEERING="discovery",
-                RETH_BOOTNODE_RPC="https://bootnode.example/rpc",
-                RETH_PEERING_ARGS="",
+        # Discovery, not rendered yet: accepted with or without a bootnode
+        # input, since the config step always fills the args in.
+        for extra in ({}, {"RETH_BOOTNODE_RPC": "https://bootnode.example/rpc"}):
+            nodeenv.validate(
+                example_values(RETH_PEERING="discovery", RETH_PEERING_ARGS="", **extra)
             )
-        )
         # Trusted: the args must list exactly the file's peers once it exists.
         with tempfile.TemporaryDirectory() as tmp:
             peers = Path(tmp) / "trusted-peers"
