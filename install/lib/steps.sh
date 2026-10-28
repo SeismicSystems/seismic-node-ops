@@ -260,9 +260,9 @@ print(",".join(peers))' "$RETH_TRUSTED_PEERS_FILE" "$RETH_P2P_KEY_PATH") \
 
 step_config() {
     local staged
-    # The trusted-peers file is like the genesis: the repository copy at the
-    # default path, kept current; an operator's file elsewhere is only
-    # checked to exist. It must be in place before the args are rendered.
+    # At the default path the repository's copy is installed, so every rerun
+    # picks up validators added to it since; an operator's file elsewhere is
+    # only checked to exist. It must be in place before the args are rendered.
     if [[ "$RETH_PEERING" == trusted ]]; then
         if [[ "$RETH_TRUSTED_PEERS_FILE" == "$CONFIG_DIR/trusted-peers" ]]; then
             install_file "$REPO_ROOT/internal_testnet_trusted_peers" "$RETH_TRUSTED_PEERS_FILE" 0644 "trusted peers file"
