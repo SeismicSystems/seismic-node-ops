@@ -215,7 +215,8 @@ curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo 
 gpg --show-keys --with-fingerprint /etc/apt/keyrings/githubcli-archive-keyring.gpg   # must list 7F38 ... 3325
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
 sudo apt-get update && sudo apt-get install -y gh
-gh attestation --help >/dev/null   # confirms a new enough gh
+gh attestation --help >/dev/null \
+  || echo "gh is too old: $(gh --version | head -1); apt took Ubuntu's package instead of GitHub's repository"
 ```
 
 Add only when building from source:
