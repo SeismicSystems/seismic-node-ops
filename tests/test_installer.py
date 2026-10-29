@@ -1,7 +1,8 @@
 """Tests for install/install.sh that never touch the host.
 
-Only --dry-run is exercised: it validates the config, prints the plan, and
-changes nothing, so every test here runs unprivileged.
+The driver is exercised only with --dry-run (apart from rejecting non-root
+runs); selected real step functions are tested with host operations stubbed.
+Every test runs unprivileged. Journal-policy fixtures are in test_journald.py.
 """
 
 from __future__ import annotations
@@ -91,6 +92,7 @@ class InstallerTests(unittest.TestCase):
                         "checkpointer",
                         "units",
                         "tls",
+                        "logging",
                     ],
                 )
                 self.assertFalse((self.root / "install.log").exists())
@@ -137,12 +139,12 @@ class InstallerTests(unittest.TestCase):
             str(self.config(example())),
             "--dry-run",
             "--only",
-            "units,packages",
+            "logging,units,packages",
         )
         out = self.strip_ansi(result.stdout)
         self.assertEqual(result.returncode, 0, result.stderr)
         selected = re.findall(r"\[\*\] (\S+)", out)
-        self.assertEqual(selected, ["packages", "units"])
+        self.assertEqual(selected, ["packages", "units", "logging"])
         skipped = re.findall(r"\[ \] (\S+)", out)
         self.assertIn("binaries", skipped)
 

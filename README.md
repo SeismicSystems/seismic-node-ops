@@ -21,7 +21,11 @@ sudo install/install.sh --config node.env
 
 `install/install.sh` installs a validator or observer from a prepared `node.env`
 with no prompts; see **[install/README.md](install/README.md)** for its options
-and steps, and the runbook for what each step produces.
+and steps, and the runbook for what each step produces. The `logging` step
+installs a **host-wide**, shared 2 GiB journal policy and disables journal
+forwarding to syslog. Activate it explicitly before starting the node; see
+[runbook 3.13](docs/RUNBOOK.md#313-bounded-system-logging) for retention,
+collector implications, and activation instructions.
 
 ## Node onboarding and operations
 
