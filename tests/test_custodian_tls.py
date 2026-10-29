@@ -96,6 +96,83 @@ render_openresty_configuration "$2"
     return result.stdout
 
 
+class OpenRestyActivationInstructionsTests(unittest.TestCase):
+    @staticmethod
+    def runbook_blocks() -> list[str]:
+        section = (
+            (ROOT / "docs/RUNBOOK.md")
+            .read_text()
+            .split("### 3.11 HTTPS endpoint", 1)[1]
+            .split("### 3.12 Monitoring", 1)[0]
+        )
+        blocks = re.findall(r"```bash\n(.*?)\n\s*```", section, re.DOTALL)
+        return [
+            "\n".join(line.strip() for line in block.splitlines())
+            for block in blocks
+            if "sudo openresty -t" in block
+        ]
+
+    def test_installer_prints_runbook_commands_without_activating_services(self):
+        blocks = self.runbook_blocks()
+        self.assertEqual(len(blocks), 2)
+        for mode in ("full", "custodian-only"):
+            with self.subTest(mode=mode):
+                result = shell(
+                    """
+TLS_MODE=$1
+MONITORING_MODE=off
+CHECKPOINTER_ENABLED=false
+apply_tls_mode
+INSTALL_CUSTODIAN=false
+sudo() { die 'unexpected privileged command'; }
+systemctl() { die 'unexpected service activation'; }
+openresty() { die 'unexpected configuration validation'; }
+print_https_activation_instructions
+""",
+                    mode,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for block in blocks:
+                    for line in block.splitlines():
+                        self.assertIn(f"  {line}\n", result.stdout)
+
+    def test_documented_start_and_reload_require_successful_validation(self):
+        blocks = self.runbook_blocks()
+        self.assertEqual(len(blocks), 2)
+        for index, block in enumerate(blocks):
+            for validation_status in (0, 1):
+                with self.subTest(block=index, validation_status=validation_status):
+                    result = shell(
+                        """
+VALIDATION_STATUS=$1
+sudo() {
+    printf '%s\\n' "$*"
+    case "$*" in
+        'openresty -t') return "$VALIDATION_STATUS" ;;
+        'systemctl enable --now openresty'|'systemctl reload openresty'|'systemctl status openresty --no-pager -l') return 0 ;;
+        *) die "unexpected privileged command: $*" ;;
+    esac
+}
+"""
+                        + block,
+                        str(validation_status),
+                    )
+                    expected = ["openresty -t"]
+                    if validation_status == 0:
+                        expected += (
+                            [
+                                "systemctl enable --now openresty",
+                                "systemctl status openresty --no-pager -l",
+                            ]
+                            if index == 0
+                            else ["systemctl reload openresty"]
+                        )
+                    self.assertEqual(result.stdout.splitlines(), expected)
+                    self.assertEqual(
+                        result.returncode, validation_status, result.stderr
+                    )
+
+
 class TLSModeMappingTests(unittest.TestCase):
     def mapping(self, mode: str) -> dict[str, str]:
         result = shell(

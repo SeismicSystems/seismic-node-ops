@@ -721,12 +721,18 @@ _Installer step: `tls`._
   secret at `OPENRESTY_JWT_SECRET_PATH` (`tools/generate-openresty-jwt.sh`
   issues one); the installer generates the secret whenever such routes exist.
   Installing the configuration never starts, enables, or reloads OpenResty;
-  activate it explicitly once the node runs:
+  activate it explicitly once the node runs. For first startup, validate the
+  configuration, enable OpenResty at boot, start it now, and check its status:
 
   ```bash
-  sudo openresty -t
-  sudo systemctl enable openresty
-  sudo systemctl is-active --quiet openresty && sudo systemctl reload openresty || sudo systemctl start openresty
+  sudo openresty -t && sudo systemctl enable --now openresty && sudo systemctl status openresty --no-pager -l
+  ```
+
+  The status should show `active (running)`. If OpenResty is already running and
+  you have changed its configuration, validate and reload it instead:
+
+  ```bash
+  sudo openresty -t && sudo systemctl reload openresty
   ```
 
   Reth, Summit, checkpointer, and metrics listeners stay bound to loopback in
