@@ -371,14 +371,11 @@ print_https_activation_instructions() {
         _out "  sudo ss -ltnp '( sport = :${COUNCIL_LISTEN##*:} )'"
     fi
     if [[ "$CONFIGURE_PUBLIC_ENDPOINT" == true ]]; then
-        _out "Verify DNS and inbound TCP 80/443, then activate OpenResty explicitly:"
-        _out "  sudo openresty -t"
-        _out "  sudo systemctl enable openresty"
-        _out "  if sudo systemctl is-active --quiet openresty; then"
-        _out "      sudo systemctl reload openresty"
-        _out "  else"
-        _out "      sudo systemctl start openresty"
-        _out "  fi"
+        _out "Verify DNS and inbound TCP 80/443, then activate OpenResty explicitly."
+        _out "First startup (status should show active (running)):"
+        _out "  sudo openresty -t && sudo systemctl enable --now openresty && sudo systemctl status openresty --no-pager -l"
+        _out "Already running after a configuration change:"
+        _out "  sudo openresty -t && sudo systemctl reload openresty"
         warn "Old routes remain until reload/stop; existing requests can continue draining after reload."
     else
         warn "Existing OpenResty configuration/services were not modified. Previously public routes may still be active."
