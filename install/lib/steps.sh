@@ -2,8 +2,8 @@
 
 # Installation steps for install.sh, one function per runbook section. Every
 # function reads only node.env keys (exported by the Python parser) and the
-# installer's own paths; none prompts, and none starts a service. Steps are
-# idempotent: a rerun verifies what exists and creates only what is missing.
+# installer's own paths/policies; none prompts, and none starts a service.
+# Steps are idempotent: a rerun verifies what exists and updates managed files.
 
 SERVICE_USER=seismic
 SERVICE_GROUP=seismic
@@ -11,6 +11,7 @@ SERVICE_HOME=/var/lib/seismic
 CONFIG_DIR=/etc/seismic
 LIBEXEC_DIR=/usr/local/libexec/seismic
 UNIT_DIR=/etc/systemd/system
+JOURNALD_DROPIN_DIR=/etc/systemd/journald.conf.d
 
 # --- helpers ----------------------------------------------------------------
 
@@ -317,6 +318,19 @@ step_units() {
     fi
     systemd-analyze verify "$UNIT_DIR"/seismic-*.service >>"$LOG_FILE" 2>&1 \
         || warn "systemd-analyze verify reported issues; see $LOG_FILE (for a partial --only run, install binaries first; disabled optional services may lack binaries)."
+}
+
+# --- 3.13 host-wide journal retention -----------------------------------------
+
+step_logging() {
+    # journald drop-ins sort by basename across /usr/lib and /etc: a numeric
+    # prefix would lose to Ubuntu's syslog.conf (ForwardToSyslog=yes).
+    local name=zz-seismic-retention.conf
+    ensure_directory "$JOURNALD_DROPIN_DIR" root:root 0755 "journald drop-in directory"
+    install_file "$TEMPLATES_DIR/journald/$name" "$JOURNALD_DROPIN_DIR/$name" 0644 \
+        "host-wide journal retention"
+    warn "Host-wide policy: 2 GiB shared journal budget, 7-day maximum age, no journal forwarding to syslog. This affects non-Seismic logs and syslog-based collectors too."
+    warn "Journald was not restarted; activate explicitly (runbook 3.13). Activation may prune old journals; existing text logs are never truncated or deleted by this step."
 }
 
 # --- 3.4 binaries ------------------------------------------------------------

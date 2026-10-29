@@ -1,9 +1,9 @@
 # Installer
 
 `install.sh` installs a Seismic validator or observer from a prepared
-`node.env`. It has no interactive mode: every decision is a key in the config
-file, which it validates before touching the host and installs unchanged as
-`/etc/seismic/node.env`.
+`node.env`. It has no interactive mode: node-specific choices are keys in the
+config file, validated before touching the host. The `logging` step additionally
+installs the fixed host-wide journal policy described below.
 
 ```bash
 cp install/templates/node.env.example node.env   # edit: see docs/RUNBOOK.md 3.6
@@ -31,6 +31,7 @@ The steps, each implementing one section of the runbook:
 | `checkpointer` | 3.8     | `seismic-checkpointer.toml`, when enabled                                |
 | `units`        | 3.10    | the systemd units and hardening drop-in; nothing enabled                 |
 | `tls`          | 3.11    | managed OpenResty for `TLS_MODE=custodian-only` or `full`; not activated |
+| `logging`      | 3.13    | shared, bounded host-wide journal policy; journald is not restarted      |
 
 Every step is idempotent and says what it changed. Nothing is ever started:
 first start is `seismic-node … start` (runbook section 4), and the Prometheus
@@ -40,6 +41,41 @@ do not belong in `node.env`.
 What a finished host looks like, how to start it, and how to operate it is
 **[docs/RUNBOOK.md](../docs/RUNBOOK.md)**. Proxy requirements for operators
 running their own TLS terminator are in [CUSTODIAN_TLS.md](CUSTODIAN_TLS.md).
+
+## Host-wide logging policy
+
+The `logging` step installs `templates/journald/zz-seismic-retention.conf` to
+`/etc/systemd/journald.conf.d/zz-seismic-retention.conf` (`root:root`, `0644`).
+It applies to **all services sharing the default system journal**, not just
+Seismic: a shared approximately 2 GiB disk budget, 128 MiB journal files, a 5
+GiB free-space allowance, and seven-day maximum retention. High log volume can
+evict history sooner. It disables journal forwarding to syslog to avoid an
+independently growing `/var/log/syslog`; syslog-based collectors, such as an Ops
+Agent configured to tail that file, must be reviewed first.
+
+The installer does not restart journald, vacuum journals, truncate text logs, or
+restart node services. Activation requires an explicit
+`sudo systemctl restart systemd-journald`; the new retention policy can then
+remove old archived journals automatically. Review the merged settings first
+with `sudo systemd-analyze cat-config systemd/journald.conf`. The `zz-` prefix
+sorts after Ubuntu's vendor `syslog.conf`; a later local drop-in can still
+override it. An rsyslog `imjournal` input would independently read journals and
+also needs review.
+
+To install only this policy without touching binaries, keys, node configuration,
+or node service state:
+
+```bash
+sudo install/install.sh --config /etc/seismic/node.env --only logging
+```
+
+Then follow [runbook 3.13](../docs/RUNBOOK.md#313-bounded-system-logging) for
+activation and checks. Syslog text files and direct application file logs,
+including Summit critical logs, OpenResty logs, and the checkpointer's Reth
+cache logs, are outside the journal budget and need their own retention
+policies. For hosts whose logging is managed elsewhere, select only the other
+installer steps with `--only`; an unrestricted rerun restores this repository's
+policy file.
 
 ## Layout
 
@@ -52,6 +88,7 @@ running their own TLS terminator are in [CUSTODIAN_TLS.md](CUSTODIAN_TLS.md).
 | `lib/common.sh`              | output helpers                                              |
 | `templates/node.env.example` | the config schema, with every key documented                |
 | `templates/systemd/`         | the units, installed verbatim                               |
+| `templates/journald/`        | the fixed host-wide journal retention drop-in               |
 | `templates/config/`          | `${VAR}` templates rendered from `node.env`                 |
 | `templates/openresty/`       | nginx and Lua templates                                     |
 
@@ -59,7 +96,10 @@ running their own TLS terminator are in [CUSTODIAN_TLS.md](CUSTODIAN_TLS.md).
 
 `tests/test_installer.py` exercises `--dry-run` and
 `tests/test_custodian_tls.py` the OpenResty rendering, both unprivileged.
-`tests/vm/run.sh` runs the real installer on a disposable VM over SSH:
+`tests/test_journald.py` exercises the real logging step in a temporary tree,
+reruns, symlink refusal, vendor drop-in ordering, and the documented manual
+commands; no test changes host logging or starts services. `tests/vm/run.sh`
+runs the real installer on a disposable VM over SSH:
 
 ```bash
 VM_HOST=user@host VM_SSH_KEY=~/.ssh/key tests/vm/run.sh [--config FILE] [-- INSTALLER_ARGS]
@@ -99,6 +139,10 @@ and verify:
   `http://127.0.0.1:9001/metrics` as in runbook section 4.
 - `Type=simple` start success is not treated as readiness: inspect journals and
   application health after startup, not just the immediate unit state.
+- After explicit journal activation, the effective limits match the template,
+  fresh node logs remain visible, syslog no longer duplicates them, and node
+  service PIDs/start times remain unchanged. Check `journalctl --disk-usage` and
+  journal restart diagnostics for the shared budget.
 
 Record the VM image, config, tested revisions, commands, and results. These
 checks remain deployment prerequisites until they have actually run.

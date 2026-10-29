@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
 # Seismic node installer: performs section 3 of docs/RUNBOOK.md from a
-# prepared node.env. Non-interactive by design: every decision is a key in
-# the config file, which the installer validates before touching the host and
-# installs unchanged as /etc/seismic/node.env.
+# prepared node.env. Non-interactive by design: node-specific choices are keys
+# in the config file, validated before touching the host. The logging step also
+# installs a fixed host-wide journal policy; activation remains explicit.
 #
 #   install.sh --config PATH [--dry-run] [--only STEP[,STEP...]]
 #
@@ -34,6 +34,7 @@ STEPS=(
     "checkpointer:3.8"
     "units:3.10"
     "tls:3.11"
+    "logging:3.13"
 )
 
 # shellcheck source=lib/common.sh
@@ -167,6 +168,17 @@ print_next_steps() {
     section "Installation complete; no services were started"
     _out "Validate the installed configuration:"
     _out "  (cd $TOOLS_DIR && sudo python3 -m seismic_node.nodeenv --check)"
+    if step_selected logging; then
+        _out "Activate host-wide journal retention before starting the node (runbook 3.13):"
+        _out "  sudo systemd-analyze cat-config systemd/journald.conf"
+        _out "  sudo systemctl restart systemd-journald"
+        _out "  sudo journalctl --disk-usage"
+        warn "Review effective settings and syslog-based collectors first; activation may prune old journals. Existing text logs are not removed."
+        if [[ "$ONLY" == logging ]]; then
+            _out "Logging-only update; node service state was left untouched. Do not rerun node startup just to activate journal retention."
+            return
+        fi
+    fi
     _out "Then start the node (docs/RUNBOOK.md section 4):"
     if [[ "$SEISMIC_ROLE" == validator ]]; then
         _out "  sudo $TOOLS_DIR/seismic-node.py validator start --mode normal     # listed in genesis"

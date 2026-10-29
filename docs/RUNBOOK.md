@@ -3,7 +3,8 @@
 This document describes, step by step, what a Seismic validator or observer host
 looks like and how to bring one up, operate it, and change it. Every file the
 steps create is either shipped verbatim in this repository or derived from one
-operator-authored file, `/etc/seismic/node.env`.
+operator-authored file, `/etc/seismic/node.env`. The fixed host-wide journal
+policy in section 3.13 is shared by all services, not configured in `node.env`.
 
 Role-specific steps are marked **validator** or **observer**. Unmarked steps
 apply to both.
@@ -102,6 +103,12 @@ This is the contract every step below establishes. All paths except those under
 | `/etc/seismic/prometheus-agent/`         | `0750` | Agent config and token, group `seismic-prometheus`.                                               |
 | `/etc/seismic/openresty-jwt-secret`      | `0640` | `root:nogroup`; JWT secret for full mode, or any other TLS mode with pull monitoring.             |
 
+The host-wide logging policy is outside `/etc/seismic`:
+`/etc/systemd/journald.conf.d/zz-seismic-retention.conf` (`root:root`, `0644`),
+shipped from `install/templates/journald/`. See
+[3.13](#313-bounded-system-logging) for its explicit activation and system-wide
+scope.
+
 ### Services (`/etc/systemd/system`, shipped verbatim from `install/templates/systemd/`)
 
 | Unit                                  | Role      | Restart    | Notes                                                                           |
@@ -165,17 +172,23 @@ Automatic restart is distinct from starting at boot; see
 | `/var/lib/seismic-prometheus-agent` | `0750` | Agent WAL (owner `seismic-prometheus`)                                                                                                             |
 | `/run/seismic`                      | `0750` | Engine API and Custodian sockets (tmpfs, recreated)                                                                                                |
 
-All node services log to stdout and stderr, which systemd captures in the
-journal; none writes a log file of its own, with one deliberate exception.
-Summit additionally writes its most serious errors (fatal database errors,
-engine client failures — tracing target `critical`) as rotating JSON files to
-`$SUMMIT_DATA_DIR/critical/` (100 MB × 5, rotated by Summit itself), so an
-incident record survives journal retention and can be collected without
-`journalctl`. The same events are in the journal and increment the
-`critical_errors_total` metric for alerting. (The managed OpenResty keeps its
-own access and error logs under `/usr/local/openresty/nginx/logs/`, rotated by
-the `logrotate` rule the `tls` step installs from
-`install/templates/openresty/logrotate-openresty`.)
+Node services log to stdout and stderr, which systemd captures in shared binary
+journal files, not separate per-service text logs. `journalctl -u` filters those
+entries by service. Section [3.13](#313-bounded-system-logging) installs a
+host-wide shared journal budget and disables forwarding to syslog; the main Reth
+service also disables its own file logger.
+
+Additional file logs are outside that budget. Summit writes its most serious
+errors (fatal database errors, engine client failures — tracing target
+`critical`) as rotating JSON files to `$SUMMIT_DATA_DIR/critical/` (100 MB × 5,
+rotated by Summit itself), so an incident record survives journal retention and
+can be collected without `journalctl`. The same events are in the journal and
+increment the `critical_errors_total` metric for alerting. (The managed
+OpenResty keeps its own access and error logs under
+`/usr/local/openresty/nginx/logs/`, rotated by the `logrotate` rule the `tls`
+step installs from `install/templates/openresty/logrotate-openresty`.) The
+checkpointer's Reth subprocess can also write rotating files under
+`/var/cache/seismic-checkpointer/reth/`, via its unit's `XDG_CACHE_HOME`.
 
 ```bash
 journalctl -u seismic-reth -f
@@ -868,7 +881,91 @@ dashboard for it, ready to load. To stop, clear the key, rerun
 `monitoring install` without `--operator-token-source`, and restart the agent;
 the second destination and its token are removed.
 
-### 3.13 Pre-start verification
+### 3.13 Bounded system logging
+
+_Installer step: `logging`._
+
+This is a **host-wide** policy for both validators and observers, including
+non-Seismic services in the default system journal. It is a fixed template, not
+a `node.env` setting. Review existing log collection before installing it:
+`ForwardToSyslog=no` stops journal entries from reaching syslog-based collectors
+(including an Ops Agent configured to tail `/var/log/syslog`). The Seismic
+Prometheus Agent sends metrics and is unaffected.
+
+Install the shipped policy manually, or use the installer's `logging` step:
+
+```bash
+(
+  set -euo pipefail
+  sudo install -d -o root -g root -m 0755 /etc/systemd/journald.conf.d
+  sudo install -o root -g root -m 0644 \
+    "$REPO/install/templates/journald/zz-seismic-retention.conf" \
+    /etc/systemd/journald.conf.d/zz-seismic-retention.conf
+  sudo systemd-analyze cat-config systemd/journald.conf
+)
+```
+
+The last effective values in the `[Journal]` sections must be:
+
+```ini
+[Journal]
+Storage=persistent
+SystemMaxUse=2G
+SystemKeepFree=5G
+SystemMaxFileSize=128M
+MaxRetentionSec=7day
+ForwardToSyslog=no
+```
+
+- The approximately **2 GiB budget is shared**, not per service. A noisy service
+  can shorten retained history for every service. Active journal files and
+  rotation mean this is not an instantaneous hard quota.
+- Journald rotates individual journal files around 128 MiB and removes old
+  archived files as needed. Seven days is a **maximum age**, not a promise to
+  retain seven days under heavy logging.
+- `SystemKeepFree=5G` limits journal growth to help leave free space; it cannot
+  stop other applications from consuming the disk.
+- Drop-ins sort by filename across `/usr/lib` and `/etc`. The `zz-` prefix sorts
+  after Ubuntu's `syslog.conf`, which enables forwarding; a numeric prefix such
+  as `60-` would not. Check for later overrides. If rsyslog loads `imjournal`,
+  that independently reads journals despite `ForwardToSyslog=no`; arrange that
+  collector's handover separately.
+- This does not cap separately configured journal namespaces or direct file logs
+  (Summit critical logs, OpenResty, the checkpointer's Reth cache).
+
+**Activation is explicit.** Neither the installer nor `seismic-node … start`
+restarts journald. Once the effective policy and collector changes have been
+reviewed, activate it before starting a new node, or on an already running node
+without restarting the node services:
+
+```bash
+(
+  set -euo pipefail
+  sudo systemctl restart systemd-journald
+  sudo systemctl is-active systemd-journald
+  sudo journalctl -u systemd-journald --since -5min --no-pager
+  sudo journalctl --disk-usage
+)
+```
+
+Use `restart`, not a separate stop/start, to preserve open service log streams.
+Check the restart diagnostics for the 2 GiB journal limit and parsing errors,
+then confirm fresh node logs with the section 5 commands. Normal
+`journalctl -u seismic-summit` / `-u seismic-observer-checkpoint` commands are
+unchanged; no namespace option is needed. Activation may automatically delete
+older archived journals to meet the new limits; preserve needed history first.
+
+To install just this policy, use
+`install/install.sh --config /etc/seismic/node.env --only logging`, then
+activate it as above. This does not install binaries or touch node
+identity/state. Rerunning the installer without `--only` restores the shipped
+policy file.
+
+The journal budget does not manage `/var/log/syslog` or other text log files.
+Those require their own retention policies; the installer does not remove or
+truncate them.
+
+### 3.14 Pre-start verification
 
 Validate the installed configuration and check that the unit files are
 installed:
@@ -1072,11 +1169,14 @@ sudo journalctl -u seismic-checkpointer --since -1h
 sudo journalctl -u seismic-prometheus-agent --since -1h
 ```
 
-Add `-f` to any `journalctl` command to follow new entries (Ctrl-C to stop), or
-`-p warning` to show only warnings and more severe messages. The checkpoint
-runner logs under the corresponding Summit checkpoint unit; it has no separate
-service. Likewise, `mdbx_copy` is a helper invoked by the checkpointer and has
-no separate service or standalone journal.
+Add `-f` to any `journalctl` command to follow new entries (Ctrl-C to stop).
+`-p warning` filters journal priorities, but Rust `WARN`/`ERROR` messages on
+stdout may not carry those priorities. Also inspect the application text, for
+example
+`sudo journalctl -u 'seismic-*' --since -1h --grep='WARN|ERROR|panicked'`. The
+checkpoint runner logs under the corresponding Summit checkpoint unit; it has no
+separate service. Likewise, `mdbx_copy` is a helper invoked by the checkpointer
+and has no separate service or standalone journal.
 
 Managed OpenResty writes access and error logs to files:
 
@@ -1090,6 +1190,23 @@ Inspect a unit's sandboxing separately:
 ```bash
 systemd-analyze security seismic-reth.service
 ```
+
+### Log retention and disk usage
+
+Section [3.13](#313-bounded-system-logging) installs and explicitly activates
+the shared host-wide journal budget. To inspect it:
+
+```bash
+sudo systemd-analyze cat-config systemd/journald.conf
+sudo journalctl --disk-usage
+df -h / /persistence
+sudo du -h /var/log/syslog
+```
+
+The journal budget does not cover syslog text files or direct application file
+logs. If root fills while `/persistence` is mostly empty, inspect `/var/log`
+rather than assuming checkpoints are consuming the space. Never automatically
+wipe node state or truncate logs in response to an alert.
 
 ### Stop and start
 
@@ -1243,28 +1360,30 @@ Drop-ins survive reinstalling the unit files; editing the units in place does
 not. The installer, however, still owns the state for `seismic`: a full rerun
 (or `--only directories` / `--only keys`) re-owns `/persistence/*` and
 `KEYS_DIR` to `seismic:seismic`, after which the units above cannot read them.
-After any rerun that is not limited to `--only units,tls`, repeat the `chown`
-line.
+After any rerun that is not limited to `--only units,tls,logging`, repeat the
+`chown` line.
 
 ## 8. Automating with configuration management
 
 Every step above is a file copy, a package install, or an idempotent command, so
 it maps directly onto a configuration-management role:
 
-| Step                     | Ansible equivalent                                                                                                          |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| 3.1 packages             | `apt`                                                                                                                       |
-| 3.2 account, 3.3 dirs    | `user`, `file`                                                                                                              |
-| 3.4 binaries, 3.5 runner | `get_url` + `stat` checksum, or `copy` from a build host                                                                    |
-| 3.6 `node.env`           | `template` from `node.env.example`, then `command: python3 -m seismic_node.nodeenv --check`                                 |
-| 3.7 keys                 | `command` with `creates:`; never templated                                                                                  |
-| 3.8, 3.11 rendered files | `template`                                                                                                                  |
-| 3.10 units               | `copy` ×10 units + the hardening drop-in, `systemd: daemon_reload`                                                          |
-| 3.12 Prometheus Agent    | `command: seismic-node monitoring install`                                                                                  |
-| 4 start                  | `command: seismic-node validator start` — or `systemd: state=started` per unit if you accept the CLI's checks being skipped |
+| Step                     | Ansible equivalent                                                                                                            |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| 3.1 packages             | `apt`                                                                                                                         |
+| 3.2 account, 3.3 dirs    | `user`, `file`                                                                                                                |
+| 3.4 binaries, 3.5 runner | `get_url` + `stat` checksum, or `copy` from a build host                                                                      |
+| 3.6 `node.env`           | `template` from `node.env.example`, then `command: python3 -m seismic_node.nodeenv --check`                                   |
+| 3.7 keys                 | `command` with `creates:`; never templated                                                                                    |
+| 3.8, 3.11 rendered files | `template`                                                                                                                    |
+| 3.10 units               | `copy` ×10 units + the hardening drop-in, `systemd: daemon_reload`                                                            |
+| 3.12 Prometheus Agent    | `command: seismic-node monitoring install`                                                                                    |
+| 3.13 journal policy      | `copy` the journald drop-in; explicitly activate with `systemd: name=systemd-journald state=restarted` after collector review |
+| 4 start                  | `command: seismic-node validator start` — or `systemd: state=started` per unit if you accept the CLI's checks being skipped   |
 
-The installer (`install.sh --config node.env`) performs steps 3.1–3.11 from a
-prepared `node.env` for operators who prefer one command over a role:
+The installer (`install.sh --config node.env`) performs steps 3.1–3.11 plus 3.13
+from a prepared `node.env` for operators who prefer one command over a role (3.9
+is handled by the Custodian itself; monitoring in 3.12 is separate):
 
 ```bash
 sudo "$REPO/install/install.sh" --config /path/to/node.env            # everything
