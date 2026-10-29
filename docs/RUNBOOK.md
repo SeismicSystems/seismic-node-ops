@@ -563,21 +563,39 @@ binary paths are fixed in the template):
 | `${CHECKPOINTS_DIR}`         | `$CHECKPOINTS_DIR`                         |
 | `${CHECKPOINTER_STATE_FILE}` | `$CHECKPOINTS_DIR/checkpointer-state.cbor` |
 
-`envsubst` (from `gettext-base`, section 3.1) with exactly those three names, so
-nothing else in the template is touched:
+Parse and validate `node.env` with the standalone parser's `--export` action,
+which emits shell-quoted assignments. Do not `source` the file directly: it uses
+systemd `EnvironmentFile` syntax, not shell syntax, even after `--check`. For
+example, an unquoted multiword `RETH_PEERING_ARGS` value can make Bash try to
+execute a flag as a command.
+
+The subshell below leaves your shell's environment unchanged and stops on
+errors. It runs `envsubst` (from `gettext-base`, section 3.1) with exactly the
+three names above, checks the rendered file, then installs it. It does not run
+the installer or start services:
 
 ```bash
-set -a; source <(sudo cat /etc/seismic/node.env); set +a   # the file is root-only (0640)
-[[ -n "$RETH_DATA_DIR" && -n "$CHECKPOINTS_DIR" ]] || echo "node.env not loaded; stop here"
-RETH_DB_PATH="$RETH_DATA_DIR/db" CHECKPOINTER_STATE_FILE="$CHECKPOINTS_DIR/checkpointer-state.cbor" \
-  envsubst '${RETH_DB_PATH} ${CHECKPOINTS_DIR} ${CHECKPOINTER_STATE_FILE}' \
-  < "$REPO/install/templates/config/seismic-checkpointer.toml" \
-  | sudo install -o root -g root -m 0644 /dev/stdin /etc/seismic/seismic-checkpointer.toml
-grep -c '\${' /etc/seismic/seismic-checkpointer.toml   # must print 0
+(
+  set -euo pipefail
+  exports=$(cd "$REPO/tools" && sudo python3 -m seismic_node.nodeenv --export /etc/seismic/node.env)
+  eval "$exports"
+
+  rendered=$(mktemp)
+  trap 'rm -f -- "$rendered"' EXIT
+  RETH_DB_PATH="$RETH_DATA_DIR/db" CHECKPOINTER_STATE_FILE="$CHECKPOINTS_DIR/checkpointer-state.cbor" \
+    envsubst '${RETH_DB_PATH} ${CHECKPOINTS_DIR} ${CHECKPOINTER_STATE_FILE}' \
+    < "$REPO/install/templates/config/seismic-checkpointer.toml" > "$rendered"
+  if grep -q '\${' "$rendered"; then
+    echo "Unresolved checkpointer template placeholders; nothing installed" >&2
+    exit 1
+  fi
+  sudo install -o root -g root -m 0644 "$rendered" /etc/seismic/seismic-checkpointer.toml
+)
 ```
 
-(`source` is acceptable here because `node.env` has already passed `--check`,
-which rejects anything a shell would interpret differently from systemd.)
+The export command is captured separately so a parser failure stops the block
+before `eval` or rendering. Only the parser's quoted output is evaluated, never
+the raw configuration file.
 
 ### 3.9 Custodian root key
 

@@ -898,6 +898,118 @@ class ShellExportTests(unittest.TestCase):
             self.assertIn("unknown keys", stderr.getvalue())
 
 
+@unittest.skipUnless(
+    shutil.which("bash") and shutil.which("envsubst"), "bash/envsubst not available"
+)
+class RunbookCheckpointerTests(unittest.TestCase):
+    """Execute the documented manual block with all privileged writes redirected."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        (self.repo / "tools").symlink_to(TOOLS, target_is_directory=True)
+        self.template = self.repo / "install/templates/config/seismic-checkpointer.toml"
+        self.template.parent.mkdir(parents=True)
+        shutil.copyfile(
+            ROOT / "install/templates/config/seismic-checkpointer.toml", self.template
+        )
+        self.config = self.root / "node.env"
+        self.output = self.root / "installed.toml"
+        self.output.write_text("previous config\n")
+        self.marker = self.root / "must-not-execute"
+        peers = self.root / "trusted-peers"
+        enode = f"enode://{'ab' * 64}@203.0.113.1:30303"
+        peers.write_text(enode + "\n")
+        self.values = example_values(
+            CHECKPOINTER_ENABLED="true",
+            RETH_DATA_DIR="/persistence/reth # fast disk",
+            CHECKPOINTS_DIR="/persistence/checkpoints with spaces",
+            RETH_TRUSTED_PEERS_FILE=str(peers),
+            RETH_PEERING_ARGS=f"{nodeenv.TRUSTED_FLAGS} {enode}",
+            MONITORING_NODE_NAME=f"$(touch {self.marker})",
+        )
+        self.scratch = self.root / "scratch"
+        self.scratch.mkdir()
+
+    def run_block(self):
+        self.config.write_text("".join(f"{k}={v}\n" for k, v in self.values.items()))
+        section = (
+            (ROOT / "docs/RUNBOOK.md")
+            .read_text()
+            .split("### 3.8 Checkpointer configuration (optional)", 1)[1]
+            .split("### 3.9", 1)[0]
+        )
+        block = section.split("```bash\n", 1)[1].split("```", 1)[0]
+        self.assertNotIn("install.sh", block)
+        environment = dict(os.environ)
+        environment.update(
+            REPO=str(self.repo),
+            RUNBOOK_CONFIG=str(self.config),
+            RUNBOOK_OUTPUT=str(self.output),
+            RUNBOOK_PYTHON=sys.executable,
+            TMPDIR=str(self.scratch),
+        )
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                """sudo() {
+    if [[ "$*" == "python3 -m seismic_node.nodeenv --export /etc/seismic/node.env" ]]; then
+        command "$RUNBOOK_PYTHON" -m seismic_node.nodeenv --export --no-ownership "$RUNBOOK_CONFIG"
+    elif [[ $# -eq 9 && "${*:1:7}" == "install -o root -g root -m 0644" && "$9" == /etc/seismic/seismic-checkpointer.toml ]]; then
+        command install -m 0644 "$8" "$RUNBOOK_OUTPUT"
+    else
+        echo 'unexpected privileged operation' >&2
+        return 1
+    fi
+}
+"""
+                + block,
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertFalse(self.marker.exists(), "config text must never execute")
+        self.assertEqual(
+            list(self.scratch.iterdir()), [], "staging file must be removed"
+        )
+        return result
+
+    def test_manual_block_handles_multiword_flags_and_literal_path_values(self):
+        result = self.run_block()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        rendered = self.output.read_text()
+        self.assertIn('db_path = "/persistence/reth # fast disk/db"', rendered)
+        self.assertIn('output_dir = "/persistence/checkpoints with spaces"', rendered)
+        self.assertIn(
+            'state_file = "/persistence/checkpoints with spaces/checkpointer-state.cbor"',
+            rendered,
+        )
+        self.assertNotIn("${", rendered)
+        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o644)
+
+    def test_parser_failure_leaves_existing_config_untouched(self):
+        self.values["BOGUS"] = "invalid"
+        result = self.run_block()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown keys", result.stderr)
+        self.assertEqual(self.output.read_text(), "previous config\n")
+
+    def test_unresolved_placeholder_leaves_existing_config_untouched(self):
+        with self.template.open("a") as stream:
+            stream.write('\nunknown = "${UNRESOLVED}"\n')
+        result = self.run_block()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unresolved checkpointer template placeholders", result.stderr)
+        self.assertEqual(self.output.read_text(), "previous config\n")
+
+
 class LoadTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
