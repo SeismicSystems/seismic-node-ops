@@ -14,7 +14,7 @@ import tempfile
 import threading
 import unittest
 from collections.abc import Callable
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -523,6 +523,131 @@ class ValidatorTests(unittest.TestCase):
 
         request.assert_called_once()
         self.assertEqual(stopped, ["summit-deposit-rpc"])
+
+    def test_joining_wait_reports_each_poll_before_sleeping(self) -> None:
+        for policy in (None, "wait"):
+            with self.subTest(policy=policy):
+                args = SimpleNamespace(
+                    summit_bearer_token_file=None,
+                    validator_wait_timeout=0.0,
+                    pre_joining_policy=policy,
+                    summit_rpc_url="https://network.example/summit",
+                    http_timeout=10.0,
+                    validator_poll_interval=5.0,
+                )
+                inactive = {
+                    "status": "Inactive",
+                    "balance": 32_000_000_000,
+                    "joining_epoch": 80,
+                }
+                joining = {**inactive, "status": "Joining"}
+                expected = [
+                    "Waiting for validator status Joining "
+                    f"(current: {status}); checking again in 5s..."
+                    for status in ("NotFound", "NotFound", "Inactive")
+                ]
+                output = io.StringIO()
+                sleeps: list[float] = []
+
+                def sleep(
+                    interval: float,
+                    *,
+                    output: io.StringIO = output,
+                    expected: list[str] = expected,
+                    sleeps: list[float] = sleeps,
+                ) -> None:
+                    # The heartbeat must be visible before the polling sleep,
+                    # including when the status has not changed.
+                    self.assertEqual(
+                        output.getvalue().splitlines()[-1], expected[len(sleeps)]
+                    )
+                    sleeps.append(interval)
+
+                with (
+                    mock.patch.object(rpc, "read_bearer_token", return_value=None),
+                    mock.patch.object(
+                        validator,
+                        "validator_account",
+                        side_effect=[None, None, inactive, joining],
+                    ),
+                    mock.patch.object(validator.sys.stdin, "isatty", return_value=True),
+                    mock.patch.object(
+                        validator, "prompt_operator", return_value="1"
+                    ) as prompt,
+                    mock.patch.object(validator.time, "sleep", side_effect=sleep),
+                    mock.patch("builtins.print", wraps=print) as printed,
+                    redirect_stdout(output),
+                ):
+                    decision = validator.wait_for_start_authorization(args, "11" * 32)
+
+                self.assertTrue(decision.start)
+                self.assertFalse(decision.pre_joining)
+                self.assertEqual(sleeps, [5.0, 5.0, 5.0])
+                self.assertEqual(prompt.call_count, 1 if policy is None else 0)
+                heartbeats = [
+                    call
+                    for call in printed.call_args_list
+                    if call.args
+                    and str(call.args[0]).startswith("Waiting for validator")
+                ]
+                self.assertEqual(
+                    heartbeats, [mock.call(message, flush=True) for message in expected]
+                )
+                self.assertEqual(
+                    output.getvalue().count("Validator account status: NotFound"),
+                    2
+                    if policy is None
+                    else 1,  # Interactive chooser repeats the status.
+                )
+                self.assertIn("Validator account status: Joining", output.getvalue())
+
+    def test_no_wait_heartbeat_when_not_polling(self) -> None:
+        for status, policy, expired in (
+            ("Joining", "wait", False),
+            ("Active", "wait", False),
+            ("NotFound", "start", False),
+            ("NotFound", "leave-stopped", False),
+            ("NotFound", "wait", True),
+            ("SubmittedExitRequest", "wait", False),
+        ):
+            with self.subTest(status=status, policy=policy, expired=expired):
+                args = SimpleNamespace(
+                    summit_bearer_token_file=None,
+                    validator_wait_timeout=0.0,
+                    pre_joining_policy=policy,
+                    summit_rpc_url="https://network.example/summit",
+                    http_timeout=10.0,
+                    validator_poll_interval=5.0,
+                )
+                account = (
+                    None
+                    if status == "NotFound"
+                    else {
+                        "status": status,
+                        "balance": 32_000_000_000,
+                        "joining_epoch": 80,
+                    }
+                )
+                output = io.StringIO()
+                with (
+                    mock.patch.object(rpc, "read_bearer_token", return_value=None),
+                    mock.patch.object(
+                        validator, "validator_account", return_value=account
+                    ),
+                    mock.patch.object(validator.time, "monotonic", return_value=20.0),
+                    mock.patch.object(validator.time, "sleep") as sleep,
+                    redirect_stdout(output),
+                    redirect_stderr(io.StringIO()),
+                ):
+                    if expired or status == "SubmittedExitRequest":
+                        with self.assertRaises(NodeError):
+                            validator.wait_for_start_authorization(
+                                args, "11" * 32, wait_deadline=10.0 if expired else None
+                            )
+                    else:
+                        validator.wait_for_start_authorization(args, "11" * 32)
+                sleep.assert_not_called()
+                self.assertNotIn("Waiting for validator status", output.getvalue())
 
     def test_active_validator_is_authorized_with_warning(self) -> None:
         args = SimpleNamespace(

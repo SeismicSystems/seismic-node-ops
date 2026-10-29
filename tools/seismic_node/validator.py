@@ -414,6 +414,12 @@ def wait_for_start_authorization(
             raise NodeError(
                 "Timed out waiting for validator status Joining; services remain stopped"
             )
+        print(
+            "Waiting for validator status Joining "
+            f"(current: {current_status}); "
+            f"checking again in {args.validator_poll_interval:g}s...",
+            flush=True,
+        )
         time.sleep(args.validator_poll_interval)
 
 
