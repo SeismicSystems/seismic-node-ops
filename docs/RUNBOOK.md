@@ -436,6 +436,22 @@ key the Reth unit expands as its whole peering flag group, from it. Installing
 by hand, fill it yourself as shown below; `--check` recomputes the expected
 value from the same inputs and refuses a `node.env` whose stored value differs.
 
+**Obtain your own Reth enode.** Once Reth is running, run this read-only command
+on your node VM, not your laptop. Share the output with Seismic operations when
+requested, for example when adding your validator to the trusted-peers list.
+This does not change peering configuration.
+
+```bash
+curl -fsS --max-time 10 http://127.0.0.1:8545 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"seismic_nodeInfo","params":[],"id":1}' \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["enode"])'
+```
+
+Check that the advertised address and P2P port (normally `30303`) are reachable
+by peers. The enode is public connection information; never share the P2P
+private key.
+
 `trusted` (validators): a closed set, no discovery; Reth connects only to and
 from the enodes in `RETH_TRUSTED_PEERS_FILE`, one per line, `#` comments
 allowed. The repository's `internal_testnet_trusted_peers` lists the internal
@@ -462,6 +478,14 @@ This validates every line as an enode and omits the one whose id matches the
 key. Without the key in place it omits nothing, which `--check` tolerates; rerun
 it once the key exists.
 
+> [!WARNING]
+>
+> **Discovery peering is currently not used.** These instructions are retained
+> for reference only. Do not run the commands below.
+
+<details>
+<summary>Discovery peering — reference only</summary>
+
 `discovery` (observers, RPC nodes): discv5, with an optional bootnode. Either
 set `RETH_BOOTNODE_RPC` and let the installer resolve it, or query the bootnode
 yourself and set `RETH_BOOTNODE`:
@@ -477,10 +501,14 @@ sudo sed -i -e "s|^RETH_BOOTNODE=.*|RETH_BOOTNODE=$enode|" \
 ```
 
 Without a bootnode, `RETH_PEERING_ARGS` is the same line up to and including
-`30303`, and Reth uses the chain's built-in bootnodes. In both modes, run the
-validation below afterwards. Adding a validator to a trusted set: add its line
-to the peers file on every node, then `install.sh --only config` (or the `sed`
-above) and `systemctl restart seismic-reth` on each.
+`30303`, and Reth uses the chain's built-in bootnodes.
+
+</details>
+
+In both modes, run the validation below afterwards. Adding a validator to a
+trusted set: add its line to the peers file on every node, then
+`install.sh --only config` (or the `sed` above) and
+`systemctl restart seismic-reth` on each.
 
 Keys marked `(computed)` in `node.env.example` (`RETH_PEERING_ARGS`,
 `SUMMIT_BOOTSTRAPPERS_ARG`, `OBSERVER_P2P_PORT`) repeat another key in the form
