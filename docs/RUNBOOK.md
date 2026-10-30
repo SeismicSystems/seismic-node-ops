@@ -436,6 +436,22 @@ key the Reth unit expands as its whole peering flag group, from it. Installing
 by hand, fill it yourself as shown below; `--check` recomputes the expected
 value from the same inputs and refuses a `node.env` whose stored value differs.
 
+**Obtain your own Reth enode.** Once Reth is running, run this read-only command
+on your node VM, not your laptop. Share the output with Seismic operations when
+requested, for example when adding your validator to the trusted-peers list.
+This does not change peering configuration.
+
+```bash
+curl -fsS --max-time 10 http://127.0.0.1:8545 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"seismic_nodeInfo","params":[],"id":1}' \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["result"]["enode"])'
+```
+
+Check that the advertised address and P2P port (normally `30303`) are reachable
+by peers. The enode is public connection information; never share the P2P
+private key.
+
 `trusted` (validators): a closed set, no discovery; Reth connects only to and
 from the enodes in `RETH_TRUSTED_PEERS_FILE`, one per line, `#` comments
 allowed. The repository's `internal_testnet_trusted_peers` lists the internal
