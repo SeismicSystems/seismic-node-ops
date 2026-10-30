@@ -116,11 +116,14 @@ parent's HTTPS endpoint and their local Custodian service.
    443**; keep the selected backend port private.
 3. Start Custodian using the node installer's service instructions. Verify its
    selected port is bound to `127.0.0.1` with `sudo ss -ltnp`.
-4. Start your TLS terminator. For managed OpenResty:
+4. Back up `node.env` and the existing proxy configuration. Validate the new
+   configuration as its service user, including certificate/key access. Arrange
+   certificate renewal for nginx/Envoy. Stop the old proxy before starting its
+   replacement on ports 80/443; `TLS_MODE=external` alone does not switch
+   proxies. For managed OpenResty:
 
    ```bash
-   sudo openresty -t
-   sudo systemctl enable --now openresty
+   sudo openresty -t && sudo systemctl enable --now openresty && sudo systemctl status openresty --no-pager -l
    ```
 
 5. Verify TLS with the following command. Expect **405** because the endpoint
@@ -129,6 +132,11 @@ parent's HTTPS endpoint and their local Custodian service.
    ```bash
    curl -i https://YOUR_DOMAIN/custodian/v1/council
    ```
+
+   On failure, stop the replacement and restore the previous
+   proxy/configuration. After accepting the replacement, disable the old proxy
+   at boot and enable the chosen one; otherwise a reboot can bring the old proxy
+   back.
 
 6. Start dependent observers only after the **parent's HTTPS endpoint is
    ready**.

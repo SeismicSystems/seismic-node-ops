@@ -679,6 +679,10 @@ _Installer step: `tls`._
   [`install/CUSTODIAN_TLS.md`](../install/CUSTODIAN_TLS.md#proxy-requirements)
   are in `install/templates/proxy/`: `nginx/custodian.conf` (a server block for
   plain nginx), `caddy/Caddyfile`, and `envoy/envoy.yaml` (a static bootstrap).
+  These expose Custodian only, not the node RPC routes below. If adding `/rpc`
+  and `/summit`, proxy to `127.0.0.1:8545` and `127.0.0.1:3030` respectively,
+  rewriting each path to `/`. In Envoy, disable the Custodian Lua header filter
+  only on those added routes with a `LuaPerRoute` override (`disabled: true`).
   Replace `DOMAIN` and, if changed, `CUSTODIAN_COUNCIL_PORT`; each file states
   where it falls short of the managed OpenResty policy (Caddy needs a plugin for
   rate limiting, Envoy an external service for per-IP limits). The rules in one
@@ -736,12 +740,12 @@ _Installer step: `tls`._
   ```
 
   Reth, Summit, checkpointer, and metrics listeners stay bound to loopback in
-  every mode; OpenResty is the only public surface, and `seismic-deposit-rpc`
-  (`3031`) is never proxied. `node.env` has no key that moves these listeners:
-  the checkpointer and the managed proxy reach them on loopback, so a terminator
-  on another host needs a tunnel (SSH, WireGuard) to this one rather than a
-  wider bind. Proxy requirements for the Custodian route are in
-  [`install/CUSTODIAN_TLS.md`](../install/CUSTODIAN_TLS.md).
+  every mode; the selected TLS proxy is the public HTTPS surface, and
+  `seismic-deposit-rpc` (`3031`) is never proxied. `node.env` has no key that
+  moves these listeners: the checkpointer and the TLS proxy reach them on
+  loopback, so a terminator on another host needs a tunnel (SSH, WireGuard) to
+  this one rather than a wider bind. Proxy requirements for the Custodian route
+  are in [`install/CUSTODIAN_TLS.md`](../install/CUSTODIAN_TLS.md).
 
 Validators must expose Custodian; give Seismic operations the resulting
 `https://DOMAIN/custodian` URL.
