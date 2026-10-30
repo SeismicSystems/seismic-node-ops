@@ -478,6 +478,14 @@ This validates every line as an enode and omits the one whose id matches the
 key. Without the key in place it omits nothing, which `--check` tolerates; rerun
 it once the key exists.
 
+> [!WARNING]
+>
+> **Discovery peering is currently not used.** These instructions are retained
+> for reference only. Do not run the commands below.
+
+<details>
+<summary>Discovery peering — reference only</summary>
+
 `discovery` (observers, RPC nodes): discv5, with an optional bootnode. Either
 set `RETH_BOOTNODE_RPC` and let the installer resolve it, or query the bootnode
 yourself and set `RETH_BOOTNODE`:
@@ -493,10 +501,14 @@ sudo sed -i -e "s|^RETH_BOOTNODE=.*|RETH_BOOTNODE=$enode|" \
 ```
 
 Without a bootnode, `RETH_PEERING_ARGS` is the same line up to and including
-`30303`, and Reth uses the chain's built-in bootnodes. In both modes, run the
-validation below afterwards. Adding a validator to a trusted set: add its line
-to the peers file on every node, then `install.sh --only config` (or the `sed`
-above) and `systemctl restart seismic-reth` on each.
+`30303`, and Reth uses the chain's built-in bootnodes.
+
+</details>
+
+In both modes, run the validation below afterwards. Adding a validator to a
+trusted set: add its line to the peers file on every node, then
+`install.sh --only config` (or the `sed` above) and
+`systemctl restart seismic-reth` on each.
 
 Keys marked `(computed)` in `node.env.example` (`RETH_PEERING_ARGS`,
 `SUMMIT_BOOTSTRAPPERS_ARG`, `OBSERVER_P2P_PORT`) repeat another key in the form

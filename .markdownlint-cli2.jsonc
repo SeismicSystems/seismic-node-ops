@@ -4,6 +4,9 @@
       "line_length": 80,
       "code_blocks": false,
       "tables": false
+    },
+    "MD033": {
+      "allowed_elements": ["details", "summary"]
     }
   }
 }
