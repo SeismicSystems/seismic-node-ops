@@ -197,15 +197,21 @@ check_genesis_matches_reth() {
 # Query a Reth JSON-RPC for its enode (seismic_nodeInfo); sets FETCHED_ENODE.
 fetch_enode() {
     local rpc=$1 response enode port
-    local enode_pattern='"enode"[[:space:]]*:[[:space:]]*"([^"]*)"'
     command -v curl >/dev/null || die "curl is required to query RETH_BOOTNODE_RPC"
+    command -v jq >/dev/null || die "jq is required to query RETH_BOOTNODE_RPC"
     info "Fetching the Reth enode from $rpc..."
     response=$(curl -fsS --max-time 30 -X POST "$rpc" \
         -H 'Content-Type: application/json' \
         -d '{"jsonrpc":"2.0","method":"seismic_nodeInfo","params":[],"id":1}') \
         || die "Could not query the bootnode Reth RPC at $rpc"
-    [[ "$response" =~ $enode_pattern ]] || die "RETH_BOOTNODE_RPC did not return result.enode: ${response:0:200}"
-    enode=${BASH_REMATCH[1]}
+    # HTTP success does not imply JSON-RPC success. Only accept result.enode
+    # from one object without an error, never an enode embedded in error data.
+    enode=$(jq -ers '
+        select(length == 1) | .[0] |
+        select(type == "object") | select(has("error") | not) |
+        .result | select(type == "object") |
+        .enode | select(type == "string")
+    ' <<<"$response") || die "RETH_BOOTNODE_RPC did not return result.enode: ${response:0:200}"
     [[ "$enode" =~ ^enode://[0-9a-fA-F]{128}@[A-Za-z0-9.:-]+:[0-9]+$ ]] \
         || die "RETH_BOOTNODE_RPC returned a malformed enode: $enode"
     port=${enode##*:}
