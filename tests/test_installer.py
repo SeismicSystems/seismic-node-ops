@@ -7,6 +7,7 @@ Every test runs unprivileged. Journal-policy fixtures are in test_journald.py.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -418,6 +419,30 @@ check_genesis_matches_reth "$1"
         self.assertIn(f"RETH_PEERING_ARGS={nodeenv.DISCOVERY_FLAGS}\n", installed)
 
         for name, response, message, overrides in (
+            (
+                "RPC error containing enode",
+                json.dumps({"error": {"code": -32000, "data": {"enode": enode}}}),
+                "did not return result.enode",
+                {},
+            ),
+            (
+                "error and result",
+                json.dumps({"error": {"code": -32000}, "result": {"enode": enode}}),
+                "did not return result.enode",
+                {},
+            ),
+            (
+                "top-level enode",
+                json.dumps({"enode": enode, "result": {}}),
+                "did not return result.enode",
+                {},
+            ),
+            (
+                "malformed JSON containing enode",
+                '{"result":{"enode":"' + enode + '"}',
+                "did not return result.enode",
+                {},
+            ),
             ("no enode", '{"result":{}}', "did not return result.enode", {}),
             (
                 "malformed",
